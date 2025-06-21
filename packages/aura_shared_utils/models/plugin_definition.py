@@ -1,4 +1,4 @@
-# packages/aura_shared_utils/models/plugin_definition.py
+# packages/aura_shared_utils/models/plugin_definition.py (修正版)
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,8 +28,8 @@ class PluginDefinition:
     homepage: str
 
     # --- Structure ---
-    path: Path  # 插件的根目录
-    plugin_type: str  # core, official, third_party, plan
+    path: Path
+    plugin_type: str
 
     # --- Dependencies & Extensions ---
     dependencies: Dict[str, str] = field(default_factory=dict)
@@ -38,24 +38,30 @@ class PluginDefinition:
 
     @property
     def canonical_id(self) -> str:
-        """
-        计算并返回插件的规范ID，格式为 'author/name'。
-        这是插件在整个系统中的唯一标识符。
-        """
+        """计算并返回插件的规范ID，格式为 'author/name'。"""
         if not self.author or not self.name:
             return "N/A"
         return f"{self.author}/{self.name}"
 
     @classmethod
     def from_yaml(cls, data: Dict[str, Any], plugin_path: Path, plugin_type: str) -> 'PluginDefinition':
-        """从解析的YAML数据创建PluginDefinition实例。"""
-        author = data.get('author')
-        name = data.get('name')
+        """【已修正】从解析的YAML数据创建PluginDefinition实例。"""
+
+        # 【核心修改】从 'identity' 字段下获取身份信息
+        identity_data = data.get('identity', {})
+        if not isinstance(identity_data, dict):
+            raise ValueError(f"插件 '{plugin_path}' 的 plugin.yaml 中的 'identity' 字段必须是一个字典。")
+
+        author = identity_data.get('author')
+        name = identity_data.get('name')
+        version = identity_data.get('version', '0.0.0')
 
         if not author or not name:
-            raise ValueError(f"插件 '{plugin_path}' 的 plugin.yaml 必须包含 'author' 和 'name' 字段。")
+            # 【核心修改】提供更精确的错误信息
+            raise ValueError(
+                f"插件 '{plugin_path}' 的 plugin.yaml 中的 'identity' 字段下必须包含 'author' 和 'name' 子字段。")
 
-        # 解析 extends 字段
+        # 解析 extends 字段 (这部分逻辑保持不变)
         extends_list = []
         for item in data.get('extends', []):
             if isinstance(item, dict) and 'service' in item and 'from' in item:
@@ -66,7 +72,7 @@ class PluginDefinition:
         return cls(
             author=author,
             name=name,
-            version=data.get('version', '0.0.0'),
+            version=version,  # 使用从 identity 中获取的版本
             description=data.get('description', ''),
             homepage=data.get('homepage', ''),
             path=plugin_path,

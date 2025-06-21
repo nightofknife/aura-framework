@@ -1,4 +1,4 @@
-# src/core/orchestrator.py
+# packages/aura_core/orchestrator.py (最终修正版)
 
 import os
 import yaml
@@ -6,21 +6,17 @@ from typing import Dict, Any
 import threading
 from pathlib import Path
 
-from packages.aura_core.engine import ExecutionEngine, Context
-from packages.aura_system_actions.actions.decorators import ACTION_REGISTRY
+from packages.aura_core.engine import ExecutionEngine
+from packages.aura_core.context import Context
+# 【核心修正】不再需要从这里导入 ACTION_REGISTRY
+# from packages.aura_core.api import ACTION_REGISTRY
 from packages.aura_shared_utils.utils.logger import logger
 from packages.aura_shared_utils.utils.assist import Pathfinder
 from packages.aura_core.persistent_context import PersistentContext
-from packages.aura_core.service_registry import service_registry
-
-
-# 【注意】AppProvider的导入可能不再需要，因为它应该作为一个服务被注入
-# from src.hardware.app_provider import AppProviderService
+from packages.aura_core.api import service_registry
 
 
 class _ReadOnlyDict(dict):
-    """一个只读的字典封装，用于保护 aura.params。"""
-
     def __setitem__(self, key, value):
         raise TypeError("脚本参数 'aura.params' 是只读的。")
 
@@ -29,16 +25,11 @@ class _ReadOnlyDict(dict):
 
 
 class _ActionProxy:
-    """动态代理，使 aura.notifier_actions.some_action(...) 调用成为可能。"""
-
     def __init__(self, engine: 'ExecutionEngine'):
         self._engine = engine
 
     def __getattr__(self, name: str):
         def caller(**kwargs):
-            # 【确认】这里的 'name' 就是 action 的名称，
-            # ExecutionEngine 会用它从 ACTION_REGISTRY 找到 ActionDefinition
-            # 并处理其 service_dependencies。这里的逻辑是正确的。
             step_data = {'action': name, 'params': kwargs}
             return self._engine._dispatch_action(step_data, kwargs)
 
@@ -46,8 +37,6 @@ class _ActionProxy:
 
 
 class AuraApi:
-    """一个安全的、面向脚本的API对象，将被注入到Python脚本的执行环境中。"""
-
     def __init__(self, orchestrator: 'Orchestrator', engine: 'ExecutionEngine', params: dict):
         self._orchestrator = orchestrator
         self._engine = engine
@@ -65,30 +54,22 @@ class AuraApi:
 
 
 class Orchestrator:
-    """
-    负责单个方案包的运行时环境准备和任务执行。
-    它假设所有服务和Action在其实例化时已被Scheduler加载完毕。
-    """
-
     def __init__(self, base_dir: str, plan_name: str, pause_event: threading.Event):
         self.base_dir = base_dir
         self.plan_name = plan_name
         self.plans_dir = Path(base_dir) / 'plans'
         self.current_plan_path = self.plans_dir / self.plan_name
         self.pause_event = pause_event
-
         self.engine = None
         self.context = None
         self.world_map = None
         self.persistent_context = None
         self.config = None
-
         self.tasks_dir = self.current_plan_path / "tasks"
         self.task_definitions: Dict[str, Any] = {}
         self._load_all_task_definitions()
 
     def _load_all_task_definitions(self):
-        """递归加载tasks目录下所有的 .yaml 文件。"""
         if not self.tasks_dir.is_dir():
             logger.warning(f"在方案 '{self.plan_name}' 中未找到 'tasks' 目录。")
             return
@@ -106,17 +87,18 @@ class Orchestrator:
         logger.debug(f"[{self.plan_name}] 任务加载完毕，共找到 {len(self.task_definitions)} 个任务。")
 
     def setup_and_run(self, task_name: str):
-        """为单个任务的运行准备好所有环境（上下文、引擎等），然后执行它。"""
         log_directory = os.path.join(self.current_plan_path, 'logs')
         logger.setup(log_dir=log_directory, task_name=task_name)
-        logger.info(f"Aura框架启动，总共注册了 {len(ACTION_REGISTRY)} 个行为。")
+
+        # 【核心修正】日志信息不再需要从这里访问 ACTION_REGISTRY
+        # logger.info(f"Aura框架启动，总共注册了 {len(ACTION_REGISTRY)} 个行为。")
 
         self._load_config()
         if not self.config: return
-
         self._initialize_context()
 
-        self.engine = ExecutionEngine(context=self.context, action_registry=ACTION_REGISTRY,
+        # 【【【核心修正：创建Engine时不再传递action_registry】】】
+        self.engine = ExecutionEngine(context=self.context,
                                       pause_event=self.pause_event, orchestrator=self)
 
         self.world_map = self.load_world_map()
@@ -135,8 +117,8 @@ class Orchestrator:
         logger.info(f"--- 前置状态满足，开始执行主任务: {task_name} ---")
         self.engine.run(task_data, task_name)
 
+    # ... (Orchestrator类的所有其他代码保持不变) ...
     def _load_config(self):
-        """加载方案的 config.yaml 文件。"""
         if self.config: return
         config_path = os.path.join(self.current_plan_path, 'config.yaml')
         try:
@@ -146,39 +128,21 @@ class Orchestrator:
             logger.critical(f"在方案 '{self.plan_name}' 中找不到 config.yaml，任务中止。")
             self.config = None
 
-
-
     def _initialize_context(self):
-        """
-        【最终架构版】创建并填充运行时上下文。
-        """
         self.context = Context()
-
-        # 1. 初始化并注入长期上下文 (这部分不变)
         context_path = self.current_plan_path / 'persistent_context.json'
         self.persistent_context = PersistentContext(str(context_path))
         for key, value in self.persistent_context.get_all_data().items():
             self.context.set(key, value)
         self.context.set('persistent_context', self.persistent_context)
-
-        # 2. 【核心修复】设置活动配置，并注入到上下文中
         try:
             config_service = service_registry.get_service_instance('config')
-
-            # a. 【关键】在执行任何操作前，先告诉ConfigService当前是哪个方案包在运行
             config_service.set_active_plan(self.plan_name)
-
-            # b. 从服务中获取当前活动的配置字典
             plan_config_dict = config_service.active_plan_config
-
-            # c. 将这个正确的配置字典注入上下文
             self.context.set('config', plan_config_dict)
-
         except Exception as e:
             logger.error(f"设置活动配置或获取方案配置失败: {e}", exc_info=True)
             self.context.set('config', {})
-
-        # 3. 注入其他必要的工具和变量 (这部分不变)
         self.context.set('log', logger)
         debug_dir = self.current_plan_path / 'debug_screenshots'
         debug_dir.mkdir(parents=True, exist_ok=True)
@@ -186,6 +150,8 @@ class Orchestrator:
         self.context.set('AuraApi', AuraApi)
 
     def get_available_actions(self) -> dict:
+        # 【核心修正】直接从全局单例获取
+        from packages.aura_core.api import ACTION_REGISTRY
         action_details = {}
         for name, action_def in ACTION_REGISTRY.items():
             try:
@@ -195,6 +161,8 @@ class Orchestrator:
         return action_details
 
     def perform_condition_check(self, condition_data: dict) -> bool:
+        # 【核心修正】直接从全局单例获取
+        from packages.aura_core.api import ACTION_REGISTRY
         action_name = condition_data.get('action')
         if not action_name:
             logger.warning(f"[中断检查] 条件定义缺少 'action' 字段: {condition_data}")
@@ -208,27 +176,18 @@ class Orchestrator:
             return False
         try:
             if not self.engine:
-                # 【补充】在执行检查前，确保engine已初始化
                 self._initialize_context()
-                self.engine = ExecutionEngine(context=self.context, action_registry=ACTION_REGISTRY, orchestrator=self)
+                # 【核心修正】不再传递action_registry
+                self.engine = ExecutionEngine(context=self.context, orchestrator=self)
 
-            # 【确认】这里的注入逻辑在 ExecutionEngine 内部，是正确的。
-            # 我们需要确保 ExecutionEngine 的注入器会调用 service_registry.get_service_instance()
+            # 【核心修正】不再需要手动注入服务，engine内部会处理
             params = self.engine._render_params(condition_data.get('params', {}))
-
-            # 假设 ExecutionEngine 有一个方法来执行注入
-            # 这里我们假设它在内部处理了依赖注入
-            injected_params = self.engine._inject_services_for_action(action_name)
-            injected_params.update(params)
-
-            result = action_def.func(**injected_params)
+            result = self.engine.injector.execute_action(action_name, params)
             return bool(result)
         except Exception as e:
             logger.error(f"[中断检查] 执行 '{action_name}' 时出错: {e}", exc_info=True)
             return False
 
-    # --- 以下所有其他方法保持不变 ---
-    # ... (从你的原文件中复制 _handle_state_transition() 到文件末尾的所有代码) ...
     def _handle_state_transition(self, required_state: str):
         logger.info(f"任务需要前置状态: '{required_state}'")
         current_state = self.determine_current_state()
@@ -400,7 +359,8 @@ class Orchestrator:
         if not self.config:
             raise ValueError("无法加载 config.yaml，无法继续检查。")
         self._initialize_context()
-        self.engine = ExecutionEngine(context=self.context, action_registry=ACTION_REGISTRY, orchestrator=self)
+        # 【核心修正】不再传递action_registry
+        self.engine = ExecutionEngine(context=self.context, orchestrator=self)
         self.context.set("__is_inspect_mode__", True)
         task_data = self.load_task_data(task_name)
         if not task_data:

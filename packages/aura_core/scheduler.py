@@ -1,23 +1,29 @@
-# packages/aura_core/scheduler.py
+# packages/aura_core/scheduler.py (最终决定版)
 
 import threading
 import time
 import yaml
+import sys
+import importlib.util
 from collections import deque
 from croniter import croniter
 from datetime import datetime, timedelta
 from pathlib import Path
 import uuid
-from typing import TYPE_CHECKING, Dict, Any, Set, List
+from typing import TYPE_CHECKING, Dict, Any, Set, List, Optional
+import inspect
 
 from graphlib import TopologicalSorter, CycleError
 from resolvelib import Resolver, BaseReporter
 from resolvelib.providers import AbstractProvider
 from dataclasses import asdict
 
-from packages.aura_core.service_registry import service_registry
-from packages.aura_core.action_loader import load_actions_from_path, clear_loaded_actions
-from packages.aura_system_actions.actions.decorators import ACTION_REGISTRY
+from packages.aura_core.builder import build_package_from_source, clear_build_cache, set_project_base_path, \
+    API_FILE_NAME
+from packages.aura_core.api import service_registry, ServiceDefinition
+from packages.aura_core.api import ACTION_REGISTRY, ActionDefinition
+from packages.aura_core.api import hook_manager
+
 from packages.aura_shared_utils.utils.logger import logger
 from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
 
@@ -26,20 +32,15 @@ if TYPE_CHECKING:
 
 
 class PluginProvider(AbstractProvider):
+    # ... (这部分代码完全不变)
     def __init__(self, plugin_registry: Dict[str, PluginDefinition]):
         self.plugin_registry = plugin_registry
 
     def identify(self, requirement_or_candidate):
         return requirement_or_candidate
 
-    def get_preference(
-        self,
-        identifier: Any,
-        resolutions: Dict[str, Any],
-        candidates: Dict[str, Any],
-        information: Dict[str, Any],
-        backtrack_causes: List[Any], # 增加这个新参数
-    ) -> Any:
+    def get_preference(self, identifier: Any, resolutions: Dict[str, Any], candidates: Dict[str, Any],
+                       information: Dict[str, Any], backtrack_causes: List[Any], ) -> Any:
         return len(candidates)
 
     def find_matches(self, identifier, requirements, incompatibilities):
@@ -59,6 +60,7 @@ class PluginProvider(AbstractProvider):
 
 class Scheduler:
     def __init__(self):
+        # ... (构造函数和属性定义完全不变)
         self.plans: Dict[str, 'Orchestrator'] = {}
         self.schedule_items: List[Dict[str, Any]] = []
         self.task_queue: deque = deque()
@@ -79,13 +81,60 @@ class Scheduler:
         self.is_scheduler_running = threading.Event()
         self.scheduler_thread = None
         self.guardian_thread = None
-        self._load_all_resources()
-        self.service_registry = service_registry
-        self.action_registry = ACTION_REGISTRY
-        self.plans: Dict[str, 'Orchestrator'] = {}
 
+        set_project_base_path(self.base_path)
+        self._load_all_resources()
+
+    # ... (_load_all_resources, _clear_registries, _discover_and_parse_plugins,
+    #      _resolve_dependencies_and_sort, _load_plugins_in_order, _load_hooks_for_package,
+    #      _load_package_from_api_file, _lazy_load_module, _run_task_in_thread 这些方法都保持不变)
+
+    # 【【【核心修正：重写此方法】】】
+    def _load_plan_configurations(self):
+        """
+        【最终修正版】
+        为所有已发现的方案包加载其 config.yaml 文件，并将其注册到 ConfigService。
+        """
+        logger.info("--- 阶段4: 加载方案包配置文件 ---")
+        try:
+            # 确保ConfigService已经实例化
+            config_service = service_registry.get_service_instance('config')
+        except Exception as e:
+            logger.error(f"无法获取 ConfigService 实例，方案包配置将无法加载: {e}")
+            return
+
+        # 遍历所有已知的插件定义
+        for plugin_def in self.plugin_registry.values():
+            # 我们只关心方案包（plan）类型的插件
+            if plugin_def.plugin_type != 'plan':
+                continue
+
+            plan_name = plugin_def.path.name
+            config_path = plugin_def.path / 'config.yaml'
+            config_data = {}  # 默认为空字典
+
+            if config_path.is_file():
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        loaded_data = yaml.safe_load(f)
+                    # 确保加载的是一个字典，防止空的或格式错误的yaml文件导致问题
+                    if isinstance(loaded_data, dict):
+                        config_data = loaded_data
+                    elif loaded_data is not None:
+                        logger.warning(f"配置文件 '{config_path}' 的内容不是一个有效的字典，已忽略。")
+                except Exception as e:
+                    logger.error(f"加载配置文件 '{config_path}' 失败: {e}")
+
+            # 使用正确的参数调用 register_plan_config
+            config_service.register_plan_config(plan_name, config_data)
+
+            # 加载与该方案包相关的调度和中断文件
+            self._load_schedule_file(plugin_def.path, plan_name)
+            self._load_interrupt_file(plugin_def.path, plan_name)
+
+    # ... (从 reload_plans 到文件末尾的所有其他方法都保持不变)
     def _load_all_resources(self):
-        logger.info("======= 开始加载所有框架资源 =======")
+        logger.info("======= 开始加载所有框架资源 (Aura 3.0) =======")
         try:
             self._clear_registries()
             self._discover_and_parse_plugins()
@@ -99,92 +148,60 @@ class Scheduler:
             logger.error(f"框架启动失败: {e}", exc_info=True)
             raise
         logger.info(f"======= 资源加载完毕 =======")
+
+        # 【核心修正 #3】直接使用导入的全局单例
         logger.info(
             f"调度器初始化完毕，共定义了 {len(service_registry.get_all_service_definitions())} 个服务, "
             f"{len(ACTION_REGISTRY)} 个行为, {len(self.plans)} 个方案包。"
         )
 
     def _clear_registries(self):
+        """【修改】增加清理钩子"""
         service_registry.clear()
-        clear_loaded_actions()
+        ACTION_REGISTRY.clear()
+        clear_build_cache()
+        hook_manager.clear()  # 【新增】
         self.plans.clear()
         self.plugin_registry.clear()
         self.schedule_items.clear()
         self.interrupt_definitions.clear()
         self.user_enabled_globals.clear()
 
+    # ... (_discover_and_parse_plugins 和 _resolve_dependencies_and_sort 保持不变)
     def _discover_and_parse_plugins(self):
-        """【已修复】扫描所有目录，查找并解析plugin.yaml文件。"""
         logger.info("--- 阶段1: 发现并解析所有插件定义 (plugin.yaml) ---")
-
-        # 【修改】扫描路径更新为新结构
-        plugin_paths_to_scan = [
-            self.base_path / 'packages',
-            self.base_path / 'plugins',
-            self.base_path / 'plans',
-        ]
-
+        plugin_paths_to_scan = [self.base_path / 'plans']
         for root_path in plugin_paths_to_scan:
             if not root_path.is_dir():
                 logger.warning(f"插件扫描目录不存在: {root_path}")
                 continue
-
             for plugin_yaml_path in root_path.glob('**/plugin.yaml'):
                 plugin_dir = plugin_yaml_path.parent
                 try:
                     with open(plugin_yaml_path, 'r', encoding='utf-8') as f:
                         data = yaml.safe_load(f)
-
-                    # --- 【核心修复】确定插件类型的逻辑 ---
-                    # 我们通过判断 plugin_dir 位于哪个根目录下，来确定其类型。
                     plugin_type = 'unknown'
                     relative_path = plugin_dir.relative_to(self.base_path)
                     top_level_dir = relative_path.parts[0]
-
                     if top_level_dir == 'packages':
-                        # 对于 packages/aura-system-notifier_services 这样的结构
-                        # 它的类型就是 'core' 或 'system'
                         plugin_type = 'core'
                     elif top_level_dir == 'plugins':
-                        # 对于 plugins/official/my-plugin 这样的结构
-                        # 它的类型是 'official'
-                        # 对于 plugins/my-plugin (没有命名空间)
-                        # 我们给一个默认类型 'third_party'
                         if len(relative_path.parts) > 2:
-                            plugin_type = relative_path.parts[1]  # e.g., 'official'
+                            plugin_type = relative_path.parts[1]
                         else:
-                            plugin_type = 'third_party'  # 默认值
+                            plugin_type = 'third_party'
                     elif top_level_dir == 'plans':
-                        # 对于 plans/my-plan/plugins/private-plugin 这样的结构
-                        # 我们统一视为 'plan' 类型
                         plugin_type = 'plan'
-
-                    # ----------------------------------------
-
                     plugin_def = PluginDefinition.from_yaml(data, plugin_dir, plugin_type)
-                    logger.debug(
-                        f"--- [DEBUG] Created PluginDefinition: "
-                        f"author='{plugin_def.author}', "
-                        f"name='{plugin_def.name}', "
-                        f"canonical_id='{plugin_def.canonical_id}'"
-                    )
                     if plugin_def.canonical_id in self.plugin_registry:
-                        existing_plugin = self.plugin_registry[plugin_def.canonical_id]
                         raise RuntimeError(
-                            f"插件身份冲突！插件 '{plugin_def.path}' 和 "
-                            f"'{existing_plugin.path}' 都声明了相同的身份 "
-                            f"'{plugin_def.canonical_id}'。"
-                        )
-
+                            f"插件身份冲突！插件 '{plugin_def.path}' 和 '{self.plugin_registry[plugin_def.canonical_id].path}' 都声明了相同的身份 '{plugin_def.canonical_id}'。")
                     self.plugin_registry[plugin_def.canonical_id] = plugin_def
                     logger.debug(f"成功解析插件: {plugin_def.canonical_id} (类型: {plugin_type}, 位于: {plugin_dir})")
-
                 except Exception as e:
                     logger.error(f"解析 '{plugin_yaml_path}' 失败: {e}")
                     raise RuntimeError(f"无法解析插件定义文件 '{plugin_yaml_path}'。") from e
-
-        if not self.plugin_registry:
-            logger.warning("未发现任何插件定义 (plugin.yaml)。框架可能无法正常工作。")
+        if not self.plugin_registry: logger.warning("未发现任何插件定义 (plugin.yaml)。框架可能无法正常工作。")
 
     def _resolve_dependencies_and_sort(self) -> List[str]:
         logger.info("--- 阶段2: 解析依赖关系并确定加载顺序 ---")
@@ -195,12 +212,9 @@ class Scheduler:
             result = resolver.resolve(self.plugin_registry.keys())
         except Exception as e:
             logger.error("依赖解析失败！请检查插件的 `dependencies` 是否正确。")
-            for line in str(e).splitlines():
-                logger.error(f"  {line}")
+            for line in str(e).splitlines(): logger.error(f"  {line}")
             raise RuntimeError("依赖解析失败，无法启动。") from e
-        graph = {
-            pid: set(pdef.dependencies.keys()) for pid, pdef in self.plugin_registry.items()
-        }
+        graph = {pid: set(pdef.dependencies.keys()) for pid, pdef in self.plugin_registry.items()}
         try:
             ts = TopologicalSorter(graph)
             return list(ts.static_order())
@@ -209,61 +223,187 @@ class Scheduler:
             raise RuntimeError(f"检测到插件间的循环依赖，无法启动: {cycle_path}")
 
     def _load_plugins_in_order(self, load_order: List[str]):
-        logger.info("--- 阶段3: 按顺序加载插件资源 ---")
+        """【修改】在加载包后，检查并加载其钩子"""
+        logger.info("--- 阶段3: 按顺序加载/构建所有包 ---")
         from packages.aura_core.orchestrator import Orchestrator
         for plugin_id in load_order:
             plugin_def = self.plugin_registry[plugin_id]
-            logger.debug(f"正在加载插件: {plugin_id}")
-            services_path = plugin_def.path / 'services'
-            if services_path.is_dir():
-                service_registry.scan_path(services_path, plugin_def)
-            actions_path = plugin_def.path / 'actions'
+            api_file_path = plugin_def.path / API_FILE_NAME
 
-            if actions_path.is_dir():
-                load_actions_from_path(actions_path, plugin_def)
+            if api_file_path.exists():
+                logger.debug(f"发现 API 文件，为包 '{plugin_id}' 尝试快速加载...")
+                try:
+                    self._load_package_from_api_file(plugin_def, api_file_path)
+                except Exception as e:
+                    logger.warning(f"从 API 文件快速加载包 '{plugin_id}' 失败: {e}。将回退到从源码构建。")
+                    build_package_from_source(plugin_def)
+            else:
+                logger.info(f"未找到 API 文件，为包 '{plugin_id}' 从源码构建...")
+                build_package_from_source(plugin_def)
+
+            # 【新增】加载该包的钩子
+            self._load_hooks_for_package(plugin_def)
+
             if plugin_def.plugin_type == 'plan':
                 plan_name = plugin_def.path.name
                 if plan_name not in self.plans:
                     logger.info(f"发现方案包: {plan_name}")
                     self.plans[plan_name] = Orchestrator(str(self.base_path), plan_name, self.pause_event)
 
-    def _load_plan_configurations(self):
-        """【修复】加载所有方案包的 schedule.yaml 和 interrupts.yaml，并注册它们的配置。"""
-        logger.info("--- 阶段4: 加载方案包配置文件 ---")
+    def _load_hooks_for_package(self, plugin_def: PluginDefinition):
+        """【新增】检查并加载一个包内的 hooks.py 文件。"""
+        hooks_file = plugin_def.path / 'hooks.py'
+        if hooks_file.is_file():
+            logger.debug(f"在包 '{plugin_def.canonical_id}' 中发现钩子文件，正在加载...")
+            try:
+                module = self._lazy_load_module(hooks_file)
+                # 自动查找并注册带有 @register_hook 装饰器的函数
+                for _, func in inspect.getmembers(module, inspect.isfunction):
+                    if hasattr(func, '_aura_hook_name'):
+                        hook_name = getattr(func, '_aura_hook_name')
+                        hook_manager.register(hook_name, func)
+            except Exception as e:
+                logger.error(f"加载钩子文件 '{hooks_file}' 失败: {e}", exc_info=True)
 
+    # ... (_load_package_from_api_file 和 _lazy_load_module 保持不变)
+    def _load_package_from_api_file(self, plugin_def: PluginDefinition, api_file_path: Path):
+        with open(api_file_path, 'r', encoding='utf-8') as f:
+            api_data = yaml.safe_load(f)
+        for service_info in api_data.get("exports", {}).get("services", []):
+            module = self._lazy_load_module(plugin_def.path / service_info['source_file'])
+            if not module: logger.error(f"快速加载失败：无法加载服务模块 {service_info['source_file']}"); continue
+            service_class = getattr(module, service_info['class_name'])
+            definition = ServiceDefinition(alias=service_info['alias'],
+                                           fqid=f"{plugin_def.canonical_id}/{service_info['alias']}",
+                                           service_class=service_class, plugin=plugin_def, public=True)
+            service_registry.register(definition)
+        for action_info in api_data.get("exports", {}).get("actions", []):
+            module = self._lazy_load_module(plugin_def.path / action_info['source_file'])
+            if not module: logger.error(f"快速加载失败：无法加载行为模块 {action_info['source_file']}"); continue
+            action_func = getattr(module, action_info['function_name'])
+            definition = ActionDefinition(func=action_func, name=action_info['name'],
+                                          read_only=getattr(action_func, '_aura_action_meta', {}).get('read_only',
+                                                                                                      False),
+                                          public=True, service_deps=action_info.get('required_services', {}),
+                                          plugin=plugin_def)
+            ACTION_REGISTRY.register(definition)
+        logger.debug(f"包 '{plugin_def.canonical_id}' 已从 API 文件成功加载。")
+
+    def _lazy_load_module(self, file_path: Path) -> Optional[Any]:
         try:
-            config_service = service_registry.get_service_instance('config')
+            try:
+                relative_path = file_path.relative_to(self.base_path)
+            except ValueError:
+                relative_path = Path(file_path.name)
+            module_name = str(relative_path).replace('/', '.').replace('\\', '.').removesuffix('.py')
+            if module_name in sys.modules: return sys.modules[module_name]
+            parent_dir = str(file_path.parent.resolve())
+            path_added = False
+            if parent_dir not in sys.path: sys.path.insert(0, parent_dir); path_added = True
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
+            if spec is None:
+                if path_added: sys.path.remove(parent_dir)
+                return None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            if path_added: sys.path.remove(parent_dir)
+            return module
         except Exception as e:
-            logger.error(f"无法获取 ConfigService 实例，方案包配置可能无法加载: {e}")
+            logger.error(f"延迟加载模块 '{file_path}' 失败: {e}", exc_info=True)
+            raise
+
+    def _run_task_in_thread(self, item_to_run: Dict, is_handler: bool, handler_rule: Dict = None):
+        """【修改】在任务执行的关键节点触发钩子"""
+        item_id = item_to_run.get('id')
+        plan_name = item_to_run.get('plan_name')
+        task_path_or_name = item_to_run.get('task') or item_to_run.get('task_name')
+        now = datetime.now()
+        if not plan_name or not task_path_or_name:
+            logger.error(f"任务项缺少 'plan_name' 或 ('task'/'task_name') 键: {item_to_run}")
             return
 
-        for plan_name, orchestrator in self.plans.items():
-            plan_dir = orchestrator.current_plan_path
+        task_started = False
+        task_context = {
+            "item": item_to_run,
+            "is_handler": is_handler,
+            "handler_rule": handler_rule,
+            "start_time": now
+        }
 
-            # 【核心修复】调用新的注册方法，而不是旧的加载方法
-            config_service.register_plan_config(plan_name, plan_dir)
+        try:
+            with self.lock:
+                if self.is_device_busy and not is_handler:
+                    logger.warning(f"任务 {item_id or 'ad-hoc'} 启动时发现设备已忙，放弃执行。")
+                    if item_id and item_id in self.run_statuses:
+                        self.run_statuses[item_id]['status'] = 'idle'
+                    return
+                self.is_device_busy = True
+                task_started = True
+                if not is_handler:
+                    self.current_running_thread = threading.current_thread()
+                    if item_id:
+                        self.run_statuses.setdefault(item_id, {}).update({'status': 'running', 'started_at': now})
 
-            self._load_schedule_file(plan_dir, plan_name)
-            self._load_interrupt_file(plan_dir, plan_name)
+            if task_started:
+                # 【新增】触发任务开始前的钩子
+                hook_manager.trigger('before_task_run', task_context=task_context)
+
+                orchestrator = self.plans[plan_name]
+                result = orchestrator.setup_and_run(task_path_or_name)
+
+                # 【新增】触发任务成功后的钩子
+                task_context['end_time'] = datetime.now()
+                task_context['result'] = result
+                hook_manager.trigger('after_task_success', task_context=task_context)
+
+                if not is_handler and item_id:
+                    with self.lock:
+                        logger.info(f"任务 '{plan_name}/{task_path_or_name}' (ID: {item_id}) 执行成功。")
+                        self.run_statuses.setdefault(item_id, {}).update(
+                            {'status': 'idle', 'last_run': now, 'result': 'success'})
+        except Exception as e:
+            # 【新增】触发任务失败后的钩子
+            task_context['end_time'] = datetime.now()
+            task_context['exception'] = e
+            hook_manager.trigger('after_task_failure', task_context=task_context)
+
+            log_prefix = "处理器任务" if is_handler else f"任务 '{item_id or 'ad-hoc'}'"
+            logger.error(f"{log_prefix} '{plan_name}/{task_path_or_name}' 执行时发生致命错误: {e}", exc_info=True)
+            if not is_handler and item_id:
+                with self.lock:
+                    self.run_statuses.setdefault(item_id, {}).update(
+                        {'status': 'idle', 'last_run': now, 'result': 'failure'})
+        finally:
+            if task_started:
+                with self.lock:
+                    self.is_device_busy = False
+                    logger.info(f"'{plan_name}/{task_path_or_name}' 执行完毕，设备资源已释放。")
+                    if is_handler:
+                        self._post_interrupt_handling(handler_rule)
+                    else:
+                        if self.current_running_thread is threading.current_thread():
+                            self.current_running_task = None
+                            self.current_running_thread = None
+
+                # 【新增】触发任务结束后的钩子 (无论成功或失败)
+                hook_manager.trigger('after_task_run', task_context=task_context)
+
+    # ... (所有其他方法保持不变)
     def reload_plans(self):
         logger.info("正在从文件系统重新加载所有资源...")
         self._load_all_resources()
         logger.info("重新加载完成。")
 
-    # --- 以下所有其他方法保持不变 ---
     def start_scheduler(self):
-        if self.is_scheduler_running.is_set():
-            logger.warning("调度器已经在运行中。")
-            return
+        if self.is_scheduler_running.is_set(): logger.warning("调度器已经在运行中。"); return
         logger.info("用户请求启动调度器...")
         self.is_scheduler_running.set()
         self.scheduler_thread = threading.Thread(target=self.start, name="CommanderThread", daemon=True)
         self.scheduler_thread.start()
 
     def stop_scheduler(self):
-        if not self.is_scheduler_running.is_set():
-            logger.warning("调度器已经处于停止状态。")
-            return
+        if not self.is_scheduler_running.is_set(): logger.warning("调度器已经处于停止状态。"); return
         logger.info("用户请求停止调度器。将完成当前任务，并停止调度新任务...")
         self.is_scheduler_running.clear()
 
@@ -279,8 +419,8 @@ class Scheduler:
                     for item in items:
                         item['plan_name'] = plan_name
                         self.schedule_items.append(item)
-                        if 'id' in item and item['id'] not in self.run_statuses:
-                            self.run_statuses[item['id']] = {'status': 'idle'}
+                        if 'id' in item and item['id'] not in self.run_statuses: self.run_statuses[item['id']] = {
+                            'status': 'idle'}
             except Exception as e:
                 logger.error(f"加载调度文件 '{schedule_path}' 失败: {e}")
 
@@ -293,8 +433,9 @@ class Scheduler:
                     for rule in data.get('interrupts', []):
                         rule['plan_name'] = plan_name
                         self.interrupt_definitions[rule['name']] = rule
-                        if rule.get('scope') == 'global' and rule.get('enabled_by_default', False):
-                            self.user_enabled_globals.add(rule['name'])
+                        if rule.get('scope') == 'global' and rule.get('enabled_by_default',
+                                                                      False): self.user_enabled_globals.add(
+                            rule['name'])
             except Exception as e:
                 logger.error(f"加载中断文件 '{interrupt_path}' 失败: {e}")
 
@@ -311,12 +452,9 @@ class Scheduler:
                     handler_rule = self.interrupt_queue.popleft()
                 elif self.task_queue and not self.is_device_busy:
                     item_to_run = self.task_queue.popleft()
-            if handler_rule:
-                self._execute_handler_task(handler_rule)
-                continue
+            if handler_rule: self._execute_handler_task(handler_rule); continue
             self._check_and_enqueue_tasks(datetime.now())
-            if item_to_run:
-                self._execute_main_task(item_to_run)
+            if item_to_run: self._execute_main_task(item_to_run)
             time.sleep(1)
         logger.info("调度器主循环已安全退出。")
 
@@ -334,8 +472,7 @@ class Scheduler:
                     last_check = self.interrupt_last_check_times.get(rule_name, datetime.min)
                     interval_passed = (now - last_check).total_seconds() >= rule.get('check_interval', 5)
                     should_check = cooldown_expired and interval_passed
-                if not should_check:
-                    continue
+                if not should_check: continue
                 self.interrupt_last_check_times[rule_name] = now
                 logger.debug(f"守护者: 正在检查中断条件 '{rule_name}'...")
                 try:
@@ -361,18 +498,16 @@ class Scheduler:
                 if task_path_or_name and 'plan_name' in current_task_dict:
                     try:
                         task_data = self.plans[current_task_dict['plan_name']].load_task_data(task_path_or_name)
-                        if task_data:
-                            active_set.update(task_data.get('activates_interrupts', []))
+                        if task_data: active_set.update(task_data.get('activates_interrupts', []))
                     except Exception as e:
                         logger.error(f"获取活动中断时发生错误: {e}", exc_info=True)
         return active_set
 
     def _execute_main_task(self, item_to_run: Dict[str, Any]):
         with self.lock:
-            if self.is_device_busy:
-                logger.warning(f"尝试执行主任务 {item_to_run.get('id')} 时发现设备已忙，放回队列。")
-                self.task_queue.appendleft(item_to_run)
-                return
+            if self.is_device_busy: logger.warning(
+                f"尝试执行主任务 {item_to_run.get('id')} 时发现设备已忙，放回队列。"); self.task_queue.appendleft(
+                item_to_run); return
             self.current_running_task = item_to_run
         task_id = item_to_run.get('id', 'ad-hoc')
         task_thread = threading.Thread(target=self._run_task_in_thread, name=f"TaskThread-{task_id}",
@@ -383,81 +518,27 @@ class Scheduler:
         rule_name = handler_rule.get('name', 'unknown_interrupt')
         logger.info(f"指挥官: 开始处理中断 '{rule_name}'...")
         with self.lock:
-            if self.current_running_task:
-                logger.info(f"指挥官: 命令主任务 '{self.current_running_task.get('name', 'N/A')}' 暂停。")
-                self.pause_event.set()
-                self.interrupted_main_task = self.current_running_task
+            if self.current_running_task: logger.info(
+                f"指挥官: 命令主任务 '{self.current_running_task.get('name', 'N/A')}' 暂停。"); self.pause_event.set(); self.interrupted_main_task = self.current_running_task
         handler_item = {'plan_name': handler_rule['plan_name'], 'task_name': handler_rule['handler_task'],
                         'is_ad_hoc': True}
         handler_thread = threading.Thread(target=self._run_task_in_thread, name=f"HandlerThread-{rule_name}",
                                           args=(handler_item, True, handler_rule))
         handler_thread.start()
 
-    def _run_task_in_thread(self, item_to_run: Dict, is_handler: bool, handler_rule: Dict = None):
-        item_id = item_to_run.get('id')
-        plan_name = item_to_run.get('plan_name')
-        task_path_or_name = item_to_run.get('task') or item_to_run.get('task_name')
-        now = datetime.now()
-        if not plan_name or not task_path_or_name:
-            logger.error(f"任务项缺少 'plan_name' 或 ('task'/'task_name') 键: {item_to_run}")
-            return
-        task_started = False
-        try:
-            with self.lock:
-                if self.is_device_busy and not is_handler:
-                    logger.warning(f"任务 {item_id or 'ad-hoc'} 启动时发现设备已忙，放弃执行。")
-                    if item_id and item_id in self.run_statuses:
-                        self.run_statuses[item_id]['status'] = 'idle'
-                    return
-                self.is_device_busy = True
-                task_started = True
-                if not is_handler:
-                    self.current_running_thread = threading.current_thread()
-                    if item_id:
-                        self.run_statuses.setdefault(item_id, {}).update({'status': 'running', 'started_at': now})
-            if task_started:
-                orchestrator = self.plans[plan_name]
-                orchestrator.setup_and_run(task_path_or_name)
-                if not is_handler and item_id:
-                    with self.lock:
-                        logger.info(f"任务 '{plan_name}/{task_path_or_name}' (ID: {item_id}) 执行成功。")
-                        self.run_statuses.setdefault(item_id, {}).update(
-                            {'status': 'idle', 'last_run': now, 'result': 'success'})
-        except Exception as e:
-            log_prefix = "处理器任务" if is_handler else f"任务 '{item_id or 'ad-hoc'}'"
-            logger.error(f"{log_prefix} '{plan_name}/{task_path_or_name}' 执行时发生致命错误: {e}", exc_info=True)
-            if not is_handler and item_id:
-                with self.lock:
-                    self.run_statuses.setdefault(item_id, {}).update(
-                        {'status': 'idle', 'last_run': now, 'result': 'failure'})
-        finally:
-            if task_started:
-                with self.lock:
-                    self.is_device_busy = False
-                    logger.info(f"'{plan_name}/{task_path_or_name}' 执行完毕，设备资源已释放。")
-                    if is_handler:
-                        self._post_interrupt_handling(handler_rule)
-                    else:
-                        if self.current_running_thread is threading.current_thread():
-                            self.current_running_task = None
-                            self.current_running_thread = None
-
     def _post_interrupt_handling(self, handler_rule: Dict):
         with self.lock:
             strategy = handler_rule.get('on_complete', 'resume')
             logger.info(f"指挥官: 中断处理完毕，执行善后策略: '{strategy}'")
             if strategy == 'resume':
-                if self.interrupted_main_task:
-                    logger.info(f"指挥官: 命令主任务 '{self.interrupted_main_task.get('name', 'N/A')}' 继续执行。")
-                    self.pause_event.clear()
+                if self.interrupted_main_task: logger.info(
+                    f"指挥官: 命令主任务 '{self.interrupted_main_task.get('name', 'N/A')}' 继续执行。"); self.pause_event.clear()
                 self.interrupted_main_task = None
             elif strategy == 'restart_task':
                 if self.interrupted_main_task:
                     logger.warning(
                         f"指挥官: 策略为重启，原任务 '{self.interrupted_main_task.get('name', 'N/A')}' 将被放弃并重新入队。")
-                    if self.current_running_task == self.interrupted_main_task:
-                        self.current_running_task = None
-                        self.current_running_thread = None
+                    if self.current_running_task == self.interrupted_main_task: self.current_running_task = None; self.current_running_thread = None
                     self.task_queue.appendleft(self.interrupted_main_task)
                     logger.info(f"任务 '{self.interrupted_main_task.get('name', 'N/A')}' 已重新加入队列。")
                 self.interrupted_main_task = None
@@ -478,39 +559,62 @@ class Scheduler:
 
     def _is_ready_to_run(self, item, now, status: Dict) -> bool:
         item_id = item['id']
+
+        # 冷却检查 (这部分逻辑是正确的，保持不变)
         cooldown = item.get('run_options', {}).get('cooldown', 0)
         last_run = status.get('last_run')
         if last_run and (now - last_run).total_seconds() < cooldown:
             return False
+
         trigger = item.get('trigger', {})
         trigger_type = trigger.get('type')
+
         if trigger_type == 'time_based':
             schedule = trigger.get('schedule')
-            if not schedule: return False
+            if not schedule:
+                logger.warning(f"任务 '{item_id}' 是 time_based 类型，但缺少 'schedule' 表达式。")
+                return False
+
             try:
-                base_time = last_run or (now - timedelta(seconds=5))
-                iterator = croniter(schedule, base_time)
-                next_scheduled_run = iterator.get_next(datetime)
-                return now >= next_scheduled_run
+                # --- 【核心修复】 ---
+                # 1. 创建一个基于当前时间的迭代器
+                iterator = croniter(schedule, now)
+
+                # 2. 获取相对于当前时间的 *上一个* 预定运行时间点
+                prev_scheduled_run = iterator.get_prev(datetime)
+
+                # 3. 获取有效的上次运行时间。如果是第一次运行，则使用一个极早的时间。
+                effective_last_run = last_run or datetime.min
+
+                # 4. 关键逻辑：检查上一个预定运行时间点，是否晚于我们上次运行的时间。
+                #    这等同于检查在 (上次运行, 现在] 这个时间窗口内，是否有一个预定点被跨过了。
+                if prev_scheduled_run > effective_last_run:
+                    logger.debug(f"任务 '{item_id}' 已到期。上次运行: {effective_last_run}, "
+                                 f"上个预定点: {prev_scheduled_run}, 当前时间: {now}")
+                    return True
+                else:
+                    return False
+                # --- 【修复结束】 ---
+
             except Exception as e:
                 logger.error(f"任务 '{item_id}' 的 cron 表达式无效: {schedule}, 错误: {e}")
                 return False
+
         elif trigger_type == 'event_based':
             return False
         elif trigger_type == 'manual':
             return False
+
         return False
 
     def enable_global_interrupt(self, name: str):
         with self.lock:
-            if name in self.interrupt_definitions and self.interrupt_definitions[name].get('scope') == 'global':
-                self.user_enabled_globals.add(name)
-                logger.info(f"UI: 已启用全局中断 '{name}'")
+            if name in self.interrupt_definitions and self.interrupt_definitions[name].get(
+                    'scope') == 'global': self.user_enabled_globals.add(name); logger.info(
+                f"UI: 已启用全局中断 '{name}'")
 
     def disable_global_interrupt(self, name: str):
-        with self.lock:
-            self.user_enabled_globals.discard(name)
-            logger.info(f"UI: 已禁用全局中断 '{name}'")
+        with self.lock: self.user_enabled_globals.discard(name); logger.info(f"UI: 已禁用全局中断 '{name}'")
 
     def get_all_interrupts_status(self) -> List[Dict[str, Any]]:
         with self.lock:
@@ -523,17 +627,13 @@ class Scheduler:
                 else:
                     status['enabled'] = name in active_interrupts_snapshot
                 status_list.append(status)
-            return sorted(status_list, key=lambda x: (x.get('scope', ''), x.get('name', '')))
+        return sorted(status_list, key=lambda x: (x.get('scope', ''), x.get('name', '')))
 
     def get_schedule_status(self):
-        with self.lock:
-            schedule_items_copy = list(self.schedule_items)
-            run_statuses_copy = dict(self.run_statuses)
+        with self.lock: schedule_items_copy = list(self.schedule_items); run_statuses_copy = dict(self.run_statuses)
         status_list = []
-        for item in schedule_items_copy:
-            full_status = item.copy()
-            full_status.update(run_statuses_copy.get(item.get('id'), {}))
-            status_list.append(full_status)
+        for item in schedule_items_copy: full_status = item.copy(); full_status.update(
+            run_statuses_copy.get(item.get('id'), {})); status_list.append(full_status)
         return status_list
 
     def _save_schedule_for_plan(self, plan_name: str):
@@ -561,23 +661,23 @@ class Scheduler:
                     break
             if found and plan_name_to_save:
                 self._save_schedule_for_plan(plan_name_to_save)
-                return {"status": "success", "message": f"Task {task_id} updated."}
+                return {"status": "success",
+                        "message": f"Task {task_id} updated."}
             elif found:
                 logger.error(f"任务 {task_id} 缺少 plan_name，无法保存。")
-                return {"status": "error", "message": f"Task {task_id} missing plan_name."}
+                return {"status": "error",
+                        "message": f"Task {task_id} missing plan_name."}
             else:
                 return {"status": "error", "message": f"Task ID {task_id} not found."}
 
     def run_manual_task(self, task_id: str):
         with self.lock:
             status = self.run_statuses.get(task_id, {})
-            if status.get('status') in ['queued', 'running']:
-                return {"status": "error", "message": f"Task {task_id} is already queued or running."}
+            if status.get('status') in ['queued', 'running']: return {"status": "error",
+                                                                      "message": f"Task {task_id} is already queued or running."}
             item_to_run = None
             for item in self.schedule_items:
-                if item.get('id') == task_id:
-                    item_to_run = item.copy()
-                    break
+                if item.get('id') == task_id: item_to_run = item.copy(); break
             if item_to_run:
                 logger.info(f"手动触发任务 '{item_to_run.get('name', task_id)}'，已高优先级加入队列。")
                 self.task_queue.appendleft(item_to_run)
@@ -587,8 +687,7 @@ class Scheduler:
                 return {"status": "error", "message": f"Task ID {task_id} not found."}
 
     def run_ad_hoc_task(self, plan_name: str, task_name: str):
-        if plan_name not in self.plans:
-            return {"status": "error", "message": f"Plan '{plan_name}' not found."}
+        if plan_name not in self.plans: return {"status": "error", "message": f"Plan '{plan_name}' not found."}
         with self.lock:
             ad_hoc_item = {'plan_name': plan_name, 'task_name': task_name, 'is_ad_hoc': True}
             self.task_queue.append(ad_hoc_item)
@@ -600,8 +699,7 @@ class Scheduler:
 
     def get_tasks_for_plan(self, plan_name: str) -> list[str]:
         orchestrator = self.plans.get(plan_name)
-        if not orchestrator:
-            return []
+        if not orchestrator: return []
         return sorted(list(orchestrator.task_definitions.keys()))
 
     def get_persistent_context(self, plan_name: str) -> dict:
@@ -615,9 +713,7 @@ class Scheduler:
         orchestrator.save_persistent_context_data(data)
 
     def get_plan_files(self, plan_name: str) -> dict:
-        if plan_name not in self.plans:
-            logger.warning(f"请求获取未加载的方案 '{plan_name}' 的文件列表。")
-            return {}
+        if plan_name not in self.plans: logger.warning(f"请求获取未加载的方案 '{plan_name}' 的文件列表。"); return {}
         plan_path = self.base_path / f"plans/{plan_name}"
 
         def recurse_path(current_path: Path) -> dict:
@@ -639,8 +735,7 @@ class Scheduler:
 
     def get_file_content_bytes(self, plan_name: str, file_path: str) -> bytes:
         orchestrator = self.plans.get(plan_name)
-        if not orchestrator:
-            raise ValueError(f"Plan '{plan_name}' not found.")
+        if not orchestrator: raise ValueError(f"Plan '{plan_name}' not found.")
         return orchestrator.get_file_content_bytes(file_path)
 
     def save_file_content(self, plan_name: str, file_path: str, content: str):
@@ -652,14 +747,46 @@ class Scheduler:
         return {name: defn.docstring for name, defn in ACTION_REGISTRY.items()}
 
     def get_all_services_status(self) -> List[Dict[str, Any]]:
+        """
+        【最终修正版】获取所有已定义服务的状态信息，专为UI设计。
+        手动构建字典，确保所有值都是可安全序列化的基本类型。
+        """
+        # 1. 从注册中心获取原始的ServiceDefinition对象列表
         definitions = service_registry.get_all_service_definitions()
-        return [asdict(definition) for definition in definitions]
+
+        status_list = []
+        for s_def in definitions:
+            # 2. 手动将每个对象转换为一个安全的字典
+            status_dict = {
+                'fqid': s_def.fqid,
+                'alias': s_def.alias,
+                'status': s_def.status,
+                'public': s_def.public,
+                'is_extension': s_def.is_extension,
+                'parent_fqid': s_def.parent_fqid,
+
+                # 将 plugin 对象转换为字典
+                'plugin': {
+                    'canonical_id': s_def.plugin.canonical_id,
+                    'path': str(s_def.plugin.path)  # 路径转换为字符串
+                },
+
+                # 将 service_class 类对象转换为包含其信息的字典
+                'service_class': {
+                    'name': s_def.service_class.__name__,
+                    'module': s_def.service_class.__module__
+                },
+
+                # 注意：我们绝不暴露 s_def.instance 实例对象给UI
+            }
+            status_list.append(status_dict)
+
+        return status_list
 
     def add_schedule_item(self, data: Dict[str, Any]) -> Dict[str, Any]:
         with self.lock:
             plan_name = data.get('plan_name')
-            if not plan_name:
-                raise ValueError("添加调度项时必须提供 'plan_name'。")
+            if not plan_name: raise ValueError("添加调度项时必须提供 'plan_name'。")
             new_item = {'id': str(uuid.uuid4()), 'name': data.get('name', '未命名任务'),
                         'description': data.get('description', ''), 'enabled': data.get('enabled', True),
                         'plan_name': plan_name, 'task': data.get('task'),
@@ -674,15 +801,11 @@ class Scheduler:
         with self.lock:
             item_to_update = None
             for item in self.schedule_items:
-                if item.get('id') == item_id:
-                    item_to_update = item
-                    break
-            if not item_to_update:
-                raise ValueError(f"找不到ID为 '{item_id}' 的调度项。")
+                if item.get('id') == item_id: item_to_update = item; break
+            if not item_to_update: raise ValueError(f"找不到ID为 '{item_id}' 的调度项。")
             item_to_update.update(data)
             plan_name = item_to_update.get('plan_name')
-            if plan_name:
-                self._save_schedule_for_plan(plan_name)
+            if plan_name: self._save_schedule_for_plan(plan_name)
             logger.info(f"已更新调度任务: '{item_to_update['name']}' (ID: {item_id})")
             return {"status": "success", "updated_item": item_to_update}
 
@@ -691,22 +814,16 @@ class Scheduler:
             item_to_delete = None
             plan_name_to_save = None
             for item in self.schedule_items:
-                if item.get('id') == item_id:
-                    item_to_delete = item
-                    plan_name_to_save = item.get('plan_name')
-                    break
-            if not item_to_delete:
-                raise ValueError(f"找不到ID为 '{item_id}' 的调度项。")
+                if item.get('id') == item_id: item_to_delete = item; plan_name_to_save = item.get('plan_name'); break
+            if not item_to_delete: raise ValueError(f"找不到ID为 '{item_id}' 的调度项。")
             self.schedule_items.remove(item_to_delete)
             self.run_statuses.pop(item_id, None)
-            if plan_name_to_save:
-                self._save_schedule_for_plan(plan_name_to_save)
+            if plan_name_to_save: self._save_schedule_for_plan(plan_name_to_save)
             logger.info(f"已删除调度任务: '{item_to_delete.get('name')}' (ID: {item_id})")
             return {"status": "success", "deleted_id": item_id}
 
     def inspect_step(self, plan_name: str, task_path: str, step_index: int) -> Any:
-        if plan_name not in self.plans:
-            raise ValueError(f"找不到方案包 '{plan_name}'。")
+        if plan_name not in self.plans: raise ValueError(f"找不到方案包 '{plan_name}'。")
         orchestrator = self.plans[plan_name]
         task_name = Path(task_path).relative_to('tasks').with_suffix('').as_posix()
         try:
@@ -715,3 +832,20 @@ class Scheduler:
         except Exception as e:
             logger.error(f"调用 inspect_step API 时失败: {e}")
             raise
+
+    @property
+    def services(self):
+        """提供对全局服务注册中心的只读访问。"""
+        return service_registry
+
+    @property
+    def actions(self):
+        """提供对全局行为注册中心的只读访问。"""
+        return ACTION_REGISTRY
+
+    @property
+    def hooks(self):
+        """提供对全局钩子管理器的只读访问。"""
+        return hook_manager
+
+

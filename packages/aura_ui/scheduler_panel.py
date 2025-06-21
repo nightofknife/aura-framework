@@ -1,4 +1,4 @@
-# src/ui/scheduler_panel.py
+# packages/aura_ui/scheduler_panel.py (最终修正版)
 
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
@@ -8,6 +8,7 @@ from packages.aura_shared_utils.utils.logger import logger
 
 
 class SchedulerPanel(ttk.Frame):
+    # ... 此类的代码完全不变，无需修改 ...
     def __init__(self, parent, scheduler, log_queue):
         super().__init__(parent)
         self.scheduler = scheduler
@@ -141,11 +142,6 @@ class SchedulerPanel(ttk.Frame):
 
 
 class TaskRunnerPanel(ttk.Frame):
-    """
-    【最终版】一个多功能的资源浏览器。
-    左侧显示方案包和任务，右侧显示所有已注册的行为（按命名空间分组）。
-    """
-
     def __init__(self, parent, scheduler):
         super().__init__(parent)
         self.scheduler = scheduler
@@ -153,40 +149,29 @@ class TaskRunnerPanel(ttk.Frame):
         self.reload_all_resources()
 
     def _create_widgets(self):
-        # 主窗格，左右分割
         main_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         main_pane.pack(fill=tk.BOTH, expand=True)
-
-        # --- 左侧：方案包和任务 ---
         left_frame = ttk.Frame(main_pane, padding=5)
         main_pane.add(left_frame, weight=1)
-
         ttk.Label(left_frame, text="方案包 / 任务").pack(anchor='w')
         self.task_tree = ttk.Treeview(left_frame, show="tree")
         self.task_tree.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
         self.task_tree.bind('<Double-1>', self.on_item_double_click)
-
-        # --- 右侧：行为列表 ---
         right_frame = ttk.Frame(main_pane, padding=5)
         main_pane.add(right_frame, weight=1)
-
         ttk.Label(right_frame, text="可用行为 (Actions)").pack(anchor='w')
         self.action_tree = ttk.Treeview(right_frame, columns=("Action Name",), show="headings")
         self.action_tree.heading("Action Name", text="行为名称")
         self.action_tree.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
-
-        # --- 底部工具栏 ---
         bottom_bar = ttk.Frame(self)
         bottom_bar.pack(fill=tk.X, pady=5, padx=5)
         ttk.Button(bottom_bar, text="重新加载所有资源", command=self.reload_all_resources).pack()
 
     def populate_all(self):
-        """刷新所有树状列表。"""
         self.populate_tasks()
         self.populate_actions()
 
     def populate_tasks(self):
-        """填充方案包和任务列表。"""
         self.task_tree.delete(*self.task_tree.get_children())
         try:
             plans = self.scheduler.get_all_plans()
@@ -202,7 +187,8 @@ class TaskRunnerPanel(ttk.Frame):
         """【最终的、正确的版本】按命名空间分组填充行为列表。"""
         self.action_tree.delete(*self.action_tree.get_children())
 
-        action_defs = self.scheduler.action_registry.get_all_action_definitions()
+        # 【【【核心修正：使用 self.scheduler.actions 属性访问】】】
+        action_defs = self.scheduler.actions.get_all_action_definitions()
 
         grouped_actions = defaultdict(list)
         for action_def in action_defs:
@@ -210,47 +196,32 @@ class TaskRunnerPanel(ttk.Frame):
             grouped_actions[namespace].append(action_def)
 
         for namespace, actions in sorted(grouped_actions.items()):
-            # 1. 插入父节点（命名空间），它的 values 只有一个元素
             ns_node = self.action_tree.insert('', 'end', values=(namespace,), open=True, tags=('namespace',))
-
             for action_def in sorted(actions, key=lambda a: a.name):
-                # 2. 插入子节点（行为），它的 values 也只有一个元素
-                #    【关键】第一个参数必须是父节点 ns_node
                 self.action_tree.insert(ns_node, 'end', values=(action_def.name,))
 
-        # 美化tag
         self.action_tree.tag_configure('namespace', background='#f0f0f0', font=("", 9, "bold"))
 
     def on_item_double_click(self, event):
-        """处理任务树中的双击事件以运行任务。"""
         item_id = self.task_tree.focus()
         item_tags = self.task_tree.item(item_id, "tags")
-
         if 'task' in item_tags:
             task_name = self.task_tree.item(item_id, "text")
             parent_id = self.task_tree.parent(item_id)
             plan_name = self.task_tree.item(parent_id, "text")
-
             if messagebox.askyesno("确认运行", f"确定要立即运行任务 '{task_name}' 吗？\n(来自方案包: {plan_name})"):
                 logger.info(f"用户从UI请求运行临时任务: {plan_name}/{task_name}")
                 self.scheduler.run_ad_hoc_task(plan_name, task_name)
-                # 假设主窗口的第一个标签页是调度器监控
                 try:
                     notebook = self.winfo_toplevel().winfo_children()[1]
                     notebook.select(0)
                 except Exception:
-                    pass  # 切换失败也无妨
-
+                    pass
 
     def reload_all_resources(self):
-        """
-        【新】先调用后端的重载方法，然后刷新UI。
-        """
         try:
             logger.info("UI请求重新加载所有后端资源...")
-            # 1. 调用 Scheduler 的核心重载方法
             self.scheduler.reload_plans()
-            # 2. 后端重载后，刷新UI面板
             self.populate_all()
             logger.info("UI资源列表已刷新。")
         except Exception as e:
