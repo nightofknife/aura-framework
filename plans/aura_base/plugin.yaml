@@ -1,0 +1,35 @@
+# aura_official_packages/aura_base/plugin.yaml
+
+# 'identity' 是强制性的，它定义了这个包的唯一“护照”。
+# 框架用它来解析依赖关系，并为服务/行为创建唯一的ID (FQID)。
+identity:
+  # 包的作者或组织。这部分会成为FQID的一部分。
+  author: "Aura-Project"  # 你可以改成你自己的名字或组织名
+
+  # 包的短名称。在作者的作用域内应该是唯一的。
+  name: "base"
+
+  # 包的版本，建议遵循语义化版本规范。
+  version: "1.0.0"
+
+# 'description' 提供了人类可读的包功能摘要。
+# 这对于未来的UI和命令行工具非常有用。
+description: "Provides the foundational services (like OCR, Vision, Controller) and atomic actions for the Aura framework. This package is essential for most automation tasks."
+
+# 'dependencies' 列出了这个包正常运行所需要的其他Aura包。
+# 因为这是“基础包”，它不应该依赖于任何其他功能性包。
+# 它只依赖于框架内核，而这是一种隐式依赖，不需要在这里声明。
+dependencies: {}
+
+# 'extends' 用于服务继承。如果这个包里的某个服务是扩展自另一个包的服务，
+# 你需要在这里声明。对于基础包，这里通常是空的。
+# 示例:
+#   - service: 'notification'
+#     from_plugin: 'some-community/notifications'
+extends: []
+
+# 'overrides' 用于完全替换另一个包中的服务。
+# 这是一个强大的功能，但使用时需要谨慎。基础包通常也不需要它。
+# 示例:
+#   - 'some-community/notifications/email'
+overrides: []
