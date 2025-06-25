@@ -132,7 +132,7 @@ class ServiceDefinition:
     alias: str
     fqid: str
     service_class: Type
-    plugin: PluginDefinition
+    plugin: Optional[PluginDefinition]
     public: bool
     instance: Any = None
     status: str = "defined"
@@ -187,6 +187,42 @@ class ServiceRegistry:
                 self._short_name_map[short_name] = definition.fqid
             self._fqid_map[definition.fqid] = definition
             logger.debug(f"已定义服务: '{definition.fqid}' (别名: '{short_name}', 公开: {definition.public})")
+
+    def register_instance(self, alias: str, instance: Any, fqid: Optional[str] = None, public: bool = False):
+        """
+        直接注册一个已经创建好的服务实例。
+        这主要用于框架核心服务的注册，如StateStore, EventBus等。
+
+        :param alias: 服务的短名称/别名。
+        :param instance: 已经创建好的服务实例。
+        :param fqid: (可选) 服务的完全限定ID。如果未提供，则默认为 'core/{alias}'。
+        :param public: (可选) 服务是否对UI等外部系统可见。
+        """
+        with self._lock:
+            target_fqid = fqid or f"core/{alias}"
+
+            if target_fqid in self._fqid_map:
+                logger.warning(f"服务实例 '{target_fqid}' 正在被覆盖注册。")
+
+            if alias in self._short_name_map and self._short_name_map[alias] != target_fqid:
+                existing_fqid = self._short_name_map[alias]
+                logger.warning(f"服务别名冲突！'{alias}' 已指向 '{existing_fqid}'。现在将其重新指向 '{target_fqid}'。")
+
+            # 创建一个简化的ServiceDefinition来描述这个实例
+            definition = ServiceDefinition(
+                alias=alias,
+                fqid=target_fqid,
+                service_class=type(instance),
+                plugin=None,  # 核心服务无插件来源
+                public=public,
+                instance=instance,
+                status="resolved"  # 状态直接设为已解析
+            )
+
+            self._fqid_map[target_fqid] = definition
+            self._short_name_map[alias] = target_fqid
+            self._instances[target_fqid] = instance
+            logger.info(f"核心服务实例 '{target_fqid}' 已通过别名 '{alias}' 直接注册。")
 
     def get_service_instance(self, service_id: str, resolution_chain: Optional[List[str]] = None) -> Any:
         with self._lock:

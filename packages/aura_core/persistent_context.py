@@ -1,4 +1,4 @@
-# src/core/persistent_context.py
+# packages/aura_core/persistent_context.py
 import json
 import os
 from typing import Any, Dict

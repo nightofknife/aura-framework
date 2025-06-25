@@ -26,6 +26,9 @@ from packages.aura_core.api import hook_manager
 
 from packages.aura_shared_utils.utils.logger import logger
 from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
+from packages.aura_core.state_store import StateStore
+from packages.aura_core.event_bus import EventBus
+from packages.aura_core.task_queue import TaskQueue
 
 if TYPE_CHECKING:
     from packages.aura_core.orchestrator import Orchestrator
@@ -60,7 +63,7 @@ class PluginProvider(AbstractProvider):
 
 class Scheduler:
     def __init__(self):
-        # ... (构造函数和属性定义完全不变)
+        # === 现有代码保持不变 ===
         self.plans: Dict[str, 'Orchestrator'] = {}
         self.schedule_items: List[Dict[str, Any]] = []
         self.task_queue: deque = deque()
@@ -82,42 +85,146 @@ class Scheduler:
         self.scheduler_thread = None
         self.guardian_thread = None
 
+        # === 新增：事件系统组件 ===
+
+
+        self.state_store = StateStore()
+        self.event_bus = EventBus()
+        self.event_task_queue = TaskQueue()  # 事件触发的任务队列
+        self.all_tasks_definitions: Dict[str, Any] = {}  # 全局任务定义字典
+        self.event_worker_threads: List[threading.Thread] = []  # 事件系统工作线程
+        self.num_event_workers = 2  # 事件系统工作线程数
+
         set_project_base_path(self.base_path)
+        self._register_core_services()  # 新增
         self._load_all_resources()
 
-    # ... (_load_all_resources, _clear_registries, _discover_and_parse_plugins,
-    #      _resolve_dependencies_and_sort, _load_plugins_in_order, _load_hooks_for_package,
-    #      _load_package_from_api_file, _lazy_load_module, _run_task_in_thread 这些方法都保持不变)
+    def _register_core_services(self):
+        """注册由Scheduler管理的全局核心服务"""
+        service_registry.register_instance('state_store', self.state_store)
+        service_registry.register_instance('event_bus', self.event_bus)
+        service_registry.register_instance('scheduler', self)
+        logger.debug("全局核心服务注册完毕。")
+
+    def _load_all_tasks_definitions(self):
+        """扫描并加载所有方案的所有任务定义"""
+        logger.info("--- 阶段4.5: 加载所有任务定义 ---")
+        self.all_tasks_definitions.clear()
+
+        plans_dir = self.base_path / 'plans'
+        if not plans_dir.is_dir():
+            return
+
+        for plan_path in plans_dir.iterdir():
+            if not plan_path.is_dir():
+                continue
+
+            plan_name = plan_path.name
+            tasks_dir = plan_path / "tasks"
+            if not tasks_dir.is_dir():
+                continue
+
+            for task_file_path in tasks_dir.rglob("*.yaml"):
+                try:
+                    relative_path = task_file_path.relative_to(tasks_dir)
+                    task_name_in_plan = relative_path.with_suffix('').as_posix()
+                    full_task_id = f"{plan_name}/{task_name_in_plan}"
+
+                    with open(task_file_path, 'r', encoding='utf-8') as f:
+                        task_data = yaml.safe_load(f)
+                        if task_data:
+                            self.all_tasks_definitions[full_task_id] = task_data
+                except Exception as e:
+                    logger.error(f"加载任务文件 '{task_file_path}' 失败: {e}")
+
+        logger.info(f"任务定义加载完毕，共找到 {len(self.all_tasks_definitions)} 个任务。")
+
+    def _subscribe_event_triggers(self):
+        """扫描所有任务，订阅事件触发器"""
+        logger.info("--- 阶段4.6: 订阅事件触发器 ---")
+        subscribed_count = 0
+
+        for task_id, task_data in self.all_tasks_definitions.items():
+            triggers = task_data.get('triggers')
+            if not isinstance(triggers, list):
+                continue
+
+            for trigger in triggers:
+                if not isinstance(trigger, dict) or 'event' not in trigger:
+                    continue
+
+                event_pattern = trigger['event']
+                from functools import partial
+                callback = partial(self._handle_event_triggered_task, task_id=task_id)
+                callback.__name__ = f"event_trigger_for_{task_id.replace('/', '_')}"
+
+                self.event_bus.subscribe(event_pattern, callback)
+                subscribed_count += 1
+                logger.debug(f"任务 '{task_id}' 订阅了事件模式 '{event_pattern}'")
+
+        logger.info(f"事件触发器订阅完成，共 {subscribed_count} 个订阅。")
+
+    def _handle_event_triggered_task(self, event, task_id: str):
+        """事件触发任务的回调"""
+        logger.info(f"事件 '{event.name}' 触发了任务 '{task_id}'")
+        from packages.aura_core.task_queue import Tasklet
+        tasklet = Tasklet(task_name=task_id, triggering_event=event)
+        self.event_task_queue.put(tasklet)
+
+    def _event_worker_loop(self, worker_id: int):
+        """事件系统工作线程循环"""
+        logger.info(f"[EventWorker-{worker_id}] 事件工作线程已启动")
+        while self.is_scheduler_running.is_set():
+            try:
+                import queue
+                tasklet = self.event_task_queue.get(block=True, timeout=1)
+
+                task_id = tasklet.task_name
+                plan_name = task_id.split('/')[0]
+                task_name = task_id[len(plan_name) + 1:]
+
+                logger.info(f"[EventWorker-{worker_id}] 执行事件触发的任务: '{task_id}'")
+
+                # 使用现有的Orchestrator执行任务
+                if plan_name in self.plans:
+                    orchestrator = self.plans[plan_name]
+                    orchestrator.execute_task(task_name, tasklet.triggering_event)
+                else:
+                    logger.error(f"找不到方案 '{plan_name}' 的Orchestrator")
+
+                self.event_task_queue.task_done()
+
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"[EventWorker-{worker_id}] 处理事件任务时出错: {e}", exc_info=True)
+
+        logger.info(f"[EventWorker-{worker_id}] 事件工作线程已停止")
 
     # 【【【核心修正：重写此方法】】】
     def _load_plan_configurations(self):
         """
-        【最终修正版】
-        为所有已发现的方案包加载其 config.yaml 文件，并将其注册到 ConfigService。
+        【修改版】加载方案包配置，同时加载任务定义和订阅事件触发器
         """
         logger.info("--- 阶段4: 加载方案包配置文件 ---")
         try:
-            # 确保ConfigService已经实例化
             config_service = service_registry.get_service_instance('config')
         except Exception as e:
             logger.error(f"无法获取 ConfigService 实例，方案包配置将无法加载: {e}")
             return
 
-        # 遍历所有已知的插件定义
         for plugin_def in self.plugin_registry.values():
-            # 我们只关心方案包（plan）类型的插件
             if plugin_def.plugin_type != 'plan':
                 continue
 
             plan_name = plugin_def.path.name
             config_path = plugin_def.path / 'config.yaml'
-            config_data = {}  # 默认为空字典
+            config_data = {}
 
             if config_path.is_file():
                 try:
                     with open(config_path, 'r', encoding='utf-8') as f:
                         loaded_data = yaml.safe_load(f)
-                    # 确保加载的是一个字典，防止空的或格式错误的yaml文件导致问题
                     if isinstance(loaded_data, dict):
                         config_data = loaded_data
                     elif loaded_data is not None:
@@ -125,13 +232,13 @@ class Scheduler:
                 except Exception as e:
                     logger.error(f"加载配置文件 '{config_path}' 失败: {e}")
 
-            # 使用正确的参数调用 register_plan_config
             config_service.register_plan_config(plan_name, config_data)
-
-            # 加载与该方案包相关的调度和中断文件
             self._load_schedule_file(plugin_def.path, plan_name)
             self._load_interrupt_file(plugin_def.path, plan_name)
 
+        # 新增：加载任务定义和订阅事件触发器
+        self._load_all_tasks_definitions()
+        self._subscribe_event_triggers()
     # ... (从 reload_plans 到文件末尾的所有其他方法都保持不变)
     def _load_all_resources(self):
         logger.info("======= 开始加载所有框架资源 (Aura 3.0) =======")
@@ -148,12 +255,12 @@ class Scheduler:
             logger.error(f"框架启动失败: {e}", exc_info=True)
             raise
         logger.info(f"======= 资源加载完毕 =======")
-
-        # 【核心修正 #3】直接使用导入的全局单例
         logger.info(
             f"调度器初始化完毕，共定义了 {len(service_registry.get_all_service_definitions())} 个服务, "
-            f"{len(ACTION_REGISTRY)} 个行为, {len(self.plans)} 个方案包。"
+            f"{len(ACTION_REGISTRY)} 个行为, {len(self.plans)} 个方案包, "
+            f"{len(self.all_tasks_definitions)} 个任务。"
         )
+
 
     def _clear_registries(self):
         """【修改】增加清理钩子"""
@@ -166,8 +273,8 @@ class Scheduler:
         self.schedule_items.clear()
         self.interrupt_definitions.clear()
         self.user_enabled_globals.clear()
+        self.all_tasks_definitions.clear()
 
-    # ... (_discover_and_parse_plugins 和 _resolve_dependencies_and_sort 保持不变)
     def _discover_and_parse_plugins(self):
         logger.info("--- 阶段1: 发现并解析所有插件定义 (plugin.yaml) ---")
         plugin_paths_to_scan = [self.base_path / 'plans']
@@ -403,9 +510,16 @@ class Scheduler:
         self.scheduler_thread.start()
 
     def stop_scheduler(self):
-        if not self.is_scheduler_running.is_set(): logger.warning("调度器已经处于停止状态。"); return
+        if not self.is_scheduler_running.is_set():
+            logger.warning("调度器已经处于停止状态。")
+            return
         logger.info("用户请求停止调度器。将完成当前任务，并停止调度新任务...")
         self.is_scheduler_running.clear()
+
+        # 【建议添加】等待事件工作线程结束
+        for worker in self.event_worker_threads:
+            if worker.is_alive():
+                worker.join(timeout=5)  # 等待最多5秒
 
     def get_master_status(self) -> dict:
         return {"is_running": self.is_scheduler_running.is_set()}
@@ -441,9 +555,20 @@ class Scheduler:
 
     def start(self):
         logger.info("任务调度器线程已启动...")
+
+        # 启动事件工作线程
+        for i in range(self.num_event_workers):
+            worker = threading.Thread(target=self._event_worker_loop, args=(i + 1,))
+            worker.daemon = True
+            self.event_worker_threads.append(worker)
+            worker.start()
+
+        # 现有的Guardian线程
         self.guardian_thread = threading.Thread(target=self._guardian_loop, name="GuardianThread", daemon=True)
         self.guardian_thread.start()
         logger.info("中断监测已启动，开始后台监控。")
+
+        # 主调度循环（保持不变）
         while self.is_scheduler_running.is_set():
             handler_rule = None
             item_to_run = None
@@ -452,9 +577,12 @@ class Scheduler:
                     handler_rule = self.interrupt_queue.popleft()
                 elif self.task_queue and not self.is_device_busy:
                     item_to_run = self.task_queue.popleft()
-            if handler_rule: self._execute_handler_task(handler_rule); continue
+            if handler_rule:
+                self._execute_handler_task(handler_rule)
+                continue
             self._check_and_enqueue_tasks(datetime.now())
-            if item_to_run: self._execute_main_task(item_to_run)
+            if item_to_run:
+                self._execute_main_task(item_to_run)
             time.sleep(1)
         logger.info("调度器主循环已安全退出。")
 
@@ -832,6 +960,27 @@ class Scheduler:
         except Exception as e:
             logger.error(f"调用 inspect_step API 时失败: {e}")
             raise
+
+    def publish_event_manually(self, event_name: str, payload: dict = None, source: str = "manual") -> dict:
+        """手动发布事件的API"""
+        try:
+            from packages.aura_core.event_bus import Event
+            event = Event(name=event_name, payload=payload or {}, source=source)
+            self.event_bus.publish(event)
+            return {"status": "success", "message": f"Event '{event_name}' published"}
+        except Exception as e:
+            logger.error(f"手动发布事件失败: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
+
+    def get_event_system_status(self) -> dict:
+        """获取事件系统状态"""
+        return {
+            "event_queue_size": self.event_task_queue._queue.qsize() if hasattr(self.event_task_queue._queue,
+                                                                                'qsize') else 0,
+            "total_tasks": len(self.all_tasks_definitions),
+            "event_workers": len(self.event_worker_threads),
+            "event_workers_alive": sum(1 for t in self.event_worker_threads if t.is_alive())
+        }
 
     @property
     def services(self):

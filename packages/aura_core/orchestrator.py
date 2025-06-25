@@ -1,318 +1,159 @@
-# packages/aura_core/orchestrator.py (最终修正版)
+# packages/aura_core/orchestrator.py (V4 - 纯工具化)
 
-import os
-import yaml
-from typing import Dict, Any
 import threading
+from typing import Dict, Any, Optional
 from pathlib import Path
 
 from packages.aura_core.engine import ExecutionEngine
 from packages.aura_core.context import Context
-# 【核心修正】不再需要从这里导入 ACTION_REGISTRY
-# from packages.aura_core.api import ACTION_REGISTRY
-from packages.aura_shared_utils.utils.logger import logger
-from packages.aura_shared_utils.utils.assist import Pathfinder
-from packages.aura_core.persistent_context import PersistentContext
 from packages.aura_core.api import service_registry
-
-
-class _ReadOnlyDict(dict):
-    def __setitem__(self, key, value):
-        raise TypeError("脚本参数 'aura.params' 是只读的。")
-
-    def __delitem__(self, key):
-        raise TypeError("脚本参数 'aura.params' 是只读的。")
-
-
-class _ActionProxy:
-    def __init__(self, engine: 'ExecutionEngine'):
-        self._engine = engine
-
-    def __getattr__(self, name: str):
-        def caller(**kwargs):
-            step_data = {'action': name, 'params': kwargs}
-            return self._engine._dispatch_action(step_data, kwargs)
-
-        return caller
-
-
-class AuraApi:
-    def __init__(self, orchestrator: 'Orchestrator', engine: 'ExecutionEngine', params: dict):
-        self._orchestrator = orchestrator
-        self._engine = engine
-        self.context = orchestrator.context
-        self.persistent_context = orchestrator.persistent_context
-        self.actions = _ActionProxy(engine)
-        self.log = logger
-        self.params = _ReadOnlyDict(params)
-
-        class Info:
-            plan_name = orchestrator.plan_name
-            plan_path = str(orchestrator.current_plan_path.resolve())
-
-        self.info = Info()
+from packages.aura_core.persistent_context import PersistentContext
+from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.event_bus import Event
 
 
 class Orchestrator:
+    """
+    【最终职责】一个纯粹的、无状态的任务执行工具。
+    不再拥有任何常驻服务或线程，仅在被调用时为单个任务执行提供上下文。
+    """
+
     def __init__(self, base_dir: str, plan_name: str, pause_event: threading.Event):
-        self.base_dir = base_dir
+        """
+        初始化一个特定方案的执行上下文工具。
+        :param base_dir: 项目基础路径
+        :param plan_name: 当前方案名称
+        :param pause_event: 全局暂停事件（由Scheduler管理）
+        """
+        self.base_dir = Path(base_dir)
         self.plan_name = plan_name
-        self.plans_dir = Path(base_dir) / 'plans'
-        self.current_plan_path = self.plans_dir / self.plan_name
+        self.plans_dir = self.base_dir / 'plans'
+        self.current_plan_path = self.plans_dir / plan_name
         self.pause_event = pause_event
-        self.engine = None
-        self.context = None
-        self.world_map = None
-        self.persistent_context = None
-        self.config = None
-        self.tasks_dir = self.current_plan_path / "tasks"
-        self.task_definitions: Dict[str, Any] = {}
-        self._load_all_task_definitions()
 
-    def _load_all_task_definitions(self):
-        if not self.tasks_dir.is_dir():
-            logger.warning(f"在方案 '{self.plan_name}' 中未找到 'tasks' 目录。")
-            return
-        logger.debug(f"[{self.plan_name}] 开始递归加载任务...")
-        for task_path in self.tasks_dir.rglob("*.yaml"):
-            try:
-                relative_path = task_path.relative_to(self.tasks_dir)
-                task_name = relative_path.with_suffix('').as_posix()
-                with open(task_path, 'r', encoding='utf-8') as f:
-                    task_data = yaml.safe_load(f)
-                    if task_data:
-                        self.task_definitions[task_name] = task_data
-            except Exception as e:
-                logger.error(f"加载任务文件 '{task_path}' 失败: {e}")
-        logger.debug(f"[{self.plan_name}] 任务加载完毕，共找到 {len(self.task_definitions)} 个任务。")
+        # 注意：不再有任何全局服务实例化或任务定义加载
+        # 这些都由Scheduler负责
 
-    def setup_and_run(self, task_name: str):
-        log_directory = os.path.join(self.current_plan_path, 'logs')
-        logger.setup(log_dir=log_directory, task_name=task_name)
+    def setup_and_run(self, task_name: str, triggering_event: Optional[Event] = None):
+        """
+        【向后兼容】执行单个任务的入口，兼容Scheduler的旧式调用。
+        """
+        self.execute_task(task_name, triggering_event)
 
-        # 【核心修正】日志信息不再需要从这里访问 ACTION_REGISTRY
-        # logger.info(f"Aura框架启动，总共注册了 {len(ACTION_REGISTRY)} 个行为。")
+    def execute_task(self, task_name: str, triggering_event: Optional[Event] = None):
+        """
+        执行单个任务的核心方法。
+        :param task_name: 任务名称（相对于方案的路径）
+        :param triggering_event: （可选）触发此任务的事件
+        """
+        # 通过Scheduler的全局任务字典获取任务数据
+        full_task_id = f"{self.plan_name}/{task_name}"
 
-        self._load_config()
-        if not self.config: return
-        self._initialize_context()
-
-        # 【【【核心修正：创建Engine时不再传递action_registry】】】
-        self.engine = ExecutionEngine(context=self.context,
-                                      pause_event=self.pause_event, orchestrator=self)
-
-        self.world_map = self.load_world_map()
-        if not self.world_map:
-            logger.warning("未找到或未能加载 world_map.yaml，状态路径规划功能将不可用。")
-
-        task_data = self.load_task_data(task_name)
-        if not task_data:
-            logger.critical(f"无法加载主任务 '{task_name}'，任务中止。")
-            return
-
-        required_state = task_data.get('requires_state')
-        if required_state and self.world_map:
-            self._handle_state_transition(required_state)
-
-        logger.info(f"--- 前置状态满足，开始执行主任务: {task_name} ---")
-        self.engine.run(task_data, task_name)
-
-    # ... (Orchestrator类的所有其他代码保持不变) ...
-    def _load_config(self):
-        if self.config: return
-        config_path = os.path.join(self.current_plan_path, 'config.yaml')
+        # 从Scheduler获取任务定义
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                self.config = yaml.safe_load(f)
-        except FileNotFoundError:
-            logger.critical(f"在方案 '{self.plan_name}' 中找不到 config.yaml，任务中止。")
-            self.config = None
+            scheduler = service_registry.get_service_instance('scheduler')
+            task_data = scheduler.all_tasks_definitions.get(full_task_id)
+        except Exception:
+            # 如果Scheduler服务不可用，尝试直接加载（向后兼容）
+            task_data = self._load_task_data_directly(task_name)
 
-    def _initialize_context(self):
-        self.context = Context()
-        context_path = self.current_plan_path / 'persistent_context.json'
-        self.persistent_context = PersistentContext(str(context_path))
-        for key, value in self.persistent_context.get_all_data().items():
-            self.context.set(key, value)
-        self.context.set('persistent_context', self.persistent_context)
+        if not task_data:
+            logger.error(f"找不到任务定义: '{full_task_id}'")
+            return
+
+        # 1. 创建独立的上下文
+        context = Context(triggering_event=triggering_event)
+
+        # 2. 填充上下文基础信息
+        self._initialize_context(context, triggering_event, full_task_id)
+
+        # 3. 创建执行引擎
+        engine = ExecutionEngine(
+            context=context,
+            orchestrator=self,
+            pause_event=self.pause_event
+        )
+
+        # 4. 执行任务
+        engine.run(task_data, full_task_id)
+
+    def _initialize_context(self, context: Context, triggering_event: Optional[Event], task_id: str):
+        """初始化任务执行上下文"""
+        # 持久化上下文
+        persistent_context_path = self.current_plan_path / 'persistent_context.json'
+        persistent_context = PersistentContext(str(persistent_context_path))
+        context.set('persistent_context', persistent_context)
+        for key, value in persistent_context.get_all_data().items():
+            context.set(key, value)
+
+        # 配置服务
         try:
             config_service = service_registry.get_service_instance('config')
             config_service.set_active_plan(self.plan_name)
-            plan_config_dict = config_service.active_plan_config
-            self.context.set('config', plan_config_dict)
-        except Exception as e:
-            logger.error(f"设置活动配置或获取方案配置失败: {e}", exc_info=True)
-            self.context.set('config', {})
-        self.context.set('log', logger)
+            context.set('config', config_service.active_plan_config)
+        except Exception:
+            context.set('config', {})
+
+        # 基础设施
+        context.set('log', logger)
         debug_dir = self.current_plan_path / 'debug_screenshots'
         debug_dir.mkdir(parents=True, exist_ok=True)
-        self.context.set('debug_dir', str(debug_dir))
-        self.context.set('AuraApi', AuraApi)
+        context.set('debug_dir', str(debug_dir))
 
-    def get_available_actions(self) -> dict:
-        # 【核心修正】直接从全局单例获取
-        from packages.aura_core.api import ACTION_REGISTRY
-        action_details = {}
-        for name, action_def in ACTION_REGISTRY.items():
-            try:
-                action_details[name] = action_def
-            except (ValueError, TypeError):
-                logger.warning(f"无法获取行为 '{name}' 的签名。")
-        return action_details
+        # 任务元数据
+        context.set('__task_name__', task_id)
+        context.set('__plan_name__', self.plan_name)
+        if triggering_event:
+            context.set('event', triggering_event)
 
-    def perform_condition_check(self, condition_data: dict) -> bool:
-        # 【核心修正】直接从全局单例获取
-        from packages.aura_core.api import ACTION_REGISTRY
-        action_name = condition_data.get('action')
-        if not action_name:
-            logger.warning(f"[中断检查] 条件定义缺少 'action' 字段: {condition_data}")
-            return False
-        action_def = ACTION_REGISTRY.get(action_name)
-        if not action_def:
-            logger.warning(f"[中断检查] 找不到名为 '{action_name}' 的 Action。")
-            return False
-        if not action_def.read_only:
-            logger.error(f"[中断检查] 安全错误：尝试在条件检查中使用非只读 Action '{action_name}'。此操作已被阻止。")
-            return False
-        try:
-            if not self.engine:
-                self._initialize_context()
-                # 【核心修正】不再传递action_registry
-                self.engine = ExecutionEngine(context=self.context, orchestrator=self)
+    def _load_task_data_directly(self, task_name: str) -> Dict | None:
+        """直接从文件系统加载任务数据（向后兼容）"""
+        tasks_dir = self.current_plan_path / "tasks"
+        task_file = tasks_dir / f"{task_name}.yaml"
 
-            # 【核心修正】不再需要手动注入服务，engine内部会处理
-            params = self.engine._render_params(condition_data.get('params', {}))
-            result = self.engine.injector.execute_action(action_name, params)
-            return bool(result)
-        except Exception as e:
-            logger.error(f"[中断检查] 执行 '{action_name}' 时出错: {e}", exc_info=True)
-            return False
+        if not task_file.exists():
+            # 尝试作为路径
+            task_file = tasks_dir / f"{task_name}"
+            if task_file.is_dir():
+                return None
+            if not task_file.suffix:
+                task_file = task_file.with_suffix('.yaml')
 
-    def _handle_state_transition(self, required_state: str):
-        logger.info(f"任务需要前置状态: '{required_state}'")
-        current_state = self.determine_current_state()
-        if not current_state:
-            logger.critical("无法确定当前游戏状态，任务中止。")
-            raise RuntimeError("无法确定当前状态")
-        logger.info(f"检测到当前状态为: '{current_state}'")
-        if current_state != required_state:
-            try:
-                self.plan_and_execute_path(current_state, required_state)
-            except Exception as e:
-                logger.critical(f"状态路径规划执行失败: {e}", exc_info=True)
-                raise
-        else:
-            logger.info("当前状态已满足任务要求，无需转换。")
-
-    def get_persistent_context_data(self) -> dict:
-        if not self.persistent_context:
-            context_path = os.path.join(self.current_plan_path, 'persistent_context.json')
-            temp_context = PersistentContext(context_path)
-            return temp_context.get_all_data()
-        return self.persistent_context.get_all_data()
-
-    def save_persistent_context_data(self, data: dict):
-        if not self.persistent_context:
-            context_path = os.path.join(self.current_plan_path, 'persistent_context.json')
-            self.persistent_context = PersistentContext(context_path)
-        self.persistent_context._data.clear()
-        for key, value in data.items():
-            self.persistent_context.set(key, value)
-        self.persistent_context.save()
-
-    def load_world_map(self) -> dict | None:
-        map_path = os.path.join(self.current_plan_path, 'world_map.yaml')
-        if not os.path.exists(map_path):
+        if not task_file.exists():
             return None
+
         try:
-            with open(map_path, 'r', encoding='utf-8') as f:
+            import yaml
+            with open(task_file, 'r', encoding='utf-8') as f:
                 return yaml.safe_load(f)
         except Exception as e:
-            logger.error(f"加载 world_map.yaml 失败: {e}")
+            logger.error(f"加载任务文件 '{task_file}' 失败: {e}")
             return None
 
-    def determine_current_state(self) -> str | None:
-        expected_state = self.context.get('__expected_next_state')
-        if expected_state:
-            logger.debug(f"进入【确认模式】，检查是否为状态: '{expected_state}'")
-            state_info = self.world_map['states'].get(expected_state)
-            if state_info:
-                check_task_data = self.load_task_data(state_info['check']['task'])
-                if self.engine.run_check_task(check_task_data):
-                    return expected_state
-            logger.warning(f"确认模式失败，未能确认处于'{expected_state}'。转入探索模式...")
-        logger.debug("进入【探索模式】，使用启发式检查...")
-        last_confirmed_state = self.context.get('__last_confirmed_state')
-        check_order = self._get_heuristic_check_order(last_confirmed_state)
-        for state_name in check_order:
-            state_info = self.world_map['states'][state_name]
-            check_task_data = self.load_task_data(state_info['check']['task'])
-            if self.engine.run_check_task(check_task_data):
-                self.context.set('__last_confirmed_state', state_name)
-                return state_name
-        return None
-
-    def _get_heuristic_check_order(self, last_state: str | None) -> list[str]:
-        all_states = list(self.world_map.get('states', {}).keys())
-        if not last_state:
-            logger.debug("无历史状态，使用默认检查顺序。")
-            return all_states
-        order = []
-        visited = set()
-
-        def add_to_order(state):
-            if state and state not in visited:
-                order.append(state)
-                visited.add(state)
-
-        add_to_order(last_state)
-        directly_connected_states = set()
-        for transition in self.world_map.get('transitions', []):
-            if transition['from'] == last_state:
-                directly_connected_states.add(transition['to'])
-        for state in sorted(list(directly_connected_states)):
-            add_to_order(state)
-        for state in all_states:
-            add_to_order(state)
-        logger.debug(f"根据上一个状态 '{last_state}'，生成启发式检查顺序: {order}")
-        return order
-
-    def plan_and_execute_path(self, start_state: str, end_state: str):
-        pathfinder = Pathfinder(self.world_map)
-        state_path = pathfinder.find_path(start_state, end_state)
-        if not state_path:
-            raise Exception(f"找不到从 '{start_state}' 到 '{end_state}' 的路径。")
-        logger.info(f"规划路径: {' -> '.join(state_path)}")
-        for i in range(len(state_path) - 1):
-            from_s, to_s = state_path[i], state_path[i + 1]
-            transition_task_name = self._find_transition_task(from_s, to_s)
-            if not transition_task_name:
-                raise Exception(f"在世界地图中找不到从 '{from_s}' 到 '{to_s}' 的转换任务定义。")
-            logger.info(f"--- 执行路径转换: {from_s} -> {to_s} (任务: {transition_task_name}) ---")
-            self.context.set('__expected_next_state', to_s)
-            task_data = self.load_task_data(transition_task_name)
-            self.engine.run(task_data, transition_task_name)
-            logger.info(f"验证是否已到达状态: '{to_s}'")
-            current_state = self.determine_current_state()
-            if current_state != to_s:
-                logger.critical(f"状态验证失败！...")
-                raise Exception("State transition verification failed.")
-            else:
-                logger.info("状态验证成功！")
-                self.context.set('__expected_next_state', None)
-
-    def _find_transition_task(self, from_state: str, to_state: str) -> str | None:
-        for transition in self.world_map.get('transitions', []):
-            if transition.get('from') == from_state and transition.get('to') == to_state:
-                return transition.get('task')
-        return None
-
-    def load_task_data(self, task_name: str) -> Dict | None:
-        task_data = self.task_definitions.get(task_name)
-        if not task_data:
-            logger.error(f"在方案包 '{self.plan_name}' 中找不到名为 '{task_name}' 的任务定义。")
+    def load_task_data(self, task_id: str) -> Dict | None:
+        """供Engine调用的任务数据获取方法"""
+        try:
+            scheduler = service_registry.get_service_instance('scheduler')
+            return scheduler.all_tasks_definitions.get(task_id)
+        except Exception:
+            # 向后兼容：如果是本方案的任务，尝试直接加载
+            if task_id.startswith(f"{self.plan_name}/"):
+                task_name = task_id[len(self.plan_name) + 1:]
+                return self._load_task_data_directly(task_name)
             return None
-        return task_data
+
+    # === 保留的辅助方法（供外部API调用）===
+
+    def get_persistent_context_data(self) -> dict:
+        pc = PersistentContext(str(self.current_plan_path / 'persistent_context.json'))
+        return pc.get_all_data()
+
+    def save_persistent_context_data(self, data: dict):
+        pc = PersistentContext(str(self.current_plan_path / 'persistent_context.json'))
+        pc._data.clear()
+        for key, value in data.items():
+            pc.set(key, value)
+        pc.save()
 
     def get_file_content(self, relative_path: str) -> str:
         full_path = (self.current_plan_path / relative_path).resolve()
@@ -354,25 +195,64 @@ class Orchestrator:
             raise
 
     def inspect_step(self, task_name: str, step_index: int) -> Any:
-        logger.info(f"开始检查步骤: 方案='{self.plan_name}', 任务='{task_name}', 步骤索引={step_index}")
-        self._load_config()
-        if not self.config:
-            raise ValueError("无法加载 config.yaml，无法继续检查。")
-        self._initialize_context()
-        # 【核心修正】不再传递action_registry
-        self.engine = ExecutionEngine(context=self.context, orchestrator=self)
-        self.context.set("__is_inspect_mode__", True)
-        task_data = self.load_task_data(task_name)
+        """检查步骤（供外部API调用）"""
+        task_data = self._load_task_data_directly(task_name)
         if not task_data:
             raise FileNotFoundError(f"找不到任务 '{task_name}'。")
+
+        context = Context()
+        context.set("__is_inspect_mode__", True)
+
+        engine = ExecutionEngine(context=context, orchestrator=self)
+
         steps = task_data.get('steps', [])
         if not (0 <= step_index < len(steps)):
             raise IndexError(f"步骤索引 {step_index} 超出范围。")
+
         step_data = steps[step_index]
         try:
-            rendered_params = self.engine._render_params(step_data.get('params', {}))
-            result = self.engine.run_step(step_data, rendered_params)
+            rendered_params = engine._render_params(step_data.get('params', {}))
+            result = engine.run_step(step_data, rendered_params)
             return result
         except Exception as e:
             logger.error(f"检查步骤时发生严重错误: {e}", exc_info=True)
             raise
+
+    # === 向后兼容的方法存根 ===
+
+    def perform_condition_check(self, condition_data: dict) -> bool:
+        """向后兼容：条件检查"""
+        from packages.aura_core.api import ACTION_REGISTRY
+        action_name = condition_data.get('action')
+        if not action_name:
+            return False
+
+        action_def = ACTION_REGISTRY.get(action_name)
+        if not action_def or not action_def.read_only:
+            return False
+
+        try:
+            context = Context()
+            engine = ExecutionEngine(context=context, orchestrator=self)
+            params = engine._render_params(condition_data.get('params', {}))
+            result = engine.injector.execute_action(action_name, params)
+            return bool(result)
+        except Exception as e:
+            logger.error(f"条件检查失败: {e}", exc_info=True)
+            return False
+
+    @property
+    def task_definitions(self) -> Dict[str, Any]:
+        """向后兼容：提供任务定义访问"""
+        try:
+            scheduler = service_registry.get_service_instance('scheduler')
+            # 返回本方案的任务定义
+            plan_tasks = {}
+            prefix = f"{self.plan_name}/"
+            for task_id, task_data in scheduler.all_tasks_definitions.items():
+                if task_id.startswith(prefix):
+                    relative_name = task_id[len(prefix):]
+                    plan_tasks[relative_name] = task_data
+            return plan_tasks
+        except Exception:
+            return {}

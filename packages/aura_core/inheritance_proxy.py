@@ -1,4 +1,4 @@
-# src/core/inheritance_proxy.py
+# packages/aura_core/inheritance_proxy.py
 
 class InheritanceProxy:
     """

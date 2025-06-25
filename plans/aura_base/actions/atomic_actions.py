@@ -324,12 +324,20 @@ def assert_condition(condition: bool, message: str = "断言失败"):
     return True
 
 
-@register_action(name="set_variable", read_only=True, public=True)
-def set_variable(context: Context, name: str, value: any) -> any:
-    """在上下文中设置或覆盖一个变量。"""
-    logger.info(f"设置上下文变量 '{name}' = {value}")
-    context.set(name, value)
-    return value
+@register_action(name="set_variable", public=True)
+def set_variable(context: Context, name: str, value: any) -> bool:
+    """
+    在上下文中设置或覆盖一个变量。
+    这个Action总是在成功时返回 True。
+    """
+    try:
+        context.set(name, value)
+        logger.info(f"设置上下文变量 '{name}' = {repr(value)}")
+        # 【核心修复2】总是返回 True 来明确表示操作成功，无论设置的值是什么。
+        return True
+    except Exception as e:
+        logger.error(f"设置变量 '{name}' 时失败: {e}", exc_info=True)
+        return False
 
 
 @register_action(name="string_format", read_only=True, public=True)
