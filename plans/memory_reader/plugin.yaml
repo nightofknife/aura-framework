@@ -1,0 +1,18 @@
+# 插件在UI上显示的友好名称
+display_name: "内存读取器"
+
+# 插件的唯一身份标识
+identity:
+  # 插件的机器可读名称
+  name: "memory_reader"
+  # 插件的作者
+  author: "aura_team" # 或者填写实际的作者
+
+# 插件版本
+version: "1.0.0"
+
+# 插件的详细描述
+description: "提供读取和写入进程内存的功能。"
+
+# 插件的依赖关系（如果没有，则为空）
+dependencies: {}

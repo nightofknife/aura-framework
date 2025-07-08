@@ -1,0 +1,30 @@
+# plans/data_collector/collector_config.yaml
+http:
+  enabled: true
+  default_timeout: 30
+  default_retry_times: 3
+  default_retry_delay: 5
+  default_headers:
+    User-Agent: "Aura Data Collector 1.0"
+  # 代理配置（可选）
+  proxy:
+    enabled: false
+    http: ""
+    https: ""
+
+file_monitor:
+  enabled: true
+  default_poll_interval: 5  # 文件检查间隔(秒)
+  max_file_size: 104857600   # 最大文件大小 100MB
+
+rss:
+  enabled: true
+  default_poll_interval: 300  # RSS检查间隔(秒)
+  max_entries: 100           # 每个源最大条目数
+
+database:
+  enabled: true
+  default_timeout: 30
+  # 默认SQLite配置
+  sqlite:
+    default_path: "./data/collector.db"
