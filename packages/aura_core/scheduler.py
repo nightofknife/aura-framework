@@ -1,4 +1,4 @@
-# packages/aura_core/scheduler.py (最终决定版)
+# packages/aura_core/scheduler.py (多任务格式支持版)
 
 import threading
 import time
@@ -27,7 +27,7 @@ from packages.aura_core.api import hook_manager
 from packages.aura_shared_utils.utils.logger import logger
 from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
 from packages.aura_core.state_store import StateStore
-from packages.aura_core.event_bus import EventBus
+from packages.aura_core.event_bus import EventBus, Event
 from packages.aura_core.task_queue import TaskQueue
 
 if TYPE_CHECKING:
@@ -35,7 +35,6 @@ if TYPE_CHECKING:
 
 
 class PluginProvider(AbstractProvider):
-    # ... (这部分代码完全不变)
     def __init__(self, plugin_registry: Dict[str, PluginDefinition]):
         self.plugin_registry = plugin_registry
 
@@ -63,7 +62,6 @@ class PluginProvider(AbstractProvider):
 
 class Scheduler:
     def __init__(self):
-        # === 现有代码保持不变 ===
         self.plans: Dict[str, 'Orchestrator'] = {}
         self.schedule_items: List[Dict[str, Any]] = []
         self.task_queue: deque = deque()
@@ -84,30 +82,28 @@ class Scheduler:
         self.is_scheduler_running = threading.Event()
         self.scheduler_thread = None
         self.guardian_thread = None
-
-        # === 新增：事件系统组件 ===
-
-
         self.state_store = StateStore()
         self.event_bus = EventBus()
-        self.event_task_queue = TaskQueue()  # 事件触发的任务队列
-        self.all_tasks_definitions: Dict[str, Any] = {}  # 全局任务定义字典
-        self.event_worker_threads: List[threading.Thread] = []  # 事件系统工作线程
-        self.num_event_workers = 2  # 事件系统工作线程数
-
+        self.event_task_queue = TaskQueue()
+        self.all_tasks_definitions: Dict[str, Any] = {}
+        self.event_worker_threads: List[threading.Thread] = []
+        self.num_event_workers = 2
         set_project_base_path(self.base_path)
-        self._register_core_services()  # 新增
+        self._register_core_services()
         self._load_all_resources()
 
     def _register_core_services(self):
-        """注册由Scheduler管理的全局核心服务"""
-        service_registry.register_instance('state_store', self.state_store)
-        service_registry.register_instance('event_bus', self.event_bus)
-        service_registry.register_instance('scheduler', self)
+        service_registry.register_instance('state_store', self.state_store, public=True)
+        service_registry.register_instance('event_bus', self.event_bus, public=True)
+        service_registry.register_instance('scheduler', self, public=True)
         logger.debug("全局核心服务注册完毕。")
 
+    # 【【【核心修改 1/3】】】
     def _load_all_tasks_definitions(self):
-        """扫描并加载所有方案的所有任务定义"""
+        """
+        【修改版】扫描并加载所有方案的所有任务定义。
+        支持旧的“单文件单任务”格式和新的“单文件多任务”格式。
+        """
         logger.info("--- 阶段4.5: 加载所有任务定义 ---")
         self.all_tasks_definitions.clear()
 
@@ -126,101 +122,101 @@ class Scheduler:
 
             for task_file_path in tasks_dir.rglob("*.yaml"):
                 try:
-                    relative_path = task_file_path.relative_to(tasks_dir)
-                    task_name_in_plan = relative_path.with_suffix('').as_posix()
-                    full_task_id = f"{plan_name}/{task_name_in_plan}"
-
                     with open(task_file_path, 'r', encoding='utf-8') as f:
                         task_data = yaml.safe_load(f)
-                        if task_data:
-                            self.all_tasks_definitions[full_task_id] = task_data
+                        if not isinstance(task_data, dict):
+                            continue
+
+                    # 检查是否是旧的“单文件单任务”格式 (顶层有 'steps' 键)
+                    if 'steps' in task_data:
+                        relative_path = task_file_path.relative_to(tasks_dir)
+                        task_name_in_plan = relative_path.with_suffix('').as_posix()
+                        full_task_id = f"{plan_name}/{task_name_in_plan}"
+                        self.all_tasks_definitions[full_task_id] = task_data
+                        logger.debug(f"已加载旧格式任务: {full_task_id}")
+
+                    # 否则，假定是新的“单文件多任务”格式
+                    else:
+                        for task_key, task_definition in task_data.items():
+                            if isinstance(task_definition, dict) and 'steps' in task_definition:
+                                full_task_id = f"{plan_name}/{task_key}"
+                                self.all_tasks_definitions[full_task_id] = task_definition
+                                logger.debug(f"已加载新格式任务: {full_task_id}")
+                            else:
+                                logger.warning(f"在文件 '{task_file_path}' 中发现无效的任务条目: '{task_key}'，已跳过。")
+
                 except Exception as e:
                     logger.error(f"加载任务文件 '{task_file_path}' 失败: {e}")
 
         logger.info(f"任务定义加载完毕，共找到 {len(self.all_tasks_definitions)} 个任务。")
 
     def _subscribe_event_triggers(self):
-        """扫描所有任务，订阅事件触发器"""
         logger.info("--- 阶段4.6: 订阅事件触发器 ---")
         subscribed_count = 0
-
         for task_id, task_data in self.all_tasks_definitions.items():
+            plan_name = task_id.split('/')[0]
             triggers = task_data.get('triggers')
             if not isinstance(triggers, list):
                 continue
-
             for trigger in triggers:
                 if not isinstance(trigger, dict) or 'event' not in trigger:
                     continue
-
                 event_pattern = trigger['event']
+                plugin_def = next((p for p in self.plugin_registry.values() if p.path.name == plan_name), None)
+                if not plugin_def:
+                    logger.warning(f"为任务 '{task_id}' 订阅事件时找不到对应的插件定义，已跳过。")
+                    continue
+                default_channel = plugin_def.canonical_id
+                channel = trigger.get('channel', default_channel)
                 from functools import partial
                 callback = partial(self._handle_event_triggered_task, task_id=task_id)
                 callback.__name__ = f"event_trigger_for_{task_id.replace('/', '_')}"
-
-                self.event_bus.subscribe(event_pattern, callback)
+                self.event_bus.subscribe(event_pattern, callback, channel=channel)
                 subscribed_count += 1
-                logger.debug(f"任务 '{task_id}' 订阅了事件模式 '{event_pattern}'")
-
+                logger.debug(f"任务 '{task_id}' 订阅了事件模式 '{event_pattern}' (频道: {channel})")
         logger.info(f"事件触发器订阅完成，共 {subscribed_count} 个订阅。")
 
-    def _handle_event_triggered_task(self, event, task_id: str):
-        """事件触发任务的回调"""
-        logger.info(f"事件 '{event.name}' 触发了任务 '{task_id}'")
+    def _handle_event_triggered_task(self, event: Event, task_id: str):
+        logger.info(f"事件 '{event.name}' (频道: {event.channel}) 触发了任务 '{task_id}'")
         from packages.aura_core.task_queue import Tasklet
         tasklet = Tasklet(task_name=task_id, triggering_event=event)
         self.event_task_queue.put(tasklet)
 
     def _event_worker_loop(self, worker_id: int):
-        """事件系统工作线程循环"""
         logger.info(f"[EventWorker-{worker_id}] 事件工作线程已启动")
         while self.is_scheduler_running.is_set():
             try:
                 import queue
                 tasklet = self.event_task_queue.get(block=True, timeout=1)
-
                 task_id = tasklet.task_name
                 plan_name = task_id.split('/')[0]
                 task_name = task_id[len(plan_name) + 1:]
-
                 logger.info(f"[EventWorker-{worker_id}] 执行事件触发的任务: '{task_id}'")
-
-                # 使用现有的Orchestrator执行任务
                 if plan_name in self.plans:
                     orchestrator = self.plans[plan_name]
                     orchestrator.execute_task(task_name, tasklet.triggering_event)
                 else:
                     logger.error(f"找不到方案 '{plan_name}' 的Orchestrator")
-
                 self.event_task_queue.task_done()
-
             except queue.Empty:
                 continue
             except Exception as e:
                 logger.error(f"[EventWorker-{worker_id}] 处理事件任务时出错: {e}", exc_info=True)
-
         logger.info(f"[EventWorker-{worker_id}] 事件工作线程已停止")
 
-    # 【【【核心修正：重写此方法】】】
     def _load_plan_configurations(self):
-        """
-        【修改版】加载方案包配置，同时加载任务定义和订阅事件触发器
-        """
         logger.info("--- 阶段4: 加载方案包配置文件 ---")
         try:
             config_service = service_registry.get_service_instance('config')
         except Exception as e:
             logger.error(f"无法获取 ConfigService 实例，方案包配置将无法加载: {e}")
             return
-
         for plugin_def in self.plugin_registry.values():
             if plugin_def.plugin_type != 'plan':
                 continue
-
             plan_name = plugin_def.path.name
             config_path = plugin_def.path / 'config.yaml'
             config_data = {}
-
             if config_path.is_file():
                 try:
                     with open(config_path, 'r', encoding='utf-8') as f:
@@ -231,19 +227,19 @@ class Scheduler:
                         logger.warning(f"配置文件 '{config_path}' 的内容不是一个有效的字典，已忽略。")
                 except Exception as e:
                     logger.error(f"加载配置文件 '{config_path}' 失败: {e}")
-
             config_service.register_plan_config(plan_name, config_data)
             self._load_schedule_file(plugin_def.path, plan_name)
             self._load_interrupt_file(plugin_def.path, plan_name)
-
-        # 新增：加载任务定义和订阅事件触发器
         self._load_all_tasks_definitions()
         self._subscribe_event_triggers()
-    # ... (从 reload_plans 到文件末尾的所有其他方法都保持不变)
+
     def _load_all_resources(self):
         logger.info("======= 开始加载所有框架资源 (Aura 3.0) =======")
         try:
-            self._clear_registries()
+            # 【核心修改】不再调用 self._clear_registries()
+            # 而是手动清理插件相关的注册表
+            self._clear_plugin_registries() # <--- 使用新的、更安全的方法
+
             self._discover_and_parse_plugins()
             load_order = self._resolve_dependencies_and_sort()
             logger.info("--- 插件加载顺序已确定 ---")
@@ -263,21 +259,52 @@ class Scheduler:
 
 
     def _clear_registries(self):
-        """【修改】增加清理钩子"""
+        """
+        【修改】完全清理所有注册表，包括核心服务。
+        这个方法应该只在框架完全关闭或重启时调用。
+        """
         service_registry.clear()
         ACTION_REGISTRY.clear()
+        hook_manager.clear()
         clear_build_cache()
-        hook_manager.clear()  # 【新增】
         self.plans.clear()
         self.plugin_registry.clear()
         self.schedule_items.clear()
         self.interrupt_definitions.clear()
         self.user_enabled_globals.clear()
         self.all_tasks_definitions.clear()
+        # 清理事件总线和任务队列
+        self.event_bus.shutdown()  # 假设 event_bus 有一个清理方法
+        while not self.event_task_queue.empty():
+            self.event_task_queue.get()
+
+    def _clear_plugin_registries(self):
+        """
+        【新增】安全地清理所有与插件相关的注册表，但保留核心服务。
+        这个方法用于插件的热重载。
+        """
+        logger.info("正在清理插件相关的注册表...")
+
+        # 从 ServiceRegistry 中移除所有非核心服务
+        # 'core/' 是我们为核心服务保留的命名空间
+        service_registry.remove_services_by_prefix(exclude_prefix="core/")
+
+        # 清理其他插件相关的注册表
+        ACTION_REGISTRY.clear()
+        hook_manager.clear()  # 钩子通常由插件定义，也应被清理
+        clear_build_cache()
+        self.plans.clear()
+        self.plugin_registry.clear()
+        self.schedule_items.clear()
+        self.interrupt_definitions.clear()
+        self.user_enabled_globals.clear()
+        self.all_tasks_definitions.clear()
+        # 事件总线本身不清理，但可以考虑清理它的订阅者
+        self.event_bus.clear_subscriptions()  # 假设有这样一个方法
 
     def _discover_and_parse_plugins(self):
         logger.info("--- 阶段1: 发现并解析所有插件定义 (plugin.yaml) ---")
-        plugin_paths_to_scan = [self.base_path / 'plans']
+        plugin_paths_to_scan = [self.base_path / 'plans', self.base_path / 'packages']
         for root_path in plugin_paths_to_scan:
             if not root_path.is_dir():
                 logger.warning(f"插件扫描目录不存在: {root_path}")
@@ -292,11 +319,6 @@ class Scheduler:
                     top_level_dir = relative_path.parts[0]
                     if top_level_dir == 'packages':
                         plugin_type = 'core'
-                    elif top_level_dir == 'plugins':
-                        if len(relative_path.parts) > 2:
-                            plugin_type = relative_path.parts[1]
-                        else:
-                            plugin_type = 'third_party'
                     elif top_level_dir == 'plans':
                         plugin_type = 'plan'
                     plugin_def = PluginDefinition.from_yaml(data, plugin_dir, plugin_type)
@@ -329,6 +351,7 @@ class Scheduler:
             cycle_path = " -> ".join(e.args[1])
             raise RuntimeError(f"检测到插件间的循环依赖，无法启动: {cycle_path}")
 
+    # 【【【核心修改 2/3】】】
     def _load_plugins_in_order(self, load_order: List[str]):
         """【修改】在加载包后，检查并加载其钩子"""
         logger.info("--- 阶段3: 按顺序加载/构建所有包 ---")
@@ -336,7 +359,6 @@ class Scheduler:
         for plugin_id in load_order:
             plugin_def = self.plugin_registry[plugin_id]
             api_file_path = plugin_def.path / API_FILE_NAME
-
             if api_file_path.exists():
                 logger.debug(f"发现 API 文件，为包 '{plugin_id}' 尝试快速加载...")
                 try:
@@ -347,24 +369,20 @@ class Scheduler:
             else:
                 logger.info(f"未找到 API 文件，为包 '{plugin_id}' 从源码构建...")
                 build_package_from_source(plugin_def)
-
-            # 【新增】加载该包的钩子
             self._load_hooks_for_package(plugin_def)
-
             if plugin_def.plugin_type == 'plan':
                 plan_name = plugin_def.path.name
                 if plan_name not in self.plans:
                     logger.info(f"发现方案包: {plan_name}")
-                    self.plans[plan_name] = Orchestrator(str(self.base_path), plan_name, self.pause_event)
+                    # 将 self (scheduler实例) 传递给 Orchestrator
+                    self.plans[plan_name] = Orchestrator(str(self.base_path), plan_name, self.pause_event, self)
 
     def _load_hooks_for_package(self, plugin_def: PluginDefinition):
-        """【新增】检查并加载一个包内的 hooks.py 文件。"""
         hooks_file = plugin_def.path / 'hooks.py'
         if hooks_file.is_file():
             logger.debug(f"在包 '{plugin_def.canonical_id}' 中发现钩子文件，正在加载...")
             try:
                 module = self._lazy_load_module(hooks_file)
-                # 自动查找并注册带有 @register_hook 装饰器的函数
                 for _, func in inspect.getmembers(module, inspect.isfunction):
                     if hasattr(func, '_aura_hook_name'):
                         hook_name = getattr(func, '_aura_hook_name')
@@ -372,7 +390,6 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"加载钩子文件 '{hooks_file}' 失败: {e}", exc_info=True)
 
-    # ... (_load_package_from_api_file 和 _lazy_load_module 保持不变)
     def _load_package_from_api_file(self, plugin_def: PluginDefinition, api_file_path: Path):
         with open(api_file_path, 'r', encoding='utf-8') as f:
             api_data = yaml.safe_load(f)
@@ -420,83 +437,68 @@ class Scheduler:
             logger.error(f"延迟加载模块 '{file_path}' 失败: {e}", exc_info=True)
             raise
 
+    # 【【【核心修改 3/3】】】
     def _run_task_in_thread(self, item_to_run: Dict, is_handler: bool, handler_rule: Dict = None):
-        """【修改】在任务执行的关键节点触发钩子"""
         item_id = item_to_run.get('id')
         plan_name = item_to_run.get('plan_name')
-        task_path_or_name = item_to_run.get('task') or item_to_run.get('task_name')
+        # 'task' 来自调度项, 'task_name' 来自临时任务
+        task_id_in_plan = item_to_run.get('task') or item_to_run.get('task_name')
         now = datetime.now()
-        if not plan_name or not task_path_or_name:
+        if not plan_name or not task_id_in_plan:
             logger.error(f"任务项缺少 'plan_name' 或 ('task'/'task_name') 键: {item_to_run}")
             return
 
+        full_task_id = f"{plan_name}/{task_id_in_plan}"
         task_started = False
-        task_context = {
-            "item": item_to_run,
-            "is_handler": is_handler,
-            "handler_rule": handler_rule,
-            "start_time": now
-        }
-
+        task_context = {"item": item_to_run, "is_handler": is_handler, "handler_rule": handler_rule, "start_time": now}
         try:
             with self.lock:
                 if self.is_device_busy and not is_handler:
                     logger.warning(f"任务 {item_id or 'ad-hoc'} 启动时发现设备已忙，放弃执行。")
-                    if item_id and item_id in self.run_statuses:
-                        self.run_statuses[item_id]['status'] = 'idle'
+                    if item_id and item_id in self.run_statuses: self.run_statuses[item_id]['status'] = 'idle'
                     return
                 self.is_device_busy = True
                 task_started = True
                 if not is_handler:
                     self.current_running_thread = threading.current_thread()
-                    if item_id:
-                        self.run_statuses.setdefault(item_id, {}).update({'status': 'running', 'started_at': now})
-
+                    if item_id: self.run_statuses.setdefault(item_id, {}).update(
+                        {'status': 'running', 'started_at': now})
             if task_started:
-                # 【新增】触发任务开始前的钩子
                 hook_manager.trigger('before_task_run', task_context=task_context)
-
                 orchestrator = self.plans[plan_name]
-                result = orchestrator.setup_and_run(task_path_or_name)
-
-                # 【新增】触发任务成功后的钩子
+                # 传递任务在方案内的ID
+                result = orchestrator.execute_task(task_id_in_plan)
                 task_context['end_time'] = datetime.now()
                 task_context['result'] = result
                 hook_manager.trigger('after_task_success', task_context=task_context)
-
                 if not is_handler and item_id:
                     with self.lock:
-                        logger.info(f"任务 '{plan_name}/{task_path_or_name}' (ID: {item_id}) 执行成功。")
+                        logger.info(f"任务 '{full_task_id}' (ID: {item_id}) 执行成功。")
                         self.run_statuses.setdefault(item_id, {}).update(
                             {'status': 'idle', 'last_run': now, 'result': 'success'})
         except Exception as e:
-            # 【新增】触发任务失败后的钩子
             task_context['end_time'] = datetime.now()
             task_context['exception'] = e
             hook_manager.trigger('after_task_failure', task_context=task_context)
-
             log_prefix = "处理器任务" if is_handler else f"任务 '{item_id or 'ad-hoc'}'"
-            logger.error(f"{log_prefix} '{plan_name}/{task_path_or_name}' 执行时发生致命错误: {e}", exc_info=True)
+            logger.error(f"{log_prefix} '{full_task_id}' 执行时发生致命错误: {e}", exc_info=True)
             if not is_handler and item_id:
-                with self.lock:
-                    self.run_statuses.setdefault(item_id, {}).update(
-                        {'status': 'idle', 'last_run': now, 'result': 'failure'})
+                with self.lock: self.run_statuses.setdefault(item_id, {}).update(
+                    {'status': 'idle', 'last_run': now, 'result': 'failure'})
         finally:
             if task_started:
                 with self.lock:
                     self.is_device_busy = False
-                    logger.info(f"'{plan_name}/{task_path_or_name}' 执行完毕，设备资源已释放。")
+                    logger.info(f"'{full_task_id}' 执行完毕，设备资源已释放。")
                     if is_handler:
                         self._post_interrupt_handling(handler_rule)
                     else:
                         if self.current_running_thread is threading.current_thread():
                             self.current_running_task = None
                             self.current_running_thread = None
-
-                # 【新增】触发任务结束后的钩子 (无论成功或失败)
                 hook_manager.trigger('after_task_run', task_context=task_context)
 
-    # ... (所有其他方法保持不变)
+    # --- 以下方法保持不变 ---
     def reload_plans(self):
         logger.info("正在从文件系统重新加载所有资源...")
         self._load_all_resources()
@@ -510,16 +512,11 @@ class Scheduler:
         self.scheduler_thread.start()
 
     def stop_scheduler(self):
-        if not self.is_scheduler_running.is_set():
-            logger.warning("调度器已经处于停止状态。")
-            return
+        if not self.is_scheduler_running.is_set(): logger.warning("调度器已经处于停止状态。"); return
         logger.info("用户请求停止调度器。将完成当前任务，并停止调度新任务...")
         self.is_scheduler_running.clear()
-
-        # 【建议添加】等待事件工作线程结束
         for worker in self.event_worker_threads:
-            if worker.is_alive():
-                worker.join(timeout=5)  # 等待最多5秒
+            if worker.is_alive(): worker.join(timeout=5)
 
     def get_master_status(self) -> dict:
         return {"is_running": self.is_scheduler_running.is_set()}
@@ -555,20 +552,14 @@ class Scheduler:
 
     def start(self):
         logger.info("任务调度器线程已启动...")
-
-        # 启动事件工作线程
         for i in range(self.num_event_workers):
             worker = threading.Thread(target=self._event_worker_loop, args=(i + 1,))
             worker.daemon = True
             self.event_worker_threads.append(worker)
             worker.start()
-
-        # 现有的Guardian线程
         self.guardian_thread = threading.Thread(target=self._guardian_loop, name="GuardianThread", daemon=True)
         self.guardian_thread.start()
         logger.info("中断监测已启动，开始后台监控。")
-
-        # 主调度循环（保持不变）
         while self.is_scheduler_running.is_set():
             handler_rule = None
             item_to_run = None
@@ -577,12 +568,9 @@ class Scheduler:
                     handler_rule = self.interrupt_queue.popleft()
                 elif self.task_queue and not self.is_device_busy:
                     item_to_run = self.task_queue.popleft()
-            if handler_rule:
-                self._execute_handler_task(handler_rule)
-                continue
+            if handler_rule: self._execute_handler_task(handler_rule); continue
             self._check_and_enqueue_tasks(datetime.now())
-            if item_to_run:
-                self._execute_main_task(item_to_run)
+            if item_to_run: self._execute_main_task(item_to_run)
             time.sleep(1)
         logger.info("调度器主循环已安全退出。")
 
@@ -625,7 +613,8 @@ class Scheduler:
                 task_path_or_name = current_task_dict.get(task_key)
                 if task_path_or_name and 'plan_name' in current_task_dict:
                     try:
-                        task_data = self.plans[current_task_dict['plan_name']].load_task_data(task_path_or_name)
+                        full_task_id = f"{current_task_dict['plan_name']}/{task_path_or_name}"
+                        task_data = self.all_tasks_definitions.get(full_task_id)
                         if task_data: active_set.update(task_data.get('activates_interrupts', []))
                     except Exception as e:
                         logger.error(f"获取活动中断时发生错误: {e}", exc_info=True)
@@ -687,52 +676,30 @@ class Scheduler:
 
     def _is_ready_to_run(self, item, now, status: Dict) -> bool:
         item_id = item['id']
-
-        # 冷却检查 (这部分逻辑是正确的，保持不变)
         cooldown = item.get('run_options', {}).get('cooldown', 0)
         last_run = status.get('last_run')
-        if last_run and (now - last_run).total_seconds() < cooldown:
-            return False
-
+        if last_run and (now - last_run).total_seconds() < cooldown: return False
         trigger = item.get('trigger', {})
         trigger_type = trigger.get('type')
-
         if trigger_type == 'time_based':
             schedule = trigger.get('schedule')
-            if not schedule:
-                logger.warning(f"任务 '{item_id}' 是 time_based 类型，但缺少 'schedule' 表达式。")
-                return False
-
+            if not schedule: logger.warning(
+                f"任务 '{item_id}' 是 time_based 类型，但缺少 'schedule' 表达式。"); return False
             try:
-                # --- 【核心修复】 ---
-                # 1. 创建一个基于当前时间的迭代器
                 iterator = croniter(schedule, now)
-
-                # 2. 获取相对于当前时间的 *上一个* 预定运行时间点
                 prev_scheduled_run = iterator.get_prev(datetime)
-
-                # 3. 获取有效的上次运行时间。如果是第一次运行，则使用一个极早的时间。
                 effective_last_run = last_run or datetime.min
-
-                # 4. 关键逻辑：检查上一个预定运行时间点，是否晚于我们上次运行的时间。
-                #    这等同于检查在 (上次运行, 现在] 这个时间窗口内，是否有一个预定点被跨过了。
                 if prev_scheduled_run > effective_last_run:
-                    logger.debug(f"任务 '{item_id}' 已到期。上次运行: {effective_last_run}, "
-                                 f"上个预定点: {prev_scheduled_run}, 当前时间: {now}")
+                    logger.debug(
+                        f"任务 '{item_id}' 已到期。上次运行: {effective_last_run}, 上个预定点: {prev_scheduled_run}, 当前时间: {now}")
                     return True
                 else:
                     return False
-                # --- 【修复结束】 ---
-
             except Exception as e:
-                logger.error(f"任务 '{item_id}' 的 cron 表达式无效: {schedule}, 错误: {e}")
+                logger.error(f"任务 '{item_id}' 的 cron 表达式无效: {schedule}, 错误: {e}");
                 return False
-
-        elif trigger_type == 'event_based':
+        elif trigger_type in ['event_based', 'manual']:
             return False
-        elif trigger_type == 'manual':
-            return False
-
         return False
 
     def enable_global_interrupt(self, name: str):
@@ -788,11 +755,11 @@ class Scheduler:
                     found = True
                     break
             if found and plan_name_to_save:
-                self._save_schedule_for_plan(plan_name_to_save)
+                self._save_schedule_for_plan(plan_name_to_save);
                 return {"status": "success",
                         "message": f"Task {task_id} updated."}
             elif found:
-                logger.error(f"任务 {task_id} 缺少 plan_name，无法保存。")
+                logger.error(f"任务 {task_id} 缺少 plan_name，无法保存。");
                 return {"status": "error",
                         "message": f"Task {task_id} missing plan_name."}
             else:
@@ -879,12 +846,23 @@ class Scheduler:
         【最终修正版】获取所有已定义服务的状态信息，专为UI设计。
         手动构建字典，确保所有值都是可安全序列化的基本类型。
         """
-        # 1. 从注册中心获取原始的ServiceDefinition对象列表
         definitions = service_registry.get_all_service_definitions()
 
         status_list = []
         for s_def in definitions:
-            # 2. 手动将每个对象转换为一个安全的字典
+            # 【核心修改】检查 s_def.plugin 是否存在
+            if s_def.plugin:
+                plugin_info = {
+                    'canonical_id': s_def.plugin.canonical_id,
+                    'path': str(s_def.plugin.path)
+                }
+            else:
+                # 对于核心服务，提供一个默认的、有意义的插件信息
+                plugin_info = {
+                    'canonical_id': 'core/framework',
+                    'path': 'N/A'
+                }
+
             status_dict = {
                 'fqid': s_def.fqid,
                 'alias': s_def.alias,
@@ -892,20 +870,11 @@ class Scheduler:
                 'public': s_def.public,
                 'is_extension': s_def.is_extension,
                 'parent_fqid': s_def.parent_fqid,
-
-                # 将 plugin 对象转换为字典
-                'plugin': {
-                    'canonical_id': s_def.plugin.canonical_id,
-                    'path': str(s_def.plugin.path)  # 路径转换为字符串
-                },
-
-                # 将 service_class 类对象转换为包含其信息的字典
+                'plugin': plugin_info, # <--- 使用我们安全创建的 plugin_info
                 'service_class': {
                     'name': s_def.service_class.__name__,
                     'module': s_def.service_class.__module__
                 },
-
-                # 注意：我们绝不暴露 s_def.instance 实例对象给UI
             }
             status_list.append(status_dict)
 
@@ -958,43 +927,33 @@ class Scheduler:
             result = orchestrator.inspect_step(task_name, step_index)
             return result
         except Exception as e:
-            logger.error(f"调用 inspect_step API 时失败: {e}")
+            logger.error(f"调用 inspect_step API 时失败: {e}");
             raise
 
-    def publish_event_manually(self, event_name: str, payload: dict = None, source: str = "manual") -> dict:
-        """手动发布事件的API"""
+    def publish_event_manually(self, event_name: str, payload: dict = None, source: str = "manual",
+                               channel: str = "global") -> dict:
         try:
-            from packages.aura_core.event_bus import Event
-            event = Event(name=event_name, payload=payload or {}, source=source)
+            event = Event(name=event_name, channel=channel, payload=payload or {}, source=source)
             self.event_bus.publish(event)
-            return {"status": "success", "message": f"Event '{event_name}' published"}
+            return {"status": "success", "message": f"Event '{event_name}' on channel '{channel}' published."}
         except Exception as e:
-            logger.error(f"手动发布事件失败: {e}", exc_info=True)
+            logger.error(f"手动发布事件失败: {e}", exc_info=True);
             return {"status": "error", "message": str(e)}
 
     def get_event_system_status(self) -> dict:
-        """获取事件系统状态"""
-        return {
-            "event_queue_size": self.event_task_queue._queue.qsize() if hasattr(self.event_task_queue._queue,
-                                                                                'qsize') else 0,
-            "total_tasks": len(self.all_tasks_definitions),
-            "event_workers": len(self.event_worker_threads),
-            "event_workers_alive": sum(1 for t in self.event_worker_threads if t.is_alive())
-        }
+        return {"event_queue_size": self.event_task_queue._queue.qsize() if hasattr(self.event_task_queue._queue,
+                                                                                    'qsize') else 0,
+                "total_tasks": len(self.all_tasks_definitions), "event_workers": len(self.event_worker_threads),
+                "event_workers_alive": sum(1 for t in self.event_worker_threads if t.is_alive())}
 
     @property
     def services(self):
-        """提供对全局服务注册中心的只读访问。"""
         return service_registry
 
     @property
     def actions(self):
-        """提供对全局行为注册中心的只读访问。"""
         return ACTION_REGISTRY
 
     @property
     def hooks(self):
-        """提供对全局钩子管理器的只读访问。"""
         return hook_manager
-
-

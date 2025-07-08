@@ -101,15 +101,14 @@ class ExecutionEngine:
             logger.info("接收到恢复信号，任务将继续执行。")
 
     def run(self, task_data: Dict[str, Any], task_name: str):
-        if 'states' in task_data:
-            self.run_state_machine(task_data, task_name)
-        elif 'steps' in task_data:
+
+        if 'steps' in task_data:
             self.run_linear_task(task_data, task_name)
         else:
             logger.error(f"任务 '{task_name}' 格式错误。")
 
     def run_linear_task(self, task_data: Dict[str, Any], task_name: str):
-        required_state = task_data.get('requires_state')
+
         steps = task_data.get('steps', [])
         if not steps:
             logger.warning(f"任务 '{task_name}' 中没有任何步骤。")
@@ -122,18 +121,11 @@ class ExecutionEngine:
         else:
             task_display_name = task_name
 
-        if required_state and not is_sub_block:
-            logger.info(f"此任务要求全程处于状态: '{required_state}'")
-
         try:
             for i, step_data in enumerate(steps):
                 if not isinstance(step_data, dict):
                     logger.error(f"步骤 {i + 1} 的格式无效，不是一个字典。已跳过。")
                     continue
-
-                if required_state and not self._verify_current_state(required_state):
-                    raise StopTaskException(f"任务因状态改变而中止。期望状态: '{required_state}', 但当前状态已改变。",
-                                            success=False)
 
                 step_name = step_data.get('name', f'未命名步骤 {i + 1}')
                 control_keys = {'if', 'switch', 'while', 'for'}
@@ -365,78 +357,7 @@ class ExecutionEngine:
         # 【修正】这里的 task_name 只是为了日志清晰，不再用于逻辑判断
         sub_engine.run_linear_task({"steps": steps_to_run}, "sub-block")
 
-    def run_state_machine(self, sm_data: Dict[str, Any], sm_name: str):
-        # ... (这部分代码保持不变) ...
-        sm_display_name = sm_data.get('name', sm_name)
-        logger.info(f"======= 状态机启动: {sm_display_name} =======")
-        states = sm_data.get('states', {})
-        if not states:
-            logger.error("状态机任务中未定义任何 'states'。")
-            return
-        initial_context = sm_data.get('initial_context', {})
-        global_monitor_task = sm_data.get('global_monitor_task')
-        for key, value in initial_context.items():
-            self.context.set(key, value)
-        current_state_name = next(iter(states), None)
-        if not current_state_name:
-            logger.error("状态机中没有任何状态定义。")
-            return
-        try:
-            while current_state_name:
-                self._check_pause()
-                logger.info(f"\n========== 进入状态: [{current_state_name}] ==========")
-                current_state_data = states.get(current_state_name)
-                if not current_state_data:
-                    raise StopTaskException(f"状态 '{current_state_name}' 未定义。", success=False)
-                if 'on_enter' in current_state_data:
-                    logger.info(f"  -> 触发 on_enter...")
-                    self._execute_single_step_logic(current_state_data['on_enter'])
-                while True:
-                    self._check_pause()
-                    detected_state = self.orchestrator.determine_current_state()
-                    if detected_state and detected_state != current_state_name:
-                        logger.warning(
-                            f"状态机检测到外部状态改变！预期在 '{current_state_name}'，但实际在 '{detected_state}'。")
-                        logger.info(f"状态机自我修正，跳转到新状态: '{detected_state}'")
-                        current_state_name = detected_state
-                        break
-                    if 'on_run' in current_state_data:
-                        logger.debug(f"  -> 执行 on_run...")
-                        self._execute_single_step_logic(current_state_data['on_run'])
-                    if global_monitor_task:
-                        logger.debug("  -> 执行全局监控任务...")
-                        self._execute_single_step_logic(global_monitor_task)
-                    next_state_name = self._check_transitions(current_state_data)
-                    if next_state_name:
-                        logger.info(f"状态转换条件满足: 从 '{current_state_name}' -> '{next_state_name}'")
-                        current_state_name = next_state_name
-                        break
-                    time.sleep(0.1)
-            logger.info("状态机执行流程结束。")
-        except StopTaskException as e:
-            if e.success:
-                logger.info(f"✅ 状态机被正常停止: {e.message}")
-            else:
-                logger.warning(f"🛑 状态机因预期失败而停止: {e.message}")
-        except Exception as e:
-            logger.error(f"!! 状态机 '{sm_display_name}' 执行时发生严重错误: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-        logger.info(f"======= 状态机 '{sm_display_name}' 执行结束 =======")
 
-    def _check_transitions(self, state_data: Dict[str, Any]) -> str | None:
-        transitions = state_data.get('transitions', [])
-        for transition in transitions:
-            to_state = transition.get('to')
-            if not to_state: continue
-            if 'when' not in transition:
-                return to_state
-            condition_str = transition['when']
-            condition_result = self._render_value(condition_str, self.context._data)
-            if condition_result:
-                logger.debug(f"转换条件 '{condition_str}' 满足。")
-                return to_state
-        return None
 
     def run_check_task(self, task_data: Dict[str, Any]) -> bool:
         steps = task_data.get('steps', [])
@@ -454,15 +375,6 @@ class ExecutionEngine:
             if not step_succeeded:
                 return False
         return True
-
-    def _verify_current_state(self, expected_state: str) -> bool:
-        logger.debug(f"正在验证是否处于状态: '{expected_state}'")
-        actual_state = self.orchestrator.determine_current_state()
-        if actual_state == expected_state:
-            return True
-        else:
-            logger.warning(f"状态校准失败！期望状态: '{expected_state}', 实际状态: '{actual_state}'。")
-            return False
 
     def _execute_single_step_logic(self, step_data: Dict[str, Any]) -> bool:
         wait_before = step_data.get('wait_before')

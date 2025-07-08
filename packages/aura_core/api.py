@@ -142,6 +142,8 @@ class ServiceDefinition:
 
 # packages/aura_core/api.py (ServiceRegistry 修正部分)
 
+# packages/aura_core/api.py (ServiceRegistry 修正部分)
+
 class ServiceRegistry:
     """服务注册中心。"""
 
@@ -189,15 +191,6 @@ class ServiceRegistry:
             logger.debug(f"已定义服务: '{definition.fqid}' (别名: '{short_name}', 公开: {definition.public})")
 
     def register_instance(self, alias: str, instance: Any, fqid: Optional[str] = None, public: bool = False):
-        """
-        直接注册一个已经创建好的服务实例。
-        这主要用于框架核心服务的注册，如StateStore, EventBus等。
-
-        :param alias: 服务的短名称/别名。
-        :param instance: 已经创建好的服务实例。
-        :param fqid: (可选) 服务的完全限定ID。如果未提供，则默认为 'core/{alias}'。
-        :param public: (可选) 服务是否对UI等外部系统可见。
-        """
         with self._lock:
             target_fqid = fqid or f"core/{alias}"
 
@@ -208,15 +201,14 @@ class ServiceRegistry:
                 existing_fqid = self._short_name_map[alias]
                 logger.warning(f"服务别名冲突！'{alias}' 已指向 '{existing_fqid}'。现在将其重新指向 '{target_fqid}'。")
 
-            # 创建一个简化的ServiceDefinition来描述这个实例
             definition = ServiceDefinition(
                 alias=alias,
                 fqid=target_fqid,
                 service_class=type(instance),
-                plugin=None,  # 核心服务无插件来源
+                plugin=None,
                 public=public,
                 instance=instance,
-                status="resolved"  # 状态直接设为已解析
+                status="resolved"
             )
 
             self._fqid_map[target_fqid] = definition
@@ -277,27 +269,42 @@ class ServiceRegistry:
             if fqid in resolution_chain:
                 resolution_chain.pop()
 
-    def _resolve_constructor_dependencies(self, definition: ServiceDefinition, resolution_chain: List[str]) -> Dict[str, Any]:
+    def _resolve_constructor_dependencies(self, definition: ServiceDefinition, resolution_chain: List[str]) -> Dict[
+        str, Any]:
         dependencies = {}
         init_signature = inspect.signature(definition.service_class.__init__)
-        type_to_alias_map = {sd.service_class: sd.alias for sd in self._fqid_map.values()}
+
+        # 【修正】构建 type -> fqid 的映射，而不是 type -> alias
+        type_to_fqid_map = {sd.service_class: sd.fqid for sd in self._fqid_map.values()}
+
         for param_name, param in init_signature.parameters.items():
             if param_name in ['self', 'parent_service']: continue
-            dependency_alias = None
-            if param.annotation is not inspect.Parameter.empty and param.annotation in type_to_alias_map:
-                dependency_alias = type_to_alias_map[param.annotation]
-                logger.info(f"为 '{definition.fqid}' 解析依赖 '{param_name}': 检测到类型注解 '{param.annotation.__name__}'，使用其服务别名 '{dependency_alias}'。")
-            if dependency_alias is None:
+
+            dependency_fqid = None
+            # 优先使用类型注解来查找依赖的 FQID
+            if param.annotation is not inspect.Parameter.empty and param.annotation in type_to_fqid_map:
+                dependency_fqid = type_to_fqid_map[param.annotation]
+                logger.debug(
+                    f"为 '{definition.fqid}' 解析依赖 '{param_name}': 检测到类型注解 '{param.annotation.__name__}'，使用其服务 FQID '{dependency_fqid}'。")
+
+            # 如果类型注解找不到，则回退到使用参数名作为服务别名来查找
+            if dependency_fqid is None:
                 dependency_alias = param_name
-                logger.info(f"为 '{definition.fqid}' 解析依赖 '{param_name}': 未检测到可识别的服务类型注解，回退使用参数名 '{dependency_alias}' 作为服务别名。")
-            dependencies[param_name] = self.get_service_instance(dependency_alias, resolution_chain)
+                dependency_fqid = self._short_name_map.get(dependency_alias)
+                if dependency_fqid:
+                    logger.debug(
+                        f"为 '{definition.fqid}' 解析依赖 '{param_name}': 未检测到服务类型注解，回退使用参数名作为别名，找到服务 FQID '{dependency_fqid}'。")
+                else:
+                    raise NameError(
+                        f"为 '{definition.fqid}' 自动解析依赖 '{param_name}' 失败：无法通过类型注解或参数名找到对应的服务。")
+
+            dependencies[param_name] = self.get_service_instance(dependency_fqid, resolution_chain)
         return dependencies
 
     def is_registered(self, fqid: str) -> bool:
         with self._lock:
             return fqid in self._fqid_map
 
-    # 【【【核心修正：添加这个缺失的方法】】】
     def get_all_service_definitions(self) -> List[ServiceDefinition]:
         """
         返回所有已注册的服务定义的列表，按 FQID 排序。
@@ -305,6 +312,33 @@ class ServiceRegistry:
         """
         with self._lock:
             return sorted(list(self._fqid_map.values()), key=lambda s: s.fqid)
+
+    def remove_services_by_prefix(self, prefix: str = "", exclude_prefix: Optional[str] = None):
+        """
+        【新增】根据FQID前缀移除服务定义和实例。
+        可用于安全地卸载某个插件的所有服务。
+        """
+        with self._lock:
+            fqids_to_remove = []
+            for fqid in self._fqid_map.keys():
+                should_remove = True
+                if prefix and not fqid.startswith(prefix):
+                    should_remove = False
+                if exclude_prefix and fqid.startswith(exclude_prefix):
+                    should_remove = False
+
+                if should_remove:
+                    fqids_to_remove.append(fqid)
+
+            if fqids_to_remove:
+                logger.info(f"正在移除 {len(fqids_to_remove)} 个服务...")
+                for fqid in fqids_to_remove:
+                    definition = self._fqid_map.pop(fqid, None)
+                    self._instances.pop(fqid, None)
+                    if definition and definition.alias in self._short_name_map:
+                        if self._short_name_map[definition.alias] == fqid:
+                            self._short_name_map.pop(definition.alias, None)
+                    logger.debug(f"服务 '{fqid}' 已被移除。")
 
 
 # 全局单例
