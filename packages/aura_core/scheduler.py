@@ -12,6 +12,7 @@ from pathlib import Path
 import uuid
 from typing import TYPE_CHECKING, Dict, Any, Set, List, Optional
 import inspect
+import queue
 
 from graphlib import TopologicalSorter, CycleError
 from resolvelib import Resolver, BaseReporter
@@ -84,6 +85,7 @@ class Scheduler:
         self.guardian_thread = None
         self.state_store = StateStore()
         self.event_bus = EventBus()
+        self.ui_event_queue = queue.Queue(maxsize=200)
         self.event_task_queue = TaskQueue()
         self.all_tasks_definitions: Dict[str, Any] = {}
         self.event_worker_threads: List[threading.Thread] = []
@@ -93,6 +95,11 @@ class Scheduler:
         self._load_all_resources()
 
     def _register_core_services(self):
+        # 【新增】手动导入并注册 ConfigService
+        from plans.aura_base.services.config_service import ConfigService
+        service_registry.register_instance('config', ConfigService(), public=True)
+
+        # 注册其他核心服务
         service_registry.register_instance('state_store', self.state_store, public=True)
         service_registry.register_instance('event_bus', self.event_bus, public=True)
         service_registry.register_instance('scheduler', self, public=True)
@@ -236,9 +243,22 @@ class Scheduler:
     def _load_all_resources(self):
         logger.info("======= 开始加载所有框架资源 (Aura 3.0) =======")
         try:
-            # 【核心修改】不再调用 self._clear_registries()
-            # 而是手动清理插件相关的注册表
-            self._clear_plugin_registries() # <--- 使用新的、更安全的方法
+            self._clear_plugin_registries()
+
+            # 【修改】将环境配置加载移至最前
+            try:
+                config_service = service_registry.get_service_instance('config')
+                config_service.load_environment_configs(self.base_path)
+            except Exception as e:
+                logger.error(f"加载环境配置时失败: {e}", exc_info=True)
+                # 即使配置加载失败，也尝试继续，但功能可能受限
+
+            self.event_bus.subscribe(
+                event_pattern='*',
+                callback=self._mirror_event_to_ui_queue,
+                channel='*'
+            )
+            logger.info("已建立到UI的事件广播通道。")
 
             self._discover_and_parse_plugins()
             load_order = self._resolve_dependencies_and_sort()
@@ -841,6 +861,49 @@ class Scheduler:
     def get_available_actions(self) -> dict:
         return {name: defn.docstring for name, defn in ACTION_REGISTRY.items()}
 
+    def get_all_actions_with_signatures(self) -> Dict[str, Dict[str, Any]]:
+        """
+        【新增】获取所有Action及其详细签名，专为UI编辑器设计。
+        """
+        actions_with_sigs = {}
+        # 按名称排序，保证UI工具箱顺序稳定
+        sorted_actions = sorted(ACTION_REGISTRY.get_all_action_definitions(), key=lambda a: a.name)
+
+        for action_def in sorted_actions:
+            actions_with_sigs[action_def.name] = self.get_action_signature(action_def.name)
+        return actions_with_sigs
+
+    def get_action_signature(self, action_name: str) -> Optional[Dict[str, Any]]:
+        """
+        【新增】获取单个Action的详细签名信息。
+        """
+        action_def = ACTION_REGISTRY.get(action_name)
+        if not action_def:
+            return None
+
+        sig = action_def.signature
+        params_info = []
+        # 排除掉由框架自动注入的参数
+        excluded_params = {'self', 'context', 'persistent_context', 'engine'}
+
+        for param_name, param_spec in sig.parameters.items():
+            if param_name in excluded_params or param_name in action_def.service_deps:
+                continue
+
+            param_info = {
+                'name': param_name,
+                'type': str(param_spec.annotation) if param_spec.annotation != inspect.Parameter.empty else 'Any',
+                'has_default': param_spec.default != inspect.Parameter.empty,
+                'default_value': param_spec.default if param_spec.default != inspect.Parameter.empty else None
+            }
+            params_info.append(param_info)
+
+        return {
+            'name': action_def.name,
+            'docstring': action_def.docstring,
+            'parameters': params_info
+        }
+
     def get_all_services_status(self) -> List[Dict[str, Any]]:
         """
         【最终修正版】获取所有已定义服务的状态信息，专为UI设计。
@@ -945,6 +1008,79 @@ class Scheduler:
                                                                                     'qsize') else 0,
                 "total_tasks": len(self.all_tasks_definitions), "event_workers": len(self.event_worker_threads),
                 "event_workers_alive": sum(1 for t in self.event_worker_threads if t.is_alive())}
+
+    def get_event_bus(self) -> EventBus:
+        """
+        【新增】为UI和其他外部组件提供一个安全的获取EventBus实例的方法。
+        """
+        return self.event_bus
+
+    def _mirror_event_to_ui_queue(self, event: Event):
+        """
+        【新增】一个特殊的回调函数，它将事件的副本放入UI队列。
+        """
+        if self.ui_event_queue.full():
+            # 如果队列满了，丢弃最旧的事件，为新事件腾出空间
+            try:
+                self.ui_event_queue.get_nowait()
+            except queue.Empty:
+                pass  # 并发情况下可能为空
+
+        # 我们放入一个可序列化的字典，而不是原始的Event对象，以避免跨线程问题
+        event_dict = {
+            "name": event.name,
+            "channel": event.channel,
+            "payload": event.payload,
+            "source": event.source,
+            "id": event.id,
+            "timestamp": event.timestamp,
+            "causation_chain": event.causation_chain,
+            "depth": event.depth
+        }
+        self.ui_event_queue.put(event_dict)
+
+    def get_ui_event_queue(self) -> queue.Queue:
+        """
+        【新增】为UI提供获取事件镜像队列的安全方法。
+        """
+        return self.ui_event_queue
+
+    def update_task_in_file(self, plan_name: str, file_path: str, task_name: str, task_data: Dict[str, Any]):
+        """
+        【新增】安全地更新多任务YAML文件中的单个任务。
+        """
+        orchestrator = self.plans.get(plan_name)
+        if not orchestrator:
+            raise ValueError(f"Plan '{plan_name}' not found.")
+
+        full_path = orchestrator.base_path / file_path
+        if not full_path.is_file():
+            raise FileNotFoundError(f"File not found: {full_path}")
+
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                all_tasks_data = yaml.safe_load(f) or {}
+
+            if not isinstance(all_tasks_data, dict):
+                raise TypeError("Task file is not a valid dictionary.")
+
+            # 更新指定的任务
+            all_tasks_data[task_name] = task_data
+
+            # 写回整个文件
+            with open(full_path, 'w', encoding='utf-8') as f:
+                yaml.dump(all_tasks_data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+
+            logger.info(f"已在文件 '{file_path}' 中更新任务 '{task_name}'。")
+
+            # 立即重新加载该任务的定义到内存，确保一致性
+            full_task_id = f"{plan_name}/{task_name}"
+            self.all_tasks_definitions[full_task_id] = task_data
+
+        except Exception as e:
+            logger.error(f"更新任务文件 '{full_path}' 失败: {e}", exc_info=True)
+            raise
+
 
     @property
     def services(self):

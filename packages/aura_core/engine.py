@@ -86,8 +86,17 @@ class ExecutionEngine:
         self.jinja_env = Environment(loader=BaseLoader())
         self.orchestrator = orchestrator
         self.pause_event = pause_event if pause_event else threading.Event()
+
+        # 【新增】获取 config 服务并注入到 Jinja2
+        try:
+            self.config_service = service_registry.get_service_instance('config')
+            self.jinja_env.globals['config'] = self.config_service.get
+        except Exception as e:
+            logger.warning(f"无法获取ConfigService，Jinja2中的 'config()' 函数将不可用: {e}")
+            self.config_service = None
+            self.jinja_env.globals['config'] = lambda key, default=None: default
+
         self._initialize_middlewares()
-        # 【修改】子引擎初始化时不打印日志
         if not self.context.is_sub_context():
             logger.info("执行引擎已初始化。")
 
@@ -463,19 +472,29 @@ class ExecutionEngine:
         return rendered_params
 
     def _render_value(self, value: Any, context_data: Dict[str, Any]) -> Any:
-        # ... (这部分代码保持不变) ...
         if isinstance(value, str):
+            # 如果字符串是纯粹的Jinja2表达式，我们才尝试 literal_eval
+            is_pure_expression = value.startswith("{{") and value.endswith("}}")
+
             if "{{" not in value and "{%" not in value:
                 return value
             try:
                 template = self.jinja_env.from_string(value)
                 rendered_string = template.render(context_data)
-                try:
-                    return literal_eval(rendered_string)
-                except (ValueError, SyntaxError, MemoryError, TypeError):
+
+                # 【修改】只有在原始值是纯表达式时才尝试 literal_eval
+                if is_pure_expression:
+                    try:
+                        return literal_eval(rendered_string)
+                    except (ValueError, SyntaxError, MemoryError, TypeError):
+                        return rendered_string
+                else:
                     return rendered_string
-            except UndefinedError:
-                return False
+
+            except UndefinedError as e:
+                # 【修改】提供更友好的未定义变量错误提示
+                logger.warning(f"渲染模板 '{value}' 时出错: 变量 {e.message} 未定义。")
+                return value  # 返回原始字符串，而不是False
             except Exception as e:
                 logger.error(f"渲染Jinja2模板 '{value}' 时出错: {e}")
                 return None
@@ -485,7 +504,6 @@ class ExecutionEngine:
             return [self._render_value(item, context_data) for item in value]
         else:
             return value
-
     def _capture_debug_screenshot(self, failed_step_name: str):
         # ... (这部分代码保持不变) ...
         try:

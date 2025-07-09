@@ -1,3 +1,4 @@
+# plans/aura_ui/services/launcher_service.py
 import tkinter as tk
 from packages.aura_core.api import register_service
 from ..main_window import AuraIDE  # 从同级目录导入AuraIDE
