@@ -1,20 +1,15 @@
-# packages/aura_ui/service_manager_panel.py (最终修正版)
-
+# plans/aura_ui/service_manager_panel.py (优化版)
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 from collections import defaultdict
-from pathlib import Path
+from .base_panel import BasePanel # 【修改】导入BasePanel
 
-
-class ServiceManagerPanel(ttk.Frame):
-    def __init__(self, parent, scheduler):
-        super().__init__(parent)
-        self.scheduler = scheduler
-        self.service_data = []
-        self._create_widgets()
-        self._populate_services()
-
+class ServiceManagerPanel(BasePanel): # 【修改】继承自BasePanel
+    def __init__(self, parent, scheduler, ide, **kwargs):
+        super().__init__(parent, scheduler, ide, **kwargs)
     def _create_widgets(self):
+        self.service_data = []
+        # ... (这部分UI创建代码完全不变) ...
         toolbar = ttk.Frame(self)
         toolbar.pack(side=tk.TOP, fill=tk.X, pady=5, padx=5)
         self.refresh_button = ttk.Button(toolbar, text="刷新服务列表", command=self._populate_services)
@@ -46,49 +41,41 @@ class ServiceManagerPanel(ttk.Frame):
         self.detail_text = scrolledtext.ScrolledText(detail_frame, wrap=tk.WORD, height=5, state='disabled')
         self.detail_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
+    def _initial_load(self):
+        """【新增】使用_initial_load钩子来加载初始数据。"""
+        self._populate_services()
+
     def _populate_services(self):
+        # ... (这部分逻辑完全不变) ...
         for item in self.tree.get_children(): self.tree.delete(item)
         self._set_detail_text("")
-
-        # 【【【核心修正：使用 get_all_services_status() 获取安全的字典列表】】】
         self.service_data = self.scheduler.get_all_services_status()
-
         grouped_services = defaultdict(list)
         for service_dict in self.service_data:
             namespace = service_dict.get('plugin', {}).get('canonical_id', 'Unknown')
             grouped_services[namespace].append(service_dict)
-
         for namespace, services in sorted(grouped_services.items()):
             ns_node = self.tree.insert('', tk.END, values=(namespace, '', ''), open=True, tags=('namespace',))
             for service_info in sorted(services, key=lambda s: s.get('alias', '')):
                 alias = service_info.get('alias', 'N/A')
                 status = service_info.get('status', 'N/A')
-
-                # 【【【核心修正：从字典中安全地构造路径】】】
                 class_info = service_info.get('service_class', {})
                 module_path = class_info.get('module', 'unknown.module')
                 class_name = class_info.get('name', 'UnknownClass')
                 path_display = f"{module_path}.{class_name}"
-
                 tag = ''
-                if status == 'resolved':
-                    tag = 'resolved'
-                elif status == 'failed':
-                    tag = 'failed'
-                elif status == 'defined':
-                    tag = 'defined'
-
+                if status == 'resolved': tag = 'resolved'
+                elif status == 'failed': tag = 'failed'
+                elif status == 'defined': tag = 'defined'
                 fqid = service_info.get('fqid', '')
                 self.tree.insert(ns_node, tk.END, values=(alias, status, path_display), tags=(tag,), iid=fqid)
-
         self.tree.tag_configure('namespace', background='#f0f0f0', font=("", 9, "bold"))
 
     def _on_service_select(self, event):
+        # ... (这部分逻辑完全不变) ...
         selected_items = self.tree.selection()
         if not selected_items: return
         selected_iid = selected_items[0]
-
-        # 【【【核心修正：从 self.service_data (字典列表) 中查找】】】
         service_info = next((s for s in self.service_data if s.get('fqid') == selected_iid), None)
 
         if service_info:
@@ -96,16 +83,12 @@ class ServiceManagerPanel(ttk.Frame):
             details += f"别名: {service_info.get('alias', 'N/A')}\n"
             details += f"状态: {service_info.get('status', 'N/A')}\n"
             details += f"插件: {service_info.get('plugin', {}).get('canonical_id', 'N/A')}\n"
-
             class_info = service_info.get('service_class', {})
             details += f"模块: {class_info.get('module', 'N/A')}\n"
             details += f"类名: {class_info.get('name', 'N/A')}\n"
-
             details += f"公开: {'是' if service_info.get('public') else '否'}\n"
-
             if service_info.get('is_extension'):
                 details += f"继承自: {service_info.get('parent_fqid', 'N/A')}\n"
-
             self._set_detail_text(details)
         else:
             values = self.tree.item(selected_iid, 'values')
@@ -113,6 +96,7 @@ class ServiceManagerPanel(ttk.Frame):
                 self._set_detail_text(f"插件命名空间: {values[0]}")
 
     def _set_detail_text(self, text):
+        # ... (这部分逻辑完全不变) ...
         self.detail_text.config(state='normal')
         self.detail_text.delete('1.0', tk.END)
         self.detail_text.insert('1.0', text)

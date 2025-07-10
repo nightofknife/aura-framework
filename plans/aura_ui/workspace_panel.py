@@ -1,5 +1,4 @@
-# plans/aura_ui/workspace_panel.py (v3.0.1 - 修复版)
-
+# plans/aura_ui/workspace_panel.py (优化版)
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, PhotoImage
 import os
@@ -10,34 +9,24 @@ import io
 
 from packages.aura_shared_utils.utils.logger import logger
 from .visual_task_editor import VisualTaskEditor
+from .base_panel import BasePanel  # 【修改】导入BasePanel
 
 
-class WorkspacePanel(ttk.Frame):
-    def __init__(self, parent, scheduler):
-        super().__init__(parent)
-        self.scheduler = scheduler
+class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
+    def __init__(self, parent, scheduler, ide, **kwargs):
+        super().__init__(parent, scheduler, ide, **kwargs)
+    def _create_widgets(self):
         self.active_editor = None
         self.current_plan = tk.StringVar()
         self.photo_image_cache = {}
-
         self.image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.gif']
         self.task_file_extensions = ['.yaml', '.yml']
 
         self._create_color_icons()
-        self._create_widgets()
-        self._populate_plans()
 
-    def _create_color_icons(self):
-        colors = {"folder": "#E69F00", "file": "#56B4E9", "task_file": "#009E73", "task": "#F0E442"}
-        for name, color in colors.items():
-            color_img = PhotoImage(width=16, height=16)
-            color_img.put(color, to=(0, 0, 15, 15))
-            setattr(self, f"{name}_icon", color_img)
-
-    def _create_widgets(self):
+        # ... (这部分UI创建代码完全不变) ...
         main_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         main_pane.pack(fill=tk.BOTH, expand=True)
-
         left_frame = ttk.Frame(main_pane, padding=5)
         main_pane.add(left_frame, weight=1)
         control_frame = ttk.Frame(left_frame)
@@ -51,7 +40,6 @@ class WorkspacePanel(ttk.Frame):
         self.file_tree.column("#0", width=250, anchor='w')
         self.file_tree.pack(fill=tk.BOTH, expand=True)
         self.file_tree.bind("<Double-1>", self._on_file_double_click)
-
         self.editor_area = ttk.Frame(main_pane)
         main_pane.add(self.editor_area, weight=4)
         self.editor_area.grid_rowconfigure(1, weight=1)
@@ -65,7 +53,26 @@ class WorkspacePanel(ttk.Frame):
         self.editor_container = ttk.Frame(self.editor_area)
         self.editor_container.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
 
+    def _initial_load(self):
+        """【新增】使用_initial_load钩子来加载初始数据。"""
+        self._populate_plans()
+
+    def destroy(self):
+        """【新增】重写destroy方法，确保活动编辑器也被销毁。"""
+        if self.active_editor and hasattr(self.active_editor, 'destroy'):
+            self.active_editor.destroy()
+        super().destroy()
+
+    def _create_color_icons(self):
+        # ... (这部分逻辑完全不变) ...
+        colors = {"folder": "#E69F00", "file": "#56B4E9", "task_file": "#009E73", "task": "#F0E442"}
+        for name, color in colors.items():
+            color_img = PhotoImage(width=16, height=16)
+            color_img.put(color, to=(0, 0, 15, 15))
+            setattr(self, f"{name}_icon", color_img)
+
     def _force_refresh_all(self):
+        # ... (这部分逻辑完全不变) ...
         logger.info("用户请求手动刷新方案包列表...")
         selected_plan = self.current_plan.get()
         self.scheduler.reload_plans()
@@ -73,14 +80,12 @@ class WorkspacePanel(ttk.Frame):
         if selected_plan in self.plan_combobox['values']:
             self.plan_combobox.set(selected_plan)
         self._populate_file_tree()
-
-        # --- 【核心修复】如果当前有可视化编辑器，就刷新它的行为列表 ---
         if isinstance(self.active_editor, VisualTaskEditor):
             self.active_editor.update_actions_list()
-
         logger.info("方案包列表刷新完毕。")
 
     def _populate_plans(self):
+        # ... (这部分逻辑完全不变) ...
         plans = self.scheduler.get_all_plans()
         self.plan_combobox['values'] = plans
         if plans:
@@ -92,6 +97,7 @@ class WorkspacePanel(ttk.Frame):
             self.file_tree.delete(*self.file_tree.get_children())
 
     def _populate_file_tree(self, event=None):
+        # ... (这部分逻辑完全不变) ...
         for i in self.file_tree.get_children(): self.file_tree.delete(i)
         plan_name = self.current_plan.get()
         if not plan_name: return
@@ -102,6 +108,7 @@ class WorkspacePanel(ttk.Frame):
             messagebox.showerror("错误", f"无法加载方案文件列表: {e}")
 
     def _add_files_to_tree(self, parent_id, structure, current_path):
+        # ... (这部分逻辑完全不变) ...
         for name, item in sorted(structure.items()):
             full_path = os.path.join(current_path, name)
             is_dir = isinstance(item, dict)
@@ -130,6 +137,7 @@ class WorkspacePanel(ttk.Frame):
                 self.file_tree.insert(parent_id, "end", text=name, image=self.file_icon, tags=('file', full_path))
 
     def _on_file_double_click(self, event):
+        # ... (这部分逻辑完全不变) ...
         item_id = self.file_tree.focus()
         if not item_id: return
         tags = self.file_tree.item(item_id, "tags")
@@ -143,6 +151,7 @@ class WorkspacePanel(ttk.Frame):
         self._load_editor_for_item(file_path, item_type, task_name)
 
     def _load_editor_for_item(self, file_path, item_type, task_name=None):
+        # ... (这部分逻辑完全不变) ...
         if self.active_editor:
             self.active_editor.destroy()
             self.active_editor = None
@@ -152,28 +161,34 @@ class WorkspacePanel(ttk.Frame):
         self.current_file_label.config(text=f"编辑: {display_name}")
         can_save = True
 
+        # 【修改】将依赖作为关键字参数传递，更清晰
+        editor_kwargs = {'scheduler': self.scheduler, 'ide': self.ide}
+
         if item_type == 'task' or (item_type == 'file' and file_path.startswith('tasks' + os.sep) and any(
                 file_path.endswith(ext) for ext in self.task_file_extensions)):
             try:
                 full_content = self.scheduler.get_file_content(plan_name, file_path)
                 all_tasks_data = yaml.safe_load(full_content) or {}
                 task_data_to_edit = all_tasks_data.get(task_name, {}) if item_type == 'task' else all_tasks_data
-                self.active_editor = VisualTaskEditor(self.editor_container, self.scheduler, plan_name, file_path,
-                                                      task_name, task_data_to_edit)
+                self.active_editor = VisualTaskEditor(self.editor_container, plan_name=plan_name, file_path=file_path,
+                                                      task_name=task_name, task_data=task_data_to_edit, **editor_kwargs)
             except Exception as e:
                 messagebox.showerror("加载错误", f"无法加载可视化编辑器: {e}")
-                self.active_editor = TextEditor(self.editor_container, self.scheduler, plan_name, file_path)
+                self.active_editor = TextEditor(self.editor_container, plan_name=plan_name, file_path=file_path,
+                                                **editor_kwargs)
         elif extension.lower() in self.image_extensions:
-            self.active_editor = ImageViewer(self.editor_container, self.scheduler, plan_name, file_path)
+            self.active_editor = ImageViewer(self.editor_container, plan_name=plan_name, file_path=file_path,
+                                             **editor_kwargs)
             can_save = False
         else:
-            self.active_editor = TextEditor(self.editor_container, self.scheduler, plan_name, file_path)
-
+            self.active_editor = TextEditor(self.editor_container, plan_name=plan_name, file_path=file_path,
+                                            **editor_kwargs)
         self.save_button.config(state="normal" if can_save else "disabled")
         if self.active_editor:
             self.active_editor.pack(fill=tk.BOTH, expand=True)
 
     def _save_current_file(self):
+        # ... (这部分逻辑完全不变) ...
         if self.active_editor and hasattr(self.active_editor, 'save'):
             try:
                 self.active_editor.save()
@@ -183,15 +198,18 @@ class WorkspacePanel(ttk.Frame):
             messagebox.showwarning("无操作", "当前编辑器不支持保存。")
 
 
-class TextEditor(ttk.Frame):
-    def __init__(self, parent, scheduler, plan_name, file_path):
-        super().__init__(parent)
-        self.scheduler, self.plan_name, self.file_path = scheduler, plan_name, file_path
+# 【修改】让子编辑器也继承BasePanel，虽然它们很简单，但保持一致性是好的实践
+class TextEditor(BasePanel):
+    def __init__(self, parent, plan_name, file_path, **kwargs):
+        self.plan_name = plan_name
+        self.file_path = file_path
+        super().__init__(parent, **kwargs)
+
+    def _create_widgets(self):
         self.text_area = scrolledtext.ScrolledText(self, wrap=tk.WORD, font=("Courier New", 10))
         self.text_area.pack(fill=tk.BOTH, expand=True)
-        self.load()
 
-    def load(self):
+    def _initial_load(self):
         try:
             content = self.scheduler.get_file_content(self.plan_name, self.file_path)
             self.text_area.delete('1.0', tk.END)
@@ -205,15 +223,17 @@ class TextEditor(ttk.Frame):
         self.scheduler.save_file_content(self.plan_name, self.file_path, content)
 
 
-class ImageViewer(ttk.Frame):
-    def __init__(self, parent, scheduler, plan_name, file_path):
-        super().__init__(parent)
-        self.scheduler, self.plan_name, self.file_path = scheduler, plan_name, file_path
+class ImageViewer(BasePanel):
+    def __init__(self, parent, plan_name, file_path, **kwargs):
+        self.plan_name = plan_name
+        self.file_path = file_path
+        super().__init__(parent, **kwargs)
+
+    def _create_widgets(self):
         self.image_label = ttk.Label(self, background="gray")
         self.image_label.pack(fill=tk.BOTH, expand=True)
-        self.load()
 
-    def load(self):
+    def _initial_load(self):
         try:
             image_bytes = self.scheduler.get_file_content_bytes(self.plan_name, self.file_path)
             image = Image.open(io.BytesIO(image_bytes))

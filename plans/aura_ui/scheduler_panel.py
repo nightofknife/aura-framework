@@ -1,46 +1,33 @@
-# packages/aura_ui/scheduler_panel.py (最终修正版)
-
+# plans/aura_ui/scheduler_panel.py (优化版)
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from collections import defaultdict
 import queue
 from packages.aura_shared_utils.utils.logger import logger
+from .base_panel import BasePanel # 【修改】导入BasePanel
 
-
-class SchedulerPanel(ttk.Frame):
-    # ... 此类的代码完全不变，无需修改 ...
-    def __init__(self, parent, scheduler, log_queue):
-        super().__init__(parent)
-        self.scheduler = scheduler
-        self.log_queue = log_queue
-        self.task_widgets = {}
-        self._create_widgets()
-        self._refresh_ui_status()
-        self._process_log_queue()
+class SchedulerPanel(BasePanel): # 【修改】继承自BasePanel
+    def __init__(self, parent, scheduler, ide, **kwargs):
+        super().__init__(parent, scheduler, ide, **kwargs)
 
     def _create_widgets(self):
+        # ... (这部分UI创建代码完全不变) ...
         paned_window = ttk.PanedWindow(self, orient=tk.VERTICAL)
         paned_window.pack(fill=tk.BOTH, expand=True)
         top_frame = ttk.Frame(paned_window)
         paned_window.add(top_frame, weight=3)
-
         status_panel = ttk.LabelFrame(top_frame, text="当前状态", padding="10");
         status_panel.pack(fill=tk.X, pady=(0, 10), padx=5)
         self.current_task_label = ttk.Label(status_panel, text="当前运行: 无", font=("", 10, "bold"));
         self.current_task_label.pack(anchor="w")
         self.queue_status_label = ttk.Label(status_panel, text="排队任务: 0", foreground="gray");
         self.queue_status_label.pack(anchor="w")
-
         master_control_frame = ttk.LabelFrame(top_frame, text="调度器控制", padding="10")
         master_control_frame.pack(fill=tk.X, pady=(0, 10), padx=5)
-
         self.master_status_label = ttk.Label(master_control_frame, text="状态: 未知", font=("", 10, "bold"))
         self.master_status_label.pack(side=tk.LEFT, padx=5)
-
         self.master_control_button = ttk.Button(master_control_frame, text="启动调度器")
         self.master_control_button.pack(side=tk.RIGHT, padx=5)
-
-
         self.schedule_panel = ttk.LabelFrame(top_frame, text="调度任务列表", padding="10");
         self.schedule_panel.pack(fill=tk.BOTH, expand=True, padx=5)
         canvas = tk.Canvas(self.schedule_panel, borderwidth=0, background="#ffffff")
@@ -51,7 +38,6 @@ class SchedulerPanel(ttk.Frame):
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True);
         scrollbar.pack(side="right", fill="y")
-
         log_frame = ttk.Frame(paned_window);
         paned_window.add(log_frame, weight=1)
         ttk.Label(log_frame, text="实时日志").pack(anchor="w", padx=5)
@@ -60,10 +46,16 @@ class SchedulerPanel(ttk.Frame):
         for tag, color in [('INFO', 'black'), ('WARNING', 'orange'), ('ERROR', 'red'), ('DEBUG', 'gray')]:
             self.log_text.tag_config(tag, foreground=color)
         self.log_text.tag_config('CRITICAL', foreground='red', font=("", 9, "bold"))
+        self.task_widgets = {}
+
+    def _initial_load(self):
+        """【新增】使用_initial_load钩子来启动循环任务。"""
+        self._refresh_ui_status()
+        self._process_log_queue()
 
     def _refresh_ui_status(self):
         try:
-            # --- 【新增】刷新主控制器状态 ---
+            # ... (这部分逻辑完全不变) ...
             master_status = self.scheduler.get_master_status()
             if master_status["is_running"]:
                 self.master_status_label.config(text="状态: 运行中", foreground="green")
@@ -73,8 +65,6 @@ class SchedulerPanel(ttk.Frame):
                 self.master_status_label.config(text="状态: 已停止", foreground="red")
                 self.master_control_button.config(text="启动调度器", command=self.scheduler.start_scheduler)
                 self.schedule_panel.config(text="调度任务列表 (已停止)")
-
-            # --- 刷新任务状态 (保持不变) ---
             all_statuses = self.scheduler.get_schedule_status()
             running_task = next((t for t in all_statuses if t.get('status') == 'running'), None)
             queued_count = sum(1 for t in all_statuses if t.get('status') == 'queued')
@@ -82,15 +72,12 @@ class SchedulerPanel(ttk.Frame):
                 text=f"当前运行: {running_task.get('name', 'N/A') if running_task else '无'}",
                 foreground="blue" if running_task else "black")
             self.queue_status_label.config(text=f"排队任务: {queued_count}")
-
             existing_ids = set(self.task_widgets.keys())
             current_ids = {s.get('id') for s in all_statuses if s.get('id')}
-
             for task_id in existing_ids - current_ids:
                 widget_info = self.task_widgets.pop(task_id, None)
                 if widget_info and widget_info['frame'].winfo_exists():
                     widget_info['frame'].destroy()
-
             for status in all_statuses:
                 task_id = status.get('id')
                 if not task_id: continue
@@ -100,9 +87,11 @@ class SchedulerPanel(ttk.Frame):
         except Exception as e:
             logger.error(f"刷新调度器UI时出错: {e}", exc_info=True)
         finally:
-            self.after(1000, self._refresh_ui_status)
+            # 【修改】使用安全的 schedule_update 方法
+            self.schedule_update(1000, self._refresh_ui_status, "refresh_status")
 
     def _create_task_row(self, task_data):
+        # ... (这部分逻辑完全不变) ...
         task_id = task_data['id']
         frame = ttk.Frame(self.scrollable_frame, padding=5);
         frame.pack(fill=tk.X, pady=2)
@@ -118,6 +107,7 @@ class SchedulerPanel(ttk.Frame):
         self.task_widgets[task_id] = {'frame': frame, 'enabled_var': enabled_var, 'status_label': status_label}
 
     def _update_task_row(self, task_data):
+        # ... (这部分逻辑完全不变) ...
         widgets = self.task_widgets.get(task_data['id'])
         if not widgets: return
         status = task_data.get('status', 'unknown')
@@ -128,6 +118,8 @@ class SchedulerPanel(ttk.Frame):
 
     def _process_log_queue(self):
         try:
+            # 【修改】确保 self.log_queue 存在
+            if not self.log_queue: return
             while not self.log_queue.empty():
                 record = self.log_queue.get_nowait()
                 tag = next((t for t in ['CRITICAL', 'ERROR', 'WARNING', 'DEBUG', 'INFO'] if t in record), 'INFO')
@@ -138,17 +130,16 @@ class SchedulerPanel(ttk.Frame):
         except queue.Empty:
             pass
         finally:
-            self.after(100, self._process_log_queue)
+            # 【修改】使用安全的 schedule_update 方法
+            self.schedule_update(100, self._process_log_queue, "process_log")
 
-
-class TaskRunnerPanel(ttk.Frame):
-    def __init__(self, parent, scheduler):
-        super().__init__(parent)
-        self.scheduler = scheduler
-        self._create_widgets()
-        self.reload_all_resources()
+class TaskRunnerPanel(BasePanel): # 【修改】继承自BasePanel
+    def __init__(self, parent, **kwargs):
+        # 【修改】使用super().__init__调用基类构造函数
+        super().__init__(parent, **kwargs)
 
     def _create_widgets(self):
+        # ... (这部分UI创建代码完全不变) ...
         main_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         main_pane.pack(fill=tk.BOTH, expand=True)
         left_frame = ttk.Frame(main_pane, padding=5)
@@ -167,11 +158,17 @@ class TaskRunnerPanel(ttk.Frame):
         bottom_bar.pack(fill=tk.X, pady=5, padx=5)
         ttk.Button(bottom_bar, text="重新加载所有资源", command=self.reload_all_resources).pack()
 
+    def _initial_load(self):
+        """【新增】使用_initial_load钩子来加载初始数据。"""
+        self.reload_all_resources()
+
     def populate_all(self):
+        # ... (这部分逻辑完全不变) ...
         self.populate_tasks()
         self.populate_actions()
 
     def populate_tasks(self):
+        # ... (这部分逻辑完全不变) ...
         self.task_tree.delete(*self.task_tree.get_children())
         try:
             plans = self.scheduler.get_all_plans()
@@ -184,25 +181,21 @@ class TaskRunnerPanel(ttk.Frame):
             messagebox.showerror("错误", f"无法加载方案包列表: {e}")
 
     def populate_actions(self):
-        """【最终的、正确的版本】按命名空间分组填充行为列表。"""
+        # ... (这部分逻辑完全不变) ...
         self.action_tree.delete(*self.action_tree.get_children())
-
-        # 【【【核心修正：使用 self.scheduler.actions 属性访问】】】
         action_defs = self.scheduler.actions.get_all_action_definitions()
-
         grouped_actions = defaultdict(list)
         for action_def in action_defs:
             namespace = action_def.plugin.canonical_id
             grouped_actions[namespace].append(action_def)
-
         for namespace, actions in sorted(grouped_actions.items()):
             ns_node = self.action_tree.insert('', 'end', values=(namespace,), open=True, tags=('namespace',))
             for action_def in sorted(actions, key=lambda a: a.name):
                 self.action_tree.insert(ns_node, 'end', values=(action_def.name,))
-
         self.action_tree.tag_configure('namespace', background='#f0f0f0', font=("", 9, "bold"))
 
     def on_item_double_click(self, event):
+        # ... (这部分逻辑完全不变) ...
         item_id = self.task_tree.focus()
         item_tags = self.task_tree.item(item_id, "tags")
         if 'task' in item_tags:
@@ -213,12 +206,14 @@ class TaskRunnerPanel(ttk.Frame):
                 logger.info(f"用户从UI请求运行临时任务: {plan_name}/{task_name}")
                 self.scheduler.run_ad_hoc_task(plan_name, task_name)
                 try:
-                    notebook = self.winfo_toplevel().winfo_children()[1]
-                    notebook.select(0)
+                    # 【修改】使用 self.ide 进行更安全的跨面板操作
+                    if self.ide and hasattr(self.ide, 'notebook'):
+                        self.ide.notebook.select(0)
                 except Exception:
                     pass
 
     def reload_all_resources(self):
+        # ... (这部分逻辑完全不变) ...
         try:
             logger.info("UI请求重新加载所有后端资源...")
             self.scheduler.reload_plans()
