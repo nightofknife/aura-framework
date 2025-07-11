@@ -1,10 +1,11 @@
 # plans/aura_ui/event_bus_monitor_panel.py (完整修正版)
-import tkinter as tk
-from tkinter import ttk, messagebox
-import queue
 import json
+import tkinter as tk
 from datetime import datetime
+from tkinter import ttk
+
 from .base_panel import BasePanel
+
 
 class EventBusMonitorPanel(BasePanel):
     def __init__(self, parent, scheduler, ide, **kwargs):

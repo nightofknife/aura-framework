@@ -1,14 +1,15 @@
 # plans/aura_ui/visual_task_editor.py (优化版 v3.5.0)
 
 import tkinter as tk
-from tkinter import ttk, messagebox
 import uuid
+from tkinter import ttk, messagebox
+
 import yaml
 
 # 【修改】导入 BasePanel
 from .base_panel import BasePanel
-from .node_properties_dialog import NodePropertiesDialog
 from .flow_control_dialog import FlowControlDialog
+from .node_properties_dialog import NodePropertiesDialog
 
 
 class VisualTaskEditor(BasePanel):  # 【修改】继承自 BasePanel
@@ -486,4 +487,3 @@ class StepWidget(ttk.Frame):
                                       command=lambda: self.editor.show_add_step_menu(self.step_data['then'],
                                                                                      add_case_btn))
             add_case_btn.pack(pady=5, anchor='w')
-

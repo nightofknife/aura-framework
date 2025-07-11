@@ -7,16 +7,15 @@ Aura 3.0 框架公共API入口。
 
 import inspect
 import textwrap
-from functools import wraps
-from typing import Callable, Any, Dict, List, Optional, Type
-from collections import defaultdict
 import threading
+from collections import defaultdict
 from dataclasses import dataclass
+from typing import Callable, Any, Dict, List, Optional, Type
 
+from packages.aura_core.inheritance_proxy import InheritanceProxy
 # 导入框架的底层依赖
 from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
 from packages.aura_shared_utils.utils.logger import logger
-from packages.aura_core.inheritance_proxy import InheritanceProxy
 
 
 # ==============================================================================
@@ -343,7 +342,6 @@ class ServiceRegistry:
 
 # 全局单例
 service_registry = ServiceRegistry()
-
 
 
 def register_service(alias: str, public: bool = False):

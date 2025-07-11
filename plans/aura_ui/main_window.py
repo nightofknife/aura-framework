@@ -1,22 +1,22 @@
 # plans/aura_ui/main_window.py (最终修正版)
 
+import queue
 import tkinter as tk
 from tkinter import ttk
-import queue
-from typing import Dict, Type, Tuple, Any
+from typing import Dict, Type, Tuple
 
 # 导入所有需要的模块
 from packages.aura_core.scheduler import Scheduler
 from packages.aura_shared_utils.utils.logger import logger
 from .base_panel import BasePanel  # 导入新的基类
-from .scheduler_panel import SchedulerPanel, TaskRunnerPanel
-from .workspace_panel import WorkspacePanel
-from .service_manager_panel import ServiceManagerPanel
-from .planner_debugger_panel import PlannerDebuggerPanel
-from .event_bus_monitor_panel import EventBusMonitorPanel
 from .context_editor import ContextEditorWindow
+from .event_bus_monitor_panel import EventBusMonitorPanel
 from .interrupt_manager import InterruptManagerWindow
+from .planner_debugger_panel import PlannerDebuggerPanel
 from .schedule_editor import ScheduleEditorWindow
+from .scheduler_panel import SchedulerPanel, TaskRunnerPanel
+from .service_manager_panel import ServiceManagerPanel
+from .workspace_panel import WorkspacePanel
 
 
 class AuraIDE:

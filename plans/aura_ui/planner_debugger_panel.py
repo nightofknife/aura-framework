@@ -1,10 +1,11 @@
 # plans/aura_ui/planner_debugger_panel.py (最终优化版)
 
-import tkinter as tk
-from tkinter import ttk, scrolledtext
 import math
 import queue
-from typing import Dict, Any, List, Tuple
+import tkinter as tk
+from tkinter import ttk, scrolledtext
+from typing import Any
+
 from .base_panel import BasePanel
 
 
@@ -21,7 +22,7 @@ class PlannerDebuggerPanel(BasePanel):
 
         # ... (其余 _create_widgets 代码保持不变) ...
         self.NODE_RADIUS, self.NODE_COLOR, self.NODE_TEXT_COLOR, self.NODE_HIGHLIGHT_COLOR, self.NODE_CURRENT_COLOR, self.EDGE_COLOR, self.PATH_COLOR, self.PATH_WIDTH, self.FONT, self.FONT_BOLD = 25, "#A9CCE3", "#1A5276", "#F7DC6F", "#5DADE2", "#ABB2B9", "#2ECC71", 3, (
-        "Arial", 10), ("Arial", 10, "bold")
+            "Arial", 10), ("Arial", 10, "bold")
         self.nodes, self.edges, self.node_positions, self.current_state, self.current_path = {}, [], {}, None, []
         main_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         main_pane.pack(expand=True, fill='both')

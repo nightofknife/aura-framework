@@ -1,15 +1,17 @@
 # aura_official_packages/aura_base/services/ocr_service.py
 
 import re
+import threading
+from dataclasses import dataclass, field
+from typing import Any
+
 import cv2
 import numpy as np
-from dataclasses import dataclass, field
 from paddleocr import PaddleOCR
-from typing import Any
-import threading
 
 # 【核心修改】从框架的统一API入口导入装饰器
 from packages.aura_core.api import register_service
+
 
 # --- 数据类 (OcrResult, MultiOcrResult) 保持不变 ---
 @dataclass
@@ -22,11 +24,13 @@ class OcrResult:
     confidence: float = 0.0
     debug_info: dict[str, Any] = field(default_factory=dict)
 
+
 @dataclass
 class MultiOcrResult:
     """封装多次OCR识别的结果。"""
     count: int = 0
     results: list[OcrResult] = field(default_factory=list)
+
 
 # --- 【核心修改】使用装饰器标记此类为服务 ---
 @register_service(alias="ocr", public=True)
@@ -35,6 +39,7 @@ class OcrService:
     一个封装了PaddleOCR的服务，提供文本查找和识别功能。
     此类是线程安全的。
     """
+
     def __init__(self):
         # ... (类的内部实现完全不变)
         print("正在初始化OCR服务元数据...")
@@ -79,12 +84,15 @@ class OcrService:
         for line in ocr_results:
             line_text = line[1][0]
             is_match = False
-            if match_mode == "exact": is_match = (line_text == text_to_find)
-            elif match_mode == "contains": is_match = (text_to_find in line_text)
+            if match_mode == "exact":
+                is_match = (line_text == text_to_find)
+            elif match_mode == "contains":
+                is_match = (text_to_find in line_text)
             elif match_mode == "regex":
                 try:
                     if re.search(text_to_find, line_text): is_match = True
-                except re.error: is_match = (text_to_find in line_text)
+                except re.error:
+                    is_match = (text_to_find in line_text)
             if is_match:
                 return self._parse_line(line)
         all_recognized_texts = [self._parse_line(line) for line in ocr_results]
@@ -96,12 +104,15 @@ class OcrService:
         for line in ocr_results:
             line_text = line[1][0]
             is_match = False
-            if match_mode == "exact": is_match = (line_text == text_to_find)
-            elif match_mode == "contains": is_match = (text_to_find in line_text)
+            if match_mode == "exact":
+                is_match = (line_text == text_to_find)
+            elif match_mode == "contains":
+                is_match = (text_to_find in line_text)
             elif match_mode == "regex":
                 try:
                     if re.search(text_to_find, line_text): is_match = True
-                except re.error: is_match = (text_to_find in line_text)
+                except re.error:
+                    is_match = (text_to_find in line_text)
             if is_match:
                 found_matches.append(self._parse_line(line))
         return MultiOcrResult(count=len(found_matches), results=found_matches)
@@ -110,4 +121,3 @@ class OcrService:
         ocr_results = self._run_ocr(source_image)
         all_text = [self._parse_line(line) for line in ocr_results]
         return MultiOcrResult(count=len(all_text), results=all_text)
-

@@ -1,7 +1,7 @@
 # plans/data_collector/collector_services/collectors/rss_collector.py
 import time
-import threading
-from typing import Dict, Any, Callable, Optional, List
+from typing import Dict, Any, Callable
+
 from packages.aura_shared_utils.utils.logger import logger
 
 try:

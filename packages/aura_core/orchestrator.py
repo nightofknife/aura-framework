@@ -1,23 +1,21 @@
 # packages/aura_core/orchestrator.py (已修复Bug)
 
 import threading
-from typing import Dict, Any, Optional
 from pathlib import Path
-
-# 【修复】导入 ActionInjector 和 Context
-from .engine import ExecutionEngine
-from .context import Context
-from .api import ACTION_REGISTRY
-from .event_bus import Event
-from .context_manager import ContextManager
-from .task_loader import TaskLoader
-from .action_injector import ActionInjector
-from packages.aura_shared_utils.utils.logger import logger
-
+from typing import Dict, Any, Optional
 from typing import TYPE_CHECKING
 
+from packages.aura_shared_utils.utils.logger import logger
+from .action_injector import ActionInjector
+from .api import ACTION_REGISTRY
+from .context_manager import ContextManager
+# 【修复】导入 ActionInjector 和 Context
+from .engine import ExecutionEngine
+from .event_bus import Event
+from .task_loader import TaskLoader
+
 if TYPE_CHECKING:
-    from .scheduler import Scheduler
+    pass
 
 
 class Orchestrator:

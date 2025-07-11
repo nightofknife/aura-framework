@@ -1,7 +1,8 @@
 # plans/data_collector/collector_services/collectors/database_collector.py
 import sqlite3
-from typing import Dict, Any, List, Optional
 from pathlib import Path
+from typing import Dict, Any, List
+
 from packages.aura_shared_utils.utils.logger import logger
 
 

@@ -1,11 +1,14 @@
 # src/hardware/controller_service.py
 
 import time
+from contextlib import contextmanager
+
 import win32api
 import win32con
-from contextlib import contextmanager
-from packages.aura_shared_utils.utils.logger import logger
+
 from packages.aura_core.api import register_service
+from packages.aura_shared_utils.utils.logger import logger
+
 # --- 虚拟键码映射 (保持不变) ---
 KEY_MAP = {
     'esc': 0x1B, 'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73, 'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
@@ -21,6 +24,7 @@ KEY_MAP = {
     'ctrl': 0x11, 'lctrl': 0xA2, 'rctrl': 0xA3, 'alt': 0x12, 'lalt': 0xA4, 'ralt': 0xA5, 'space': 0x20,
     'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27
 }
+
 
 @register_service(alias="controller", public=True)
 class ControllerService:
@@ -185,6 +189,3 @@ class ControllerService:
             yield
         finally:
             self.key_up(key)
-
-
-

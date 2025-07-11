@@ -2,6 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk
+
 from packages.aura_shared_utils.utils.logger import logger
 
 
@@ -68,9 +69,9 @@ class InterruptManagerWindow(tk.Toplevel):
                 for rule_name, rule in sorted(interrupt_map.items()):
                     values = (rule_name, rule.get('plan_name', 'N/A'), "已启用" if rule.get('enabled') else "已禁用")
                     parent_id, tag = (self.global_id, 'global_interrupt') if rule['scope'] == 'global' else (
-                    self.task_id, 'task_interrupt')
+                        self.task_id, 'task_interrupt')
                     if rule['scope'] != 'global': values = (
-                    values[0], values[1], "激活中" if rule.get('enabled') else "非活动")
+                        values[0], values[1], "激活中" if rule.get('enabled') else "非活动")
                     self.tree.insert(parent_id, "end", iid=rule_name, values=values, tags=(tag,))
             else:
                 for rule_name, rule_data in interrupt_map.items():

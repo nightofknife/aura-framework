@@ -1,16 +1,15 @@
 # packages/aura_core/engine.py (已修复)
 
 import os
-import time
 import threading
+import time
 from typing import Any, Dict, Iterable, List, Optional
 
+from packages.aura_shared_utils.utils.logger import logger
+from .action_injector import ActionInjector
+from .api import service_registry
 from .context import Context
 from .exceptions import StopTaskException
-from .api import service_registry
-from .action_injector import ActionInjector
-
-from packages.aura_shared_utils.utils.logger import logger
 
 
 class JumpSignal(Exception):

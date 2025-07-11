@@ -4,13 +4,14 @@ from typing import Dict, Any, Optional
 
 from packages.aura_core.event_bus import Event
 
+
 class Context:
     def __init__(
-        self,
-        initial_data: Dict[str, Any] = None,
-        is_sub_context: bool = False,
-        # 【新】 增加一个参数来接收触发事件
-        triggering_event: Optional[Event] = None
+            self,
+            initial_data: Dict[str, Any] = None,
+            is_sub_context: bool = False,
+            # 【新】 增加一个参数来接收触发事件
+            triggering_event: Optional[Event] = None
     ):
         """
         初始化上下文。
@@ -24,7 +25,6 @@ class Context:
         # 【新功能】增加内部标志
         self._is_sub_context = is_sub_context
         self._triggering_event = triggering_event
-
 
     def set(self, key: str, value: Any):
         self._data[key.lower()] = value
@@ -51,7 +51,6 @@ class Context:
         它不会继承父上下文的任何变量，并被自动标记为子上下文。
         """
         return Context(is_sub_context=True, triggering_event=self._triggering_event)
-
 
     def __str__(self):
         trigger_id = self._triggering_event.id if self._triggering_event else None

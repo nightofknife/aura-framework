@@ -81,4 +81,3 @@ class UILauncherService:
         【新增】一个辅助方法，用于检查UI是否正在运行。
         """
         return bool(self.root and self.root.winfo_exists())
-

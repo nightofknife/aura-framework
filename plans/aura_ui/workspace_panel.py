@@ -1,20 +1,21 @@
 # plans/aura_ui/workspace_panel.py (优化版)
+import io
+import os
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, PhotoImage
-import os
+
 import yaml
-from pathlib import Path
 from PIL import Image, ImageTk
-import io
 
 from packages.aura_shared_utils.utils.logger import logger
-from .visual_task_editor import VisualTaskEditor
 from .base_panel import BasePanel  # 【修改】导入BasePanel
+from .visual_task_editor import VisualTaskEditor
 
 
 class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
     def __init__(self, parent, scheduler, ide, **kwargs):
         super().__init__(parent, scheduler, ide, **kwargs)
+
     def _create_widgets(self):
         self.active_editor = None
         self.current_plan = tk.StringVar()
@@ -241,4 +242,3 @@ class ImageViewer(BasePanel):
             self.image_label.config(image=self.photo_image)
         except Exception as e:
             self.image_label.config(image=None, text=f"无法预览图片:\n{e}")
-

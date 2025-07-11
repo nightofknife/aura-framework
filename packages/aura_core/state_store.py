@@ -2,7 +2,7 @@
 
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from packages.aura_shared_utils.utils.logger import logger
 

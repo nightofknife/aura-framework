@@ -1,26 +1,26 @@
 # packages/aura_core/scheduler.py (最终版 v4)
 
+import queue
 import threading
 import time
-import yaml
+import uuid
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-import uuid
 from typing import TYPE_CHECKING, Dict, Any, List, Optional
-import queue
 
-# 【修改】导入所有核心服务
-from .plugin_manager import PluginManager
-from .execution_manager import ExecutionManager
-from .scheduling_service import SchedulingService
-from .interrupt_service import InterruptService
+import yaml
 
 from packages.aura_core.api import service_registry, ACTION_REGISTRY, hook_manager
-from packages.aura_shared_utils.utils.logger import logger
-from packages.aura_core.state_store import StateStore
 from packages.aura_core.event_bus import EventBus, Event
+from packages.aura_core.state_store import StateStore
 from packages.aura_core.task_queue import TaskQueue, Tasklet
+from packages.aura_shared_utils.utils.logger import logger
+from .execution_manager import ExecutionManager
+from .interrupt_service import InterruptService
+# 【修改】导入所有核心服务
+from .plugin_manager import PluginManager
+from .scheduling_service import SchedulingService
 
 if TYPE_CHECKING:
     from packages.aura_core.orchestrator import Orchestrator
@@ -199,12 +199,6 @@ class Scheduler:
             worker.start()
         logger.info("事件工作者已启动。")
 
-    # 【移除】所有与 Guardian 相关的私有方法
-    # _guardian_loop, _get_active_interrupts, _should_check_interrupt, _submit_interrupt
-    # 这些方法已经全部迁移到 InterruptService 中。
-
-    # --- 【以下是所有其他方法的代码，大部分保持不变】 ---
-    # ... (在你的文件中，请保留这些方法的原始代码) ...
     def get_master_status(self) -> dict:
         return {"is_running": self.is_scheduler_running.is_set()}
 
@@ -339,6 +333,7 @@ class Scheduler:
         # 【修正】使用正确的 Tasklet 构造函数
         tasklet = Tasklet(task_name=task_id, triggering_event=event)
         self.event_task_queue.put(tasklet)
+
     def _event_worker_loop(self, worker_id: int):
         logger.info(f"[EventWorker-{worker_id}] 事件工作线程已启动")
         while self.is_scheduler_running.is_set():
@@ -392,7 +387,8 @@ class Scheduler:
                     logger.info(f"指挥官: 命令主任务 '{self.interrupted_main_task.get('name', 'N/A')}' 继续执行。")
                     self.pause_event.clear()
                 elif strategy == 'restart_task':
-                    logger.warning(f"指挥官: 策略为重启，原任务 '{self.interrupted_main_task.get('name', 'N/A')}' 将被放弃并重新入队。")
+                    logger.warning(
+                        f"指挥官: 策略为重启，原任务 '{self.interrupted_main_task.get('name', 'N/A')}' 将被放弃并重新入队。")
                     # 【修正】使用正确的 Tasklet 构造函数和 put 方法
                     tasklet = Tasklet(
                         task_name=self.interrupted_main_task['id'],
@@ -633,7 +629,8 @@ class Scheduler:
         try:
             return orchestrator.inspect_step(task_name, step_index)
         except Exception as e:
-            logger.error(f"调用 inspect_step API 时失败: {e}"); raise
+            logger.error(f"调用 inspect_step API 时失败: {e}");
+            raise
 
     def publish_event_manually(self, event_name: str, payload: dict = None, source: str = "manual",
                                channel: str = "global") -> dict:
@@ -642,7 +639,8 @@ class Scheduler:
             self.event_bus.publish(event)
             return {"status": "success", "message": f"Event '{event_name}' on channel '{channel}' published."}
         except Exception as e:
-            logger.error(f"手动发布事件失败: {e}", exc_info=True); return {"status": "error", "message": str(e)}
+            logger.error(f"手动发布事件失败: {e}", exc_info=True);
+            return {"status": "error", "message": str(e)}
 
     def get_event_system_status(self) -> dict:
         # 【修正】调用正确的 qsize 方法
@@ -652,6 +650,7 @@ class Scheduler:
             "event_workers": len(self.event_worker_threads),
             "event_workers_alive": sum(1 for t in self.event_worker_threads if t.is_alive())
         }
+
     def get_event_bus(self) -> EventBus:
         return self.event_bus
 

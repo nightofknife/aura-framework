@@ -15,4 +15,4 @@ version: "1.0.0"
 description: "提供读取和写入进程内存的功能。"
 
 # 插件的依赖关系（如果没有，则为空）
-dependencies: {}
+dependencies: { }

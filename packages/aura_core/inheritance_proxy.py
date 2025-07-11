@@ -21,4 +21,3 @@ class InheritanceProxy:
 
         # 如果都找不到，则抛出标准的 AttributeError
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-

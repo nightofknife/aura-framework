@@ -19,17 +19,17 @@ description: "Provides the foundational services (like OCR, Vision, Controller) 
 # 'dependencies' 列出了这个包正常运行所需要的其他Aura包。
 # 因为这是“基础包”，它不应该依赖于任何其他功能性包。
 # 它只依赖于框架内核，而这是一种隐式依赖，不需要在这里声明。
-dependencies: {}
+dependencies: { }
 
 # 'extends' 用于服务继承。如果这个包里的某个服务是扩展自另一个包的服务，
 # 你需要在这里声明。对于基础包，这里通常是空的。
 # 示例:
 #   - service: 'notification'
 #     from_plugin: 'some-community/notifications'
-extends: []
+extends: [ ]
 
 # 'overrides' 用于完全替换另一个包中的服务。
 # 这是一个强大的功能，但使用时需要谨慎。基础包通常也不需要它。
 # 示例:
 #   - 'some-community/notifications/email'
-overrides: []
+overrides: [ ]

@@ -1,7 +1,9 @@
 # plans/data_collector/collector_services/collectors/http_collector.py
-import requests
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any
+
+import requests
+
 from packages.aura_shared_utils.utils.logger import logger
 
 

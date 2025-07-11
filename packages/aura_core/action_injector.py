@@ -1,15 +1,15 @@
 # packages/aura_core/action_injector.py (全新文件)
 
 import inspect
+from ast import literal_eval
 from typing import Any, Dict
 
-from ast import literal_eval
 from jinja2 import Environment, BaseLoader, UndefinedError
 
-from .context import Context
-from .api import service_registry, ACTION_REGISTRY, ActionDefinition
-from .middleware import middleware_manager
 from packages.aura_shared_utils.utils.logger import logger
+from .api import service_registry, ACTION_REGISTRY, ActionDefinition
+from .context import Context
+from .middleware import middleware_manager
 
 
 class ActionInjector:
@@ -173,4 +173,3 @@ class ActionInjector:
             return [self._render_value(item, context_data) for item in value]
         else:
             return value
-

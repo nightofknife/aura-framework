@@ -1,12 +1,14 @@
 # plans/aura_ui/scheduler_panel.py (优化版)
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
-from collections import defaultdict
 import queue
-from packages.aura_shared_utils.utils.logger import logger
-from .base_panel import BasePanel # 【修改】导入BasePanel
+import tkinter as tk
+from collections import defaultdict
+from tkinter import ttk, scrolledtext, messagebox
 
-class SchedulerPanel(BasePanel): # 【修改】继承自BasePanel
+from packages.aura_shared_utils.utils.logger import logger
+from .base_panel import BasePanel  # 【修改】导入BasePanel
+
+
+class SchedulerPanel(BasePanel):  # 【修改】继承自BasePanel
     def __init__(self, parent, scheduler, ide, **kwargs):
         super().__init__(parent, scheduler, ide, **kwargs)
 
@@ -133,7 +135,8 @@ class SchedulerPanel(BasePanel): # 【修改】继承自BasePanel
             # 【修改】使用安全的 schedule_update 方法
             self.schedule_update(100, self._process_log_queue, "process_log")
 
-class TaskRunnerPanel(BasePanel): # 【修改】继承自BasePanel
+
+class TaskRunnerPanel(BasePanel):  # 【修改】继承自BasePanel
     def __init__(self, parent, **kwargs):
         # 【修改】使用super().__init__调用基类构造函数
         super().__init__(parent, **kwargs)
@@ -222,4 +225,3 @@ class TaskRunnerPanel(BasePanel): # 【修改】继承自BasePanel
         except Exception as e:
             messagebox.showerror("重载失败", f"重新加载资源时发生错误: {e}")
             logger.error(f"UI重载失败: {e}", exc_info=True)
-

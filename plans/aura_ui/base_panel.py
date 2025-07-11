@@ -1,5 +1,4 @@
 # plans/aura_ui/base_panel.py (全新文件)
-import tkinter as tk
 from tkinter import ttk
 from typing import Dict, Any
 
@@ -75,4 +74,3 @@ class BasePanel(ttk.Frame):
 
         # 调用父类的 destroy 方法来销毁UI组件
         super().destroy()
-

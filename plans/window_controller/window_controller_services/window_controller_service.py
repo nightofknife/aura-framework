@@ -1,10 +1,11 @@
 # plans/window_controller/window_controller_services/window_controller_service.py
 
-import win32gui
+import time
+from typing import Tuple, Optional
+
 import win32api
 import win32con
-import time
-from typing import List, Tuple, Optional
+import win32gui
 
 from packages.aura_core.api import register_service
 from packages.aura_shared_utils.utils.logger import logger

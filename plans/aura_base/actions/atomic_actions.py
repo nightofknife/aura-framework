@@ -2,6 +2,7 @@
 
 import time
 from typing import Optional, Any
+
 import cv2
 
 # --- 核心导入 ---
@@ -10,11 +11,10 @@ from packages.aura_core.engine import ExecutionEngine, Context
 from packages.aura_core.exceptions import StopTaskException
 from packages.aura_core.persistent_context import PersistentContext
 from packages.aura_shared_utils.utils.logger import logger
-
 # --- 服务与数据模型导入 (来自本包) ---
 from ..services.app_provider_service import AppProviderService
-from ..services.vision_service import VisionService, MatchResult, MultiMatchResult
 from ..services.ocr_service import OcrService, OcrResult, MultiOcrResult
+from ..services.vision_service import VisionService, MatchResult, MultiMatchResult
 
 
 # ==============================================================================
@@ -53,10 +53,10 @@ def find_image(
         region_y_offset = region[1] if region else 0
         match_result.top_left = (match_result.top_left[0] + region_x_offset, match_result.top_left[1] + region_y_offset)
         match_result.center_point = (
-        match_result.center_point[0] + region_x_offset, match_result.center_point[1] + region_y_offset)
+            match_result.center_point[0] + region_x_offset, match_result.center_point[1] + region_y_offset)
         match_result.rect = (
-        match_result.rect[0] + region_x_offset, match_result.rect[1] + region_y_offset, match_result.rect[2],
-        match_result.rect[3])
+            match_result.rect[0] + region_x_offset, match_result.rect[1] + region_y_offset, match_result.rect[2],
+            match_result.rect[3])
 
     if is_inspect_mode:
         try:
@@ -136,10 +136,10 @@ def find_text(
         region_x_offset = region[0] if region else 0
         region_y_offset = region[1] if region else 0
         ocr_result.center_point = (
-        ocr_result.center_point[0] + region_x_offset, ocr_result.center_point[1] + region_y_offset)
+            ocr_result.center_point[0] + region_x_offset, ocr_result.center_point[1] + region_y_offset)
         ocr_result.rect = (
-        ocr_result.rect[0] + region_x_offset, ocr_result.rect[1] + region_y_offset, ocr_result.rect[2],
-        ocr_result.rect[3])
+            ocr_result.rect[0] + region_x_offset, ocr_result.rect[1] + region_y_offset, ocr_result.rect[2],
+            ocr_result.rect[3])
 
     if is_inspect_mode:
         ocr_result.debug_info.update({
@@ -171,7 +171,7 @@ def recognize_all_text(
     for result in multi_ocr_result.results:
         result.center_point = (result.center_point[0] + region_x_offset, result.center_point[1] + region_y_offset)
         result.rect = (
-        result.rect[0] + region_x_offset, result.rect[1] + region_y_offset, result.rect[2], result.rect[3])
+            result.rect[0] + region_x_offset, result.rect[1] + region_y_offset, result.rect[2], result.rect[3])
 
     return multi_ocr_result
 

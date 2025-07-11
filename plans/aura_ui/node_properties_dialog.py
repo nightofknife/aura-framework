@@ -1,8 +1,8 @@
 # plans/aura_ui/node_properties_dialog.py (v3.0 - 兼容性微调)
 
+import json
 import tkinter as tk
 from tkinter import ttk
-import json
 
 
 class NodePropertiesDialog(tk.Toplevel):

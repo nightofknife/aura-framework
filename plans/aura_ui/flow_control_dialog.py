@@ -99,4 +99,3 @@ class FlowControlDialog(tk.Toplevel):
             self.result['next'] = next_val
 
         self.destroy()
-

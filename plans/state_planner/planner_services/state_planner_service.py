@@ -1,14 +1,15 @@
 # plans/state_planner/planner_services/state_planner_service.py
-import time
 import heapq
-import yaml
-from pathlib import Path
-from collections import deque, defaultdict
+import time
+from collections import defaultdict
 from typing import Dict, Any, List, Optional, Tuple
 
-from packages.aura_core.api import  register_service, service_registry
-from packages.aura_shared_utils.utils.logger import logger
+import yaml
+
+from packages.aura_core.api import register_service, service_registry
 from packages.aura_core.event_bus import EventBus, Event
+from packages.aura_shared_utils.utils.logger import logger
+
 
 # 一个简单的图数据结构，用于状态规划
 class StateGraph:
@@ -59,6 +60,7 @@ class StateGraph:
 
         return None  # 找不到路径
 
+
 @register_service(alias="state_planner", public=True)
 class StatePlannerService:
     def __init__(self, event_bus: EventBus):
@@ -71,7 +73,7 @@ class StatePlannerService:
         """一个发布规划器事件的辅助方法"""
         event = Event(
             name=name,
-            channel="planner", # 所有规划器事件都在 'planner' 频道发布
+            channel="planner",  # 所有规划器事件都在 'planner' 频道发布
             payload=payload,
             source="state_planner_service"
         )
@@ -261,4 +263,3 @@ class StatePlannerService:
         logger.info(f"成功到达目标状态: '{target_state}'")
         self._publish_event("PLANNER_SUCCEEDED", {"reason": "成功到达目标状态"})
         return True
-

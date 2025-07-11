@@ -1,19 +1,20 @@
 # packages/aura_core/plugin_manager.py (全新文件)
 
-import sys
-import inspect
 import importlib.util
+import inspect
+import sys
+import threading
+from graphlib import TopologicalSorter, CycleError
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-import yaml
-from graphlib import TopologicalSorter, CycleError
-from resolvelib import Resolver, BaseReporter
-import threading
 
-from packages.aura_shared_utils.utils.logger import logger
-from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
+import yaml
+from resolvelib import Resolver, BaseReporter
+
 from packages.aura_core.api import service_registry, ServiceDefinition, ACTION_REGISTRY, ActionDefinition, hook_manager
 from packages.aura_core.builder import build_package_from_source, clear_build_cache, API_FILE_NAME
+from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
+from packages.aura_shared_utils.utils.logger import logger
 from .orchestrator import Orchestrator
 from .plugin_provider import PluginProvider
 
@@ -160,7 +161,6 @@ class PluginManager:
                         pause_event=pause_event
                     )
 
-
     def _load_hooks_for_package(self, plugin_def: PluginDefinition):
         hooks_file = plugin_def.path / 'hooks.py'
         if hooks_file.is_file():
@@ -232,4 +232,3 @@ class PluginManager:
         except Exception as e:
             logger.error(f"延迟加载模块 '{file_path}' 失败: {e}", exc_info=True)
             return None  # 返回None而不是重新抛出，让调用者决定如何处理
-

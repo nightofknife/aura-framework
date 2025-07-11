@@ -6,6 +6,7 @@ from packages.aura_core.event_bus import Event
 from packages.aura_shared_utils.utils.logger import logger
 from ..planner_services.state_planner_service import StatePlannerService
 
+
 @register_action(name="ensure_state", public=True)
 @requires_services(state_planner='state_planner')
 def ensure_state(

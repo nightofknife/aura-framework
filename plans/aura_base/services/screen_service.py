@@ -1,15 +1,16 @@
 # packages/aura_base/services/screen_service.py (最终修正版)
 
-import win32gui
-import win32ui
-import win32con
+import time
+from ctypes import windll
+from dataclasses import dataclass, field
+
+import cv2
 import numpy as np
 import screeninfo
+import win32con
+import win32gui
+import win32ui
 from PIL import Image
-from ctypes import windll
-import time
-from dataclasses import dataclass, field
-import cv2
 
 from packages.aura_core.api import register_service
 from packages.aura_shared_utils.utils.logger import logger
@@ -226,4 +227,3 @@ class ScreenService:
         else:
             logger.warning(f"找不到标题为 '{self.target_title}' 的窗口，将进行全屏截图。")
             return self._capture_fullscreen()
-

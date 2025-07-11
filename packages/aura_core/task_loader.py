@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Dict, Any, Optional
+
 import yaml
 from cachetools import TTLCache
 from cachetools.keys import hashkey  # 导入标准的键生成器
@@ -102,4 +103,3 @@ class TaskLoader:
                     all_definitions[task_id] = task_definition
 
         return all_definitions
-

@@ -1,7 +1,7 @@
 # packages/aura_core/middleware.py (Aura 3.0 - 阶段三)
 
-from typing import Callable, List, Any, Dict
 from functools import partial
+from typing import Callable, List, Any, Dict
 
 # 导入框架核心定义
 from packages.aura_core.api import ActionDefinition
@@ -10,7 +10,9 @@ from packages.aura_core.context import Context
 
 class Middleware:
     """中间件基类。所有中间件都应继承此类并实现 handle 方法。"""
-    def handle(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any], next_handler: Callable) -> Any:
+
+    def handle(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any],
+               next_handler: Callable) -> Any:
         """
         处理一个Action的执行。
 
@@ -28,6 +30,7 @@ class MiddlewareManager:
     """
     管理和执行中间件链。
     """
+
     def __init__(self):
         self._middlewares: List[Middleware] = []
 
@@ -35,7 +38,8 @@ class MiddlewareManager:
         """添加一个中间件到链的末尾。"""
         self._middlewares.append(middleware)
 
-    def process(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any], final_handler: Callable) -> Any:
+    def process(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any],
+                final_handler: Callable) -> Any:
         """
         处理一个Action，依次通过所有中间件，最后由 final_handler 执行。
 
@@ -58,6 +62,7 @@ class MiddlewareManager:
 
         # 调用链的第一个处理器
         return handler(action_def, context, params)
+
 
 # 创建一个全局单例
 middleware_manager = MiddlewareManager()

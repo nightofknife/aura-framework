@@ -2,13 +2,16 @@
 import json
 import os
 from typing import Any, Dict
+
 from packages.aura_shared_utils.utils.logger import logger
+
 
 class PersistentContext:
     """
     负责管理一个与文件绑定的、可持久化的上下文。
     数据以JSON格式存储。
     """
+
     def __init__(self, filepath: str):
         self.filepath = filepath
         self._data: Dict[str, Any] = {}

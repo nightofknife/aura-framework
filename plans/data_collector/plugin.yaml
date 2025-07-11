@@ -15,7 +15,7 @@ version: "1.0.0"
 description: "通用数据采集插件，支持HTTP、文件、RSS、数据库等多种数据源"
 
 # 【保留】依赖关系
-dependencies: {}
+dependencies: { }
 
 # 【删除】canonical_id 字段，它由框架根据 identity.author 和 identity.name 自动生成
 # (例如，生成为 aura_team.data_collector)

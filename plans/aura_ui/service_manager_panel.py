@@ -1,12 +1,15 @@
 # plans/aura_ui/service_manager_panel.py (优化版)
 import tkinter as tk
-from tkinter import ttk, scrolledtext
 from collections import defaultdict
-from .base_panel import BasePanel # 【修改】导入BasePanel
+from tkinter import ttk, scrolledtext
 
-class ServiceManagerPanel(BasePanel): # 【修改】继承自BasePanel
+from .base_panel import BasePanel  # 【修改】导入BasePanel
+
+
+class ServiceManagerPanel(BasePanel):  # 【修改】继承自BasePanel
     def __init__(self, parent, scheduler, ide, **kwargs):
         super().__init__(parent, scheduler, ide, **kwargs)
+
     def _create_widgets(self):
         self.service_data = []
         # ... (这部分UI创建代码完全不变) ...
@@ -64,9 +67,12 @@ class ServiceManagerPanel(BasePanel): # 【修改】继承自BasePanel
                 class_name = class_info.get('name', 'UnknownClass')
                 path_display = f"{module_path}.{class_name}"
                 tag = ''
-                if status == 'resolved': tag = 'resolved'
-                elif status == 'failed': tag = 'failed'
-                elif status == 'defined': tag = 'defined'
+                if status == 'resolved':
+                    tag = 'resolved'
+                elif status == 'failed':
+                    tag = 'failed'
+                elif status == 'defined':
+                    tag = 'defined'
                 fqid = service_info.get('fqid', '')
                 self.tree.insert(ns_node, tk.END, values=(alias, status, path_display), tags=(tag,), iid=fqid)
         self.tree.tag_configure('namespace', background='#f0f0f0', font=("", 9, "bold"))

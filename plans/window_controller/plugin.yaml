@@ -15,4 +15,4 @@ version: "1.0.0"
 description: "一个用于Windows系统的后台窗口控制器，可以在不影响用户操作的情况下，向指定窗口发送键鼠消息。"
 
 # 插件的依赖关系
-dependencies: {}
+dependencies: { }

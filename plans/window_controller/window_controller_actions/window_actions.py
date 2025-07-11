@@ -1,8 +1,9 @@
 # plans/window_controller/window_controller_actions/window_actions.py
 
+from typing import Optional, Tuple
+
 from packages.aura_core.api import register_action, requires_services
 from packages.aura_shared_utils.utils.logger import logger
-from typing import Optional, Tuple
 
 
 @register_action(name="find_window", public=True, read_only=True)

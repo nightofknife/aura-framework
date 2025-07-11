@@ -1,17 +1,16 @@
 # plans/data_collector/collector_services/collector_service.py
-import yaml
-from pathlib import Path
-from typing import Dict, Any, List, Optional
 import threading
-import time
+from pathlib import Path
+from typing import Dict, Any, List
+
+import yaml
 
 from packages.aura_core.api import register_service
 from packages.aura_shared_utils.utils.logger import logger
-
-from .collectors.http_collector import HttpCollector
-from .collectors.file_collector import FileCollector
-from .collectors.rss_collector import RssCollector
 from .collectors.database_collector import DatabaseCollector
+from .collectors.file_collector import FileCollector
+from .collectors.http_collector import HttpCollector
+from .collectors.rss_collector import RssCollector
 
 
 @register_service(alias="data_collector", public=True)

@@ -2,9 +2,10 @@
 
 import queue
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 from packages.aura_core.event_bus import Event
+
 
 @dataclass(order=True)
 class PriorityTasklet:
@@ -15,6 +16,7 @@ class PriorityTasklet:
     priority: int
     # 使用 field(compare=False) 使这些字段不参与优先级比较
     tasklet: 'Tasklet' = field(compare=False)
+
 
 @dataclass
 class Tasklet:
@@ -27,10 +29,12 @@ class Tasklet:
     is_ad_hoc: bool = False
     triggering_event: Optional[Event] = None
 
+
 class TaskQueue:
     """
     【修改】一个支持优先级的、线程安全的任务队列。
     """
+
     def __init__(self):
         # 使用 PriorityQueue 来处理高优先级任务
         self._queue = queue.PriorityQueue()

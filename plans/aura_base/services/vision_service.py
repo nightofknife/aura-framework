@@ -1,9 +1,10 @@
 # src/notifier_services/vision_service.py
 
-import cv2
-import numpy as np
 from dataclasses import dataclass, field
 from typing import Any
+
+import cv2
+import numpy as np
 
 from packages.aura_core.api import register_service
 
@@ -24,12 +25,14 @@ class MatchResult:
     confidence: float = 0.0
     debug_info: dict[str, Any] = field(default_factory=dict)
 
+
 @dataclass
 class MultiMatchResult:
     """封装多次匹配操作的结果。"""
     count: int = 0
     # MatchResult 对象的列表
     matches: list[MatchResult] = field(default_factory=list)
+
 
 @register_service(alias="vision", public=True)
 class VisionService:
@@ -159,4 +162,3 @@ class VisionService:
                 ))
 
         return MultiMatchResult(count=len(final_matches), matches=final_matches)
-

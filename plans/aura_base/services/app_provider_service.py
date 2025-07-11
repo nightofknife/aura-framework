@@ -3,10 +3,11 @@
 from contextlib import contextmanager
 
 from packages.aura_core.api import register_service
-from .config_service import ConfigService
-from .screen_service import ScreenService, CaptureResult
-from .controller_service import ControllerService
 from packages.aura_shared_utils.utils.logger import logger
+from .config_service import ConfigService
+from .controller_service import ControllerService
+from .screen_service import ScreenService, CaptureResult
+
 
 @register_service(alias="app", public=True)
 class AppProviderService:

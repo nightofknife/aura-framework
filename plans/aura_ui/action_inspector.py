@@ -2,9 +2,10 @@
 
 import tkinter as tk
 from tkinter import ttk
-from PIL import Image, ImageTk
+
 import cv2
-import numpy as np
+from PIL import Image, ImageTk
+
 
 class ActionInspectorWindow(tk.Toplevel):
     def __init__(self, parent, debug_bundle):
@@ -56,7 +57,8 @@ class ActionInspectorWindow(tk.Toplevel):
         params = result.debug_info.get("params", {})
 
         self.info_tree.insert("", "end", values=("结果", "成功" if result.found else "失败"))
-        self.info_tree.insert("", "end", values=("置信度", f"{result.confidence:.4f}" if result.confidence > 0 else "N/A"))
+        self.info_tree.insert("", "end",
+                              values=("置信度", f"{result.confidence:.4f}" if result.confidence > 0 else "N/A"))
         self.info_tree.insert("", "end", values=("匹配矩形", result.rect if result.found else "N/A"))
 
         if "template" in params:
@@ -95,7 +97,8 @@ class ActionInspectorWindow(tk.Toplevel):
                     r = ocr_item.rect
                     p1, p2 = ((r[0], r[1]), (r[0] + r[2], r[1] + r[3]))
                     cv2.rectangle(img_to_draw_on, p1, p2, (128, 128, 128), 1)
-                    cv2.putText(img_to_draw_on, ocr_item.text, (p1[0], p1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                    cv2.putText(img_to_draw_on, ocr_item.text, (p1[0], p1[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                (200, 200, 200), 1)
 
             self.source_photo = self._numpy_to_photoimage(img_to_draw_on)
             self.source_label.config(image=self.source_photo)

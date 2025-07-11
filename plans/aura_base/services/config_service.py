@@ -1,10 +1,11 @@
 # plans/aura_base/services/config_service.py (分层配置 v3.0)
 
 import os
-from pathlib import Path
-import yaml
-from typing import Dict, Any, Optional
 from collections import ChainMap
+from pathlib import Path
+from typing import Dict, Any
+
+import yaml
 
 from packages.aura_core.api import register_service
 from packages.aura_shared_utils.utils.logger import logger
@@ -112,4 +113,3 @@ class ConfigService:
                 self._deep_merge(destination[key], value)
             else:
                 destination[key] = value
-

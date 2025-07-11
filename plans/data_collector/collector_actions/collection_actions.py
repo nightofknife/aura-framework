@@ -1,7 +1,8 @@
 # plans/data_collector/collector_actions/collection_actions.py
+from typing import Dict, Any, List
+
 from packages.aura_core.api import register_action, requires_services
 from packages.aura_shared_utils.utils.logger import logger
-from typing import Dict, Any, List, Optional
 
 
 # === HTTP采集Actions ===

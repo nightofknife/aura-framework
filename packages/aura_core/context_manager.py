@@ -3,11 +3,11 @@
 from pathlib import Path
 from typing import Optional
 
+from packages.aura_core.api import service_registry
+from packages.aura_core.event_bus import Event
+from packages.aura_shared_utils.utils.logger import logger
 from .context import Context
 from .persistent_context import PersistentContext
-from packages.aura_core.api import service_registry
-from packages.aura_shared_utils.utils.logger import logger
-from packages.aura_core.event_bus import Event
 
 
 class ContextManager:
