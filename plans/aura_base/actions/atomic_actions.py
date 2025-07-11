@@ -523,5 +523,23 @@ def run_python_script(
         logger.info(f"--- Python脚本 '{script_path}' 执行完毕 ---")
         return return_value
     except Exception as e:
-        logger.error(f"执行Python脚本 '{script_path}' 时发生严重错误: {e}", exc_info=True)
+        logger.error(f"执行Python脚本 0'{script_path}' 时发生严重错误: {e}", exc_info=True)
         return False
+
+
+@register_action(name="log_test_step", read_only=True, public=True)
+def log_test_step(message: str, context_vars: dict = None):
+    """
+    一个专门用于框架测试任务的日志记录行为。
+    它会以统一的、易于追踪的格式打印消息和相关的上下文变量。
+    """
+    log_message = f"[FrameworkTest] >> {message}"
+
+    if context_vars:
+        var_str_list = []
+        for key, value in context_vars.items():
+            var_str_list.append(f"{key}={repr(value)}")
+        log_message += f" ({', '.join(var_str_list)})"
+
+    logger.info(log_message)
+    return True

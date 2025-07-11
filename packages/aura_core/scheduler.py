@@ -274,29 +274,44 @@ class Scheduler:
         self._load_all_tasks_definitions()
 
     def _load_all_tasks_definitions(self):
-        logger.info("--- 阶段4.5: 加载所有任务定义 ---")
+        """
+        【修正版】加载所有方案包中的所有任务定义。
+        修正了对多任务格式文件 (一个文件包含多个任务) 的ID构建逻辑。
+        """
+        logger.info("--- 阶段 4.5: 加载所有任务定义 ---")
+        self.all_tasks_definitions.clear()
+
         plans_dir = self.base_path / 'plans'
-        if not plans_dir.is_dir(): return
+        if not plans_dir.is_dir():
+            return
+
         for plan_path in plans_dir.iterdir():
             if not plan_path.is_dir(): continue
             plan_name = plan_path.name
             tasks_dir = plan_path / "tasks"
             if not tasks_dir.is_dir(): continue
+
             for task_file_path in tasks_dir.rglob("*.yaml"):
                 try:
                     with open(task_file_path, 'r', encoding='utf-8') as f:
-                        task_data = yaml.safe_load(f)
-                        if not isinstance(task_data, dict): continue
-                    if 'steps' in task_data:
-                        relative_path = task_file_path.relative_to(tasks_dir)
-                        full_task_id = f"{plan_name}/{relative_path.with_suffix('').as_posix()}"
-                        self.all_tasks_definitions[full_task_id] = task_data
-                    else:
-                        for task_key, task_definition in task_data.items():
-                            if isinstance(task_definition, dict) and 'steps' in task_definition:
-                                self.all_tasks_definitions[f"{plan_name}/{task_key}"] = task_definition
+                        data = yaml.safe_load(f)
+                        if not isinstance(data, dict): continue
+
+                    # 使用 as_posix() 来确保在 Windows 和 Linux 上路径分隔符一致
+                    relative_path_str = task_file_path.relative_to(tasks_dir).with_suffix('').as_posix()
+
+                    # 遍历文件中的所有顶层键
+                    for task_key, task_definition in data.items():
+                        if isinstance(task_definition, dict) and 'steps' in task_definition:
+                            # 【修正】任务ID现在是 文件路径 + 任务键
+                            # 例如: 'quests/daily.yaml' 中的 'main' 任务
+                            # ID 将是 'MyPlan/quests/daily/main'
+                            full_task_id = f"{plan_name}/{relative_path_str}/{task_key}"
+                            self.all_tasks_definitions[full_task_id] = task_definition
+
                 except Exception as e:
                     logger.error(f"加载任务文件 '{task_file_path}' 失败: {e}")
+
         logger.info(f"任务定义加载完毕，共找到 {len(self.all_tasks_definitions)} 个任务。")
 
     def _subscribe_event_triggers(self):
@@ -388,6 +403,10 @@ class Scheduler:
             self.interrupted_main_task = None
 
     def run_manual_task(self, task_id: str):
+        """
+        【修正版】手动运行一个在 schedule.yaml 中定义的任务。
+        这里的 task_id 是 schedule item 的 id，不是任务文件名。
+        """
         with self.lock:
             if self.run_statuses.get(task_id, {}).get('status') in ['queued', 'running']:
                 return {"status": "error", "message": "Task already queued or running."}
@@ -395,8 +414,9 @@ class Scheduler:
             item_to_run = next((item for item in self.schedule_items if item.get('id') == task_id), None)
             if item_to_run:
                 logger.info(f"手动触发任务 '{item_to_run.get('name', task_id)}'，已高优先级加入队列。")
-                # 【修正】使用正确的 Tasklet 构造函数和 put 方法
-                tasklet = Tasklet(task_name=task_id, payload=item_to_run)
+
+                # 【修正】这里的 payload 应该是整个 schedule item
+                tasklet = Tasklet(task_name=item_to_run.get('task'), payload=item_to_run)
                 self.task_queue.put(tasklet, high_priority=True)
                 self.run_statuses.setdefault(task_id, {}).update({'status': 'queued', 'queued_at': datetime.now()})
                 return {"status": "success"}
@@ -404,14 +424,25 @@ class Scheduler:
             return {"status": "error", "message": "Task ID not found."}
 
     def run_ad_hoc_task(self, plan_name: str, task_name: str):
+        """
+        【修正版】运行一个临时的、不在 schedule.yaml 中的任务。
+        这里的 task_name 应该是完整的任务ID，例如 'quests/daily/main'。
+        """
         if plan_name not in self.plans:
             return {"status": "error", "message": f"Plan '{plan_name}' not found."}
 
+        # 【修正】这里的 task_name 已经是方案内的完整路径，直接拼接即可
         full_task_id = f"{plan_name}/{task_name}"
-        # 【修正】使用正确的 Tasklet 构造函数
+
+        # 验证任务是否存在于全局定义中
+        if full_task_id not in self.all_tasks_definitions:
+            logger.error(f"临时任务请求失败: 找不到任务定义 '{full_task_id}'")
+            return {"status": "error", "message": f"Task definition '{full_task_id}' not found."}
+
         tasklet = Tasklet(
             task_name=full_task_id,
             is_ad_hoc=True,
+            # payload 应该包含执行所需的最少信息
             payload={'plan_name': plan_name, 'task_name': task_name}
         )
         self.task_queue.put(tasklet)
