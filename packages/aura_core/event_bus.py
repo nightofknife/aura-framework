@@ -62,7 +62,7 @@ class EventBus:
                     f"重复订阅尝试: 频道 '{channel}', 模式 '{event_pattern}' -> 回调 {callback.__name__} 已存在。")
 
         # 【新增】返回一个句柄，用于取消订阅
-        return (channel, event_pattern, callback)
+        return channel, event_pattern, callback
 
     def unsubscribe(self, subscription_handle: Tuple[str, str, Callable]):
         """

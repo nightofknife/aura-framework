@@ -72,7 +72,7 @@ class PlannerDebuggerPanel(BasePanel):
                 event = self.ui_queue.get_nowait()
                 handler_name = f"_on_{event.name.lower()}"
                 handler = getattr(self, handler_name, self._on_default_event)
-                handler(event)
+                handler()
         finally:
             self.schedule_update(100, self._process_ui_queue, "process_planner_queue")
 

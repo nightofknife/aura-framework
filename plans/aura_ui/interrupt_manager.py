@@ -24,11 +24,11 @@ class InterruptManagerWindow(tk.Toplevel):
         tree_frame = ttk.LabelFrame(main_frame, text="中断规则列表", padding=10)
         tree_frame.pack(fill=tk.BOTH, expand=True)
         self.tree = ttk.Treeview(tree_frame, columns=("Name", "Plan", "Status"), show="headings")
-        self.tree.heading("Name", text="中断名称");
-        self.tree.heading("Plan", text="来源方案包");
+        self.tree.heading("Name", text="中断名称")
+        self.tree.heading("Plan", text="来源方案包")
         self.tree.heading("Status", text="当前状态")
-        self.tree.column("Name", width=300);
-        self.tree.column("Plan", width=150);
+        self.tree.column("Name", width=300)
+        self.tree.column("Plan", width=150)
         self.tree.column("Status", width=200)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 

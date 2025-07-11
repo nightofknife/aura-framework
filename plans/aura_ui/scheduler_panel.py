@@ -16,11 +16,11 @@ class SchedulerPanel(BasePanel): # 【修改】继承自BasePanel
         paned_window.pack(fill=tk.BOTH, expand=True)
         top_frame = ttk.Frame(paned_window)
         paned_window.add(top_frame, weight=3)
-        status_panel = ttk.LabelFrame(top_frame, text="当前状态", padding="10");
+        status_panel = ttk.LabelFrame(top_frame, text="当前状态", padding="10")
         status_panel.pack(fill=tk.X, pady=(0, 10), padx=5)
-        self.current_task_label = ttk.Label(status_panel, text="当前运行: 无", font=("", 10, "bold"));
+        self.current_task_label = ttk.Label(status_panel, text="当前运行: 无", font=("", 10, "bold"))
         self.current_task_label.pack(anchor="w")
-        self.queue_status_label = ttk.Label(status_panel, text="排队任务: 0", foreground="gray");
+        self.queue_status_label = ttk.Label(status_panel, text="排队任务: 0", foreground="gray")
         self.queue_status_label.pack(anchor="w")
         master_control_frame = ttk.LabelFrame(top_frame, text="调度器控制", padding="10")
         master_control_frame.pack(fill=tk.X, pady=(0, 10), padx=5)
@@ -28,7 +28,7 @@ class SchedulerPanel(BasePanel): # 【修改】继承自BasePanel
         self.master_status_label.pack(side=tk.LEFT, padx=5)
         self.master_control_button = ttk.Button(master_control_frame, text="启动调度器")
         self.master_control_button.pack(side=tk.RIGHT, padx=5)
-        self.schedule_panel = ttk.LabelFrame(top_frame, text="调度任务列表", padding="10");
+        self.schedule_panel = ttk.LabelFrame(top_frame, text="调度任务列表", padding="10")
         self.schedule_panel.pack(fill=tk.BOTH, expand=True, padx=5)
         canvas = tk.Canvas(self.schedule_panel, borderwidth=0, background="#ffffff")
         scrollbar = ttk.Scrollbar(self.schedule_panel, orient="vertical", command=canvas.yview)
@@ -36,9 +36,9 @@ class SchedulerPanel(BasePanel): # 【修改】继承自BasePanel
         self.scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True);
+        canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        log_frame = ttk.Frame(paned_window);
+        log_frame = ttk.Frame(paned_window)
         paned_window.add(log_frame, weight=1)
         ttk.Label(log_frame, text="实时日志").pack(anchor="w", padx=5)
         self.log_text = scrolledtext.ScrolledText(log_frame, state='disabled', height=10, wrap=tk.WORD)
@@ -93,14 +93,14 @@ class SchedulerPanel(BasePanel): # 【修改】继承自BasePanel
     def _create_task_row(self, task_data):
         # ... (这部分逻辑完全不变) ...
         task_id = task_data['id']
-        frame = ttk.Frame(self.scrollable_frame, padding=5);
+        frame = ttk.Frame(self.scrollable_frame, padding=5)
         frame.pack(fill=tk.X, pady=2)
         enabled_var = tk.BooleanVar(value=task_data.get('enabled', False))
         display_text = f"{task_data.get('name', '未命名')} ({task_data.get('plan_name')})"
         ttk.Checkbutton(frame, text=display_text, variable=enabled_var,
                         command=lambda: self.scheduler.toggle_task_enabled(task_id, enabled_var.get())).pack(
             side=tk.LEFT, padx=5)
-        status_label = ttk.Label(frame, text="", width=20, anchor="w");
+        status_label = ttk.Label(frame, text="", width=20, anchor="w")
         status_label.pack(side=tk.LEFT, padx=10)
         ttk.Button(frame, text="立即运行", command=lambda: self.scheduler.run_manual_task(task_id)).pack(side=tk.RIGHT,
                                                                                                          padx=5)
