@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import yaml
 
 from packages.aura_core.api import register_service, service_registry
+from packages.aura_core.engine import ExecutionEngine
 from packages.aura_core.event_bus import EventBus, Event
 from packages.aura_shared_utils.utils.logger import logger
 
@@ -139,24 +140,29 @@ class StatePlannerService:
         return None
 
     def execute_transition(self, plan_name: str, transition_data: Dict[str, Any]):
+        """
+        【修正版】执行一个状态转移的动作。
+        - 使用了新的 ContextManager 来创建上下文。
+        - 调用了 Engine 中重命名后的 _execute_single_action_step 方法。
+        """
         orchestrator = self._get_orchestrator(plan_name)
         action_data = transition_data.get('action')
 
         if not isinstance(action_data, dict):
-            logger.error(f"转移定义中的 'action' 格式错误，不是一个字典: {action_data}")
+            logger.error(f"转移定义中的 'action' 格式错误: {action_data}")
             raise ValueError("无效的转移动作定义")
 
-        from packages.aura_core.engine import ExecutionEngine
-        from packages.aura_core.context import Context
+        # 1. 【修正】使用 orchestrator 的 context_manager 来创建正确的、初始化的上下文
+        #    不再需要手动创建 Context() 和调用不存在的 _initialize_context
+        context = orchestrator.context_manager.create_context(
+            task_id=f"planner_transition/{plan_name}/{action_data.get('action')}"
+        )
 
-        context = Context()
-        orchestrator._initialize_context(context, None, f"planner_transition_for_{plan_name}")
-
+        # 2. 创建一个临时的引擎实例来执行这个 ad-hoc 步骤
         engine = ExecutionEngine(context=context, orchestrator=orchestrator)
 
-        # 【修正】直接使用 engine 的 _execute_single_step_logic 来执行
-        # 因为它包含了重试和错误处理逻辑，更健壮
-        step_succeeded = engine._execute_single_step_logic(action_data)
+        # 3. 【修正】调用重命名后的方法 _execute_single_action_step
+        step_succeeded = engine._execute_single_action_step(action_data)
 
         if not step_succeeded:
             raise RuntimeError(f"状态转移失败: 动作 '{action_data.get('action')}' 执行失败。")

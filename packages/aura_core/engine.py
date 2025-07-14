@@ -335,19 +335,32 @@ class ExecutionEngine:
         return return_value
 
     def _capture_debug_screenshot(self, failed_step_name: str):
+        """
+        【最终修正版】在步骤失败时捕获调试截图。
+        - 正确调用 CaptureResult 对象的 .save() 方法。
+        """
         try:
-            app_service = service_registry.get_service_instance('app')
+            # 动态获取服务，避免启动时依赖
+            app_service = service_registry.get_service_instance('Aura-Project/base/app')
             debug_dir = self.context.get('debug_dir')
-            if not app_service or not debug_dir: return
+            if not app_service or not debug_dir:
+                return
 
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             safe_step_name = "".join(c for c in failed_step_name if c.isalnum() or c in (' ', '_')).rstrip()
             filename = f"failure_{timestamp}_{safe_step_name}.png"
             filepath = os.path.join(debug_dir, filename)
 
-            image_data = app_service.capture()
+            # 调用截图服务，返回 CaptureResult 对象
+            capture_result = app_service.capture()
 
-            image_data.save(filepath)
-            logger.error(f"步骤失败，已自动截图至: {filepath}")
+            # 【修正】直接调用 CaptureResult 对象的 save 方法
+            if capture_result and capture_result.success:
+                capture_result.save(filepath)
+                logger.error(f"步骤失败，已自动截图至: {filepath}")
+            else:
+                error_msg = capture_result.error_message if capture_result else "未知错误"
+                logger.error(f"步骤失败，但自动截图也失败了: {error_msg}")
+
         except Exception as e:
-            logger.error(f"在执行失败截图时发生意外错误: {e}")
+            logger.error(f"在执行失败截图时发生意外错误: {e}", exc_info=True)
