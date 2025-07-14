@@ -35,14 +35,49 @@ class Orchestrator:
         self.task_loader = TaskLoader(self.plan_name, self.current_plan_path)
 
     def execute_task(self, task_name_in_plan: str, triggering_event: Optional[Event] = None) -> Any:
-        full_task_id = f"{self.plan_name}/{task_name_in_plan}"
-        task_data = self.task_loader.get_task_data(task_name_in_plan)
-        if not task_data:
-            logger.error(f"找不到任务定义: '{full_task_id}'")
-            raise ValueError(f"Task definition not found: {full_task_id}")
-        context = self.context_manager.create_context(full_task_id, triggering_event)
-        engine = ExecutionEngine(context=context, orchestrator=self, pause_event=self.pause_event)
-        return engine.run(task_data, full_task_id)
+        """
+        【修正版】执行一个任务，并能处理 go_task 跳转信号。
+        这将是一个循环，直到任务链自然结束。
+        """
+        current_task_in_plan = task_name_in_plan
+        last_result = None
+
+        # 使用循环来处理 go_task 产生的任务链
+        while current_task_in_plan:
+            full_task_id = f"{self.plan_name}/{current_task_in_plan}"
+            task_data = self.task_loader.get_task_data(current_task_in_plan)
+
+            if not task_data:
+                logger.error(f"找不到任务定义: '{full_task_id}'")
+                raise ValueError(f"Task definition not found: {full_task_id}")
+
+            # 注意：每次循环都创建一个新的上下文和引擎，保证任务隔离
+            context = self.context_manager.create_context(full_task_id, triggering_event)
+            engine = ExecutionEngine(context=context, orchestrator=self, pause_event=self.pause_event)
+
+            # 执行单个任务
+            result = engine.run(task_data, full_task_id)
+            last_result = result  # 保存最后一次执行的结果
+
+            # 检查是否有 go_task 跳转信号
+            if result.get('status') == 'go_task' and result.get('next_task'):
+                next_full_task_id = result['next_task']
+                next_plan_name, next_task_in_plan = next_full_task_id.split('/', 1)
+
+                # 目前设计只支持在同一个方案内跳转
+                if next_plan_name != self.plan_name:
+                    logger.error(f"go_task 不支持跨方案跳转: 从 '{self.plan_name}' 到 '{next_plan_name}'")
+                    break
+
+                # 更新下一个要执行的任务名，循环将继续
+                current_task_in_plan = next_task_in_plan
+                triggering_event = None  # 触发事件只对第一个任务有效
+            else:
+                # 如果没有跳转信号，或信号无效，则退出循环
+                current_task_in_plan = None
+
+        # 返回任务链中最后一个任务的执行结果
+        return last_result
 
     def load_task_data(self, full_task_id: str) -> Optional[Dict]:
         plan_name, task_name_in_plan = full_task_id.split('/', 1)

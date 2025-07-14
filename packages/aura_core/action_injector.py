@@ -11,6 +11,9 @@ from .api import service_registry, ACTION_REGISTRY, ActionDefinition
 from .context import Context
 from .middleware import middleware_manager
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .engine import ExecutionEngine
 
 class ActionInjector:
     """
@@ -138,10 +141,10 @@ class ActionInjector:
 
     def _render_value(self, value: Any, context_data: Dict[str, Any]) -> Any:
         """
-        渲染单个值，支持字符串、字典和列表的递归渲染。
+        【修正版】渲染单个值。
+        当遇到 UndefinedError 时，返回 None，以确保在 'if' 条件中被评估为 False。
         """
         if isinstance(value, str):
-            # 如果字符串中不包含 Jinja2 标记，直接返回以提高性能
             if "{{" not in value and "{%" not in value:
                 return value
 
@@ -151,21 +154,23 @@ class ActionInjector:
                 template = self.jinja_env.from_string(value)
                 rendered_string = template.render(context_data)
 
-                # 如果是纯表达式 (e.g., "{{ 1 + 1 }}")，尝试将其评估为 Python 对象
                 if is_pure_expression:
                     try:
+                        # 尝试将 "True", "False", "None" 等字符串正确转换为布尔/None
+                        if rendered_string.lower() in ('true', 'false', 'none'):
+                             return literal_eval(rendered_string.capitalize())
                         return literal_eval(rendered_string)
                     except (ValueError, SyntaxError, MemoryError, TypeError):
-                        # 如果评估失败（比如结果是字符串 "hello"），则返回渲染后的字符串
                         return rendered_string
                 else:
                     return rendered_string
             except UndefinedError as e:
-                logger.warning(f"渲染模板 '{value}' 时出错: 变量 {e.message} 未定义。返回原字符串。")
-                return value  # 或者可以返回 None 或空字符串，根据你的策略
+                # 【修正】当变量未定义时，返回 None 而不是原始字符串
+                logger.warning(f"渲染模板 '{value}' 时出错: {e.message}。返回 None。")
+                return None
             except Exception as e:
                 logger.error(f"渲染Jinja2模板 '{value}' 时发生严重错误: {e}")
-                return None  # 或者返回原值
+                return None
 
         elif isinstance(value, dict):
             return {k: self._render_value(v, context_data) for k, v in value.items()}

@@ -2,7 +2,7 @@
 
 import time
 from typing import Optional, Any
-
+import ast
 import cv2
 
 # --- 核心导入 ---
@@ -526,6 +526,74 @@ def run_python_script(
         logger.error(f"执行Python脚本 0'{script_path}' 时发生严重错误: {e}", exc_info=True)
         return False
 
+
+@register_action(name="run_python", public=True)
+@requires_services()  # 默认情况下，只注入 context
+def run_python(context: Context, code: str) -> Any:
+    """
+    在受控环境中执行一小段 Python 代码字符串。
+
+    这段代码可以访问和修改任务上下文。上下文变量被映射到一个名为 `ctx` 的字典中。
+    代码的最后一条表达式的值或 `return` 语句的值将作为此 action 的返回值。
+
+    :param context: 任务的执行上下文，由框架自动注入。
+    :param code: 要执行的 Python 代码字符串。
+    :return: 代码执行后的返回值。
+    """
+    if not isinstance(code, str):
+        logger.error(f"'run_python' 的 'code' 参数必须是字符串，但收到了 {type(code)}。")
+        return None
+
+    logger.debug(f"准备执行 Python 代码:\n---\n{code}\n---")
+
+    try:
+        # 1. 创建一个安全的执行作用域
+        # 我们将任务上下文的数据复制一份，作为可交互的 'ctx' 字典
+        execution_scope = {
+            'ctx': context._data
+        }
+
+        # 2. 解析代码，以确定是表达式还是语句块
+        try:
+            # 尝试将其作为单个表达式来解析和评估
+            # ast.parse(code, mode='eval') 如果成功，说明它是一个可以被 eval 的表达式
+            parsed_code = ast.parse(code.strip(), mode='eval')
+            # 使用 compile 和 eval 来执行，这样可以获取表达式的值
+            compiled_code = compile(parsed_code, '<string>', 'eval')
+            return_value = eval(compiled_code, execution_scope)
+
+        except SyntaxError:
+            # 如果作为表达式失败，则将其作为语句块来处理
+            # 这种情况下，我们需要找到 return 语句或最后一条表达式来获取返回值
+
+            # 为了能捕获 return 的值，我们将代码包装在一个函数中
+            wrapped_code = f"def __aura_py_executor__():\n"
+            for line in code.strip().splitlines():
+                wrapped_code += f"    {line}\n"
+
+            # 如果代码块中没有 return，我们添加一个返回 None 的语句
+            if 'return' not in wrapped_code:
+                wrapped_code += "    return None\n"
+
+            exec(wrapped_code, execution_scope)
+            script_function = execution_scope['__aura_py_executor__']
+            return_value = script_function()
+
+        # 3. 将 'ctx' 字典中可能发生的更改同步回主上下文
+        # 这允许 Python 代码修改任务状态
+        for key, value in execution_scope['ctx'].items():
+            # 只更新发生变化的或新增的键
+            if key not in context._data or context._data[key] is not value:
+                context.set(key, value)
+                logger.debug(f"Python 代码更新了上下文变量: '{key}'")
+
+        logger.debug(f"Python 代码执行完毕，返回: {repr(return_value)}")
+        return return_value
+
+    except Exception as e:
+        logger.error(f"执行 Python 代码时发生错误: {e}", exc_info=True)
+        # 在失败时返回 None，让上层可以判断
+        return None
 
 @register_action(name="log_test_step", read_only=True, public=True)
 def log_test_step(message: str, context_vars: dict = None):

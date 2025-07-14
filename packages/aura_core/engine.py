@@ -225,6 +225,10 @@ class ExecutionEngine:
 
     # 【【【 Bug修复点 1/2 】】】
     def _execute_single_action_step(self, step_data: Dict[str, Any]) -> bool:
+        """
+        【修正版】执行单个 Action 步骤。
+        在步骤最终失败时，如果设置了 output_to，会向上下文中写入 False。
+        """
         wait_before = step_data.get('wait_before')
         if wait_before:
             try:
@@ -248,7 +252,6 @@ class ExecutionEngine:
                 action_name = step_data.get('action')
                 if action_name and action_name.lower() == 'run_task':
                     result = self._run_sub_task(step_data)
-                    # 【修正】如果子任务返回了 JumpSignal，立即将其抛出
                     if isinstance(result, JumpSignal):
                         raise result
                 elif action_name:
@@ -257,9 +260,11 @@ class ExecutionEngine:
                 else:
                     result = True
 
+                # 判断步骤是否成功
                 step_succeeded = True
                 if result is False:
                     step_succeeded = False
+                # 兼容 find_* 系列 action 的返回对象
                 elif hasattr(result, 'found') and result.found is False:
                     step_succeeded = False
 
@@ -272,15 +277,22 @@ class ExecutionEngine:
                     return True
 
             except JumpSignal:
-                raise  # 直接将 JumpSignal 重新抛出，让顶层 run 循环捕获
+                raise
             except Exception as e:
-                logger.error(f"  -> 执行行为 '{step_data.get('action')}' 时发生异常: {e}", exc_info=True)
+                logger.error(f"  -> 执行行为 '{step_data.get('action')}' 时发生异常: {e}", exc_info=False)  # 减少冗余堆栈
 
+        # --- 步骤最终失败的处理逻辑 ---
         step_name = step_data.get('name', '未命名步骤')
         logger.warning(f"  -> 步骤 '{step_name}' 在所有 {max_attempts} 次尝试后仍然失败。")
+
+        # 【修正】如果步骤失败了，但设置了 output_to，则将 False 写入上下文
+        if 'output_to' in step_data:
+            output_var = step_data['output_to']
+            self.context.set(output_var, False)
+            logger.info(f"  -> 因步骤失败，已将上下文变量 '{output_var}' 设置为 False。")
+
         self._capture_debug_screenshot(step_name)
         return False
-
     def _run_sub_task(self, step_data: Dict[str, Any]) -> Any:
         if not self.orchestrator:
             logger.error("'run_task' 无法执行，引擎未关联编排器。")
@@ -334,8 +346,8 @@ class ExecutionEngine:
             filepath = os.path.join(debug_dir, filename)
 
             image_data = app_service.capture()
-            with open(filepath, "wb") as f:
-                f.write(image_data)
+
+            image_data.save(filepath)
             logger.error(f"步骤失败，已自动截图至: {filepath}")
         except Exception as e:
             logger.error(f"在执行失败截图时发生意外错误: {e}")
