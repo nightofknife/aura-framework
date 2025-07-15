@@ -1,3 +1,5 @@
+# packages/aura_core/exceptions.py
+
 class TaskControlException(Exception):
     """用于控制任务流程的基类异常。"""
     pass
