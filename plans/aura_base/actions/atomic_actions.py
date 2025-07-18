@@ -1,13 +1,13 @@
 # aura_official_packages/aura_base/actions/atomic_actions.py (最终合并版)
 
+import ast
 import time
 from typing import Optional, Any, Dict
-import ast
+import re
 import cv2
 
 # --- 核心导入 ---
 from packages.aura_core.api import register_action, requires_services
-from packages.aura_core.context import Context
 from packages.aura_core.engine import ExecutionEngine, Context
 from packages.aura_core.event_bus import EventBus, Event
 from packages.aura_core.exceptions import StopTaskException
@@ -111,6 +111,114 @@ def find_all_images(
     return multi_match_result
 
 
+@register_action(name="find_image_in_scrolling_area", public=True)
+@requires_services(vision='Aura-Project/base/vision', app='Aura-Project/base/app')
+def find_image_in_scrolling_area(
+        app: AppProviderService,
+        vision: VisionService,
+        engine: ExecutionEngine,
+        template: str,
+        scroll_area: tuple[int, int, int, int],
+        # 新增参数: 'up' 或 'down'
+        scroll_direction: str = 'down',
+        max_scrolls: int = 5,
+        scroll_amount: int = 200,  # 每次滚动的像素量
+        threshold: float = 0.8,
+        # 新增参数: 每次滚动后等待UI稳定的时间
+        delay_after_scroll: float = 0.5
+) -> MatchResult:
+    """
+    在一个可滚动的区域内查找图像。如果找不到，会模拟鼠标滚动并再次尝试，
+    直到找到图像或达到最大滚动次数。
+
+    :param scroll_area: 定义了可以滚动的区域 (x, y, width, height)。查找和光标定位都在此区域内。
+    :param scroll_direction: 滚动方向, 'up' 或 'down'。
+    :param max_scrolls: 最大滚动次数。
+    :param scroll_amount: 每次滚动的量。对于 pyautogui 来说，正值向下，负值向上。
+    :param delay_after_scroll: 每次滚动后等待UI加载的时间。
+    :return: 如果找到，返回 MatchResult，否则返回 found=False 的结果。
+    """
+    logger.info(f"在可滚动区域 {scroll_area} 中查找 '{template}'，最多滚动 {max_scrolls} 次。")
+
+    direction_map = {"up": 1, "down": -1}
+    if scroll_direction.lower() not in direction_map:
+        logger.error(f"无效的滚动方向: '{scroll_direction}'。")
+        return MatchResult(found=False)
+
+    scroll_val = scroll_amount * direction_map[scroll_direction.lower()]
+
+    # 将鼠标光标移动到滚动区域中心，以确保滚动作用于此区域
+    scroll_center_x = scroll_area[0] + scroll_area[2] // 2
+    scroll_center_y = scroll_area[1] + scroll_area[3] // 2
+    app.move_to(scroll_center_x, scroll_center_y, duration=0.1)
+
+    for i in range(max_scrolls + 1):  # +1 是因为要先检查一次当前视图
+        if i > 0:
+            logger.info(f"第 {i} 次滚动...")
+            # pyautogui的scroll是在当前鼠标位置滚动
+            app.scroll(scroll_val)
+            time.sleep(delay_after_scroll)
+
+        # 在指定的滚动区域内查找
+        match_result = find_image(app, vision, engine, template, region=scroll_area, threshold=threshold)
+        if match_result.found:
+            logger.info(f"在第 {i} 次滚动后找到图像！")
+            return match_result
+
+    logger.warning(f"在滚动 {max_scrolls} 次后，仍未找到图像 '{template}'。")
+    return MatchResult(found=False)
+
+
+@register_action(name="assert_image_exists", read_only=True, public=True)
+@requires_services(vision='Aura-Project/base/vision', app='Aura-Project/base/app')
+def assert_image_exists(
+        app: AppProviderService,
+        vision: VisionService,
+        engine: ExecutionEngine,
+        template: str,
+        region: Optional[tuple[int, int, int, int]] = None,
+        threshold: float = 0.8,
+        message: Optional[str] = None
+):
+    """
+    断言指定的图像必须存在。如果不存在，则抛出 StopTaskException 使任务失败。
+    这是一个 'Guard Action'，用于保护后续流程的正确性。
+    """
+    match_result = find_image(app, vision, engine, template, region, threshold)
+    if not match_result.found:
+        error_message = message or f"断言失败：期望的图像 '{template}' 不存在。"
+        logger.error(error_message)
+        raise StopTaskException(error_message, success=False)
+
+    logger.info(f"断言成功：图像 '{template}' 已确认存在。")
+    return True  # 如果成功，返回True
+
+
+@register_action(name="assert_image_not_exists", read_only=True, public=True)
+@requires_services(vision='Aura-Project/base/vision', app='Aura-Project/base/app')
+def assert_image_not_exists(
+        app: AppProviderService,
+        vision: VisionService,
+        engine: ExecutionEngine,
+        template: str,
+        region: Optional[tuple[int, int, int, int]] = None,
+        threshold: float = 0.8,
+        message: Optional[str] = None
+):
+    """
+    断言指定的图像必须不存在。如果存在，则抛出 StopTaskException 使任务失败。
+    用于检查错误状态，如“断线重连”弹窗。
+    """
+    match_result = find_image(app, vision, engine, template, region, threshold)
+    if match_result.found:
+        error_message = message or f"断言失败：不期望的图像 '{template}' 却存在了。"
+        logger.error(error_message)
+        raise StopTaskException(error_message, success=False)
+
+    logger.info(f"断言成功：图像 '{template}' 已确认不存在。")
+    return True
+
+
 @register_action(name="find_text", read_only=True, public=True)
 @requires_services(ocr='Aura-Project/base/ocr', app='Aura-Project/base/app')
 def find_text(
@@ -151,6 +259,162 @@ def find_text(
         })
 
     return ocr_result
+
+
+@register_action(name="wait_for_text", public=True)
+@requires_services(ocr='Aura-Project/base/ocr', app='Aura-Project/base/app')
+def wait_for_text(
+        app: AppProviderService,
+        ocr: OcrService,
+        engine: ExecutionEngine,
+        text_to_find: str,
+        timeout: float = 10.0,
+        interval: float = 1.0,
+        region: Optional[tuple[int, int, int, int]] = None,
+        match_mode: str = "contains"
+) -> OcrResult:
+    """
+    在指定时间内，周期性地查找某个文本，直到找到或超时。
+
+    :return: 如果找到，返回 OcrResult，否则返回 found=False 的结果。
+    """
+    logger.info(f"开始等待文本 '{text_to_find}' 出现，最长等待 {timeout} 秒...")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        # 复用强大的 find_text Action
+        ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode)
+        if ocr_result.found:
+            logger.info(f"成功等到文本 '{ocr_result.text}'！")
+            return ocr_result
+        logger.debug(f"尚未等到文本，将在 {interval} 秒后重试...")
+        time.sleep(interval)
+    logger.warning(f"超时 {timeout} 秒，未能等到文本 '{text_to_find}'。")
+    return OcrResult(found=False)
+
+
+@register_action(name="wait_for_text_to_disappear", public=True)
+@requires_services(ocr='Aura-Project/base/ocr', app='Aura-Project/base/app')
+def wait_for_text_to_disappear(
+        app: AppProviderService,
+        ocr: OcrService,
+        engine: ExecutionEngine,
+        text_to_monitor: str,
+        timeout: float = 10.0,
+        interval: float = 1.0,
+        region: Optional[tuple[int, int, int, int]] = None,
+        match_mode: str = "contains"
+) -> bool:
+    """
+    在指定时间内，周期性地检查某个文本，直到它消失或超时。
+
+    :return: 如果文本在超时前消失，返回 True，否则返回 False。
+    """
+    logger.info(f"开始等待文本 '{text_to_monitor}' 消失，最长等待 {timeout} 秒...")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        ocr_result = find_text(app, ocr, engine, text_to_monitor, region, match_mode)
+        if not ocr_result.found:
+            logger.info(f"文本 '{text_to_monitor}' 已消失。等待成功！")
+            return True
+        logger.debug(f"文本仍然存在，将在 {interval} 秒后重试...")
+        time.sleep(interval)
+    logger.warning(f"超时 {timeout} 秒，文本 '{text_to_monitor}' 仍然存在。")
+    return False
+
+
+
+
+
+@register_action(name="get_text_in_region", read_only=True, public=True)
+@requires_services(ocr='Aura-Project/base/ocr', app='Aura-Project/base/app')
+def get_text_in_region(
+        app: AppProviderService,
+        ocr: OcrService,
+        region: tuple[int, int, int, int],
+        whitelist: Optional[str] = None,
+        # 【修正】默认的连接符仍然是空格，但我们确保总会用它
+        join_with: str = " "
+) -> str:
+    """
+    识别指定区域内的所有文本，并将其处理成一个干净的字符串返回。
+
+    :param region: 必须指定一个矩形区域 (x, y, width, height) 来进行识别。
+    :param whitelist: 一个字符串，其中包含所有允许的字符。例如 "0123456789,"。
+                      所有不在此列表中的字符将被移除。
+    :param join_with: 如果识别出多行文本，使用什么字符将它们连接起来。
+                      例如，使用 " " (空格) 或 "\\n" (换行符)。
+    :return: 处理后的文本字符串。如果未识别到任何文本，则返回空字符串。
+    """
+    logger.info(f"正在读取区域 {region} 内的文本...")
+
+    multi_ocr_result = recognize_all_text(app, ocr, region)
+
+    # 【修正】如果找不到结果，直接返回空字符串，不再有分支
+    if not multi_ocr_result.results:
+        return ""
+
+    detected_texts = [res.text for res in multi_ocr_result.results]
+
+    if whitelist:
+        pattern = f'[^{re.escape(whitelist)}]'
+        # 在过滤前先移除换行符等，避免它们影响过滤
+        cleaned_texts = [re.sub(r'[\n\r]', '', txt) for txt in detected_texts]
+        filtered_texts = [re.sub(pattern, '', txt) for txt in cleaned_texts]
+    else:
+        filtered_texts = detected_texts
+
+    # 【修正】移除了 if/else 分支，总是执行 join 操作并返回字符串
+    result = join_with.join(filtered_texts)
+    logger.info(f"识别并处理后的文本: '{result}'")
+    return result
+
+
+@register_action(name="assert_text_exists", read_only=True, public=True)
+@requires_services(ocr='Aura-Project/base/ocr', app='Aura-Project/base/app')
+def assert_text_exists(
+        app: AppProviderService,
+        ocr: OcrService,
+        engine: ExecutionEngine,
+        text_to_find: str,
+        region: Optional[tuple[int, int, int, int]] = None,
+        match_mode: str = "contains",
+        message: Optional[str] = None
+):
+    """
+    断言指定的文本必须存在。如果不存在，则任务失败。
+    """
+    ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode)
+    if not ocr_result.found:
+        error_message = message or f"断言失败：期望的文本 '{text_to_find}' 不存在。"
+        logger.error(error_message)
+        raise StopTaskException(error_message, success=False)
+
+    logger.info(f"断言成功：文本 '{text_to_find}' 已确认存在。")
+    return True
+
+
+@register_action(name="assert_text_not_exists", read_only=True, public=True)
+@requires_services(ocr='Aura-Project/base/ocr', app='Aura-Project/base/app')
+def assert_text_not_exists(
+        app: AppProviderService,
+        ocr: OcrService,
+        engine: ExecutionEngine,
+        text_to_find: str,
+        region: Optional[tuple[int, int, int, int]] = None,
+        match_mode: str = "contains",
+        message: Optional[str] = None
+):
+    """
+    断言指定的文本必须不存在。如果存在，则任务失败。
+    """
+    ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode)
+    if ocr_result.found:
+        error_message = message or f"断言失败：不期望的文本 '{ocr_result.text}' 却存在了。"
+        logger.error(error_message)
+        raise StopTaskException(error_message, success=False)
+
+    logger.info(f"断言成功：文本 '{text_to_find}' 已确认不存在。")
+    return True
 
 
 @register_action(name="recognize_all_text", read_only=True, public=True)
@@ -459,12 +723,186 @@ def wait_for_any(engine: ExecutionEngine, conditions: list, timeout: float = 10.
     start_time = time.time()
     while time.time() - start_time < timeout:
         for i, cond_step in enumerate(conditions):
-            if engine._execute_single_step_logic(cond_step):
+            if engine._execute_single_action_step(cond_step):
                 logger.info(f"条件 {i} 满足！")
                 return {"found": True, "index": i}
         time.sleep(interval)
     logger.warning("等待超时，所有条件均未满足。")
     return {"found": False, "index": -1}
+
+
+@register_action(name="wait_for_color_change", read_only=True, public=True)
+@requires_services(app='Aura-Project/base/app')
+def wait_for_color_change(
+        app: AppProviderService,
+        x: int,
+        y: int,
+        initial_color: tuple[int, int, int],
+        timeout: float = 10.0,
+        interval: float = 0.2,
+        tolerance: int = 5
+) -> bool:
+    """
+    等待指定坐标的像素颜色发生变化。
+    它会持续检查一个点的颜色，直到它不再匹配初始颜色（在容差范围内），或超时。
+
+    :param initial_color: 要监测的初始颜色 (R, G, B)。
+    :param timeout: 最长等待时间（秒）。
+    :param interval: 检查颜色的时间间隔（秒）。
+    :param tolerance: 颜色容差，用于判断是否“等于”初始颜色。
+    :return: 如果颜色在超时前发生变化，返回 True，否则返回 False。
+    """
+    logger.info(f"等待坐标 ({x},{y}) 的颜色从 {initial_color} 发生变化，最长等待 {timeout} 秒...")
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        current_color = app.get_pixel_color(x, y)
+
+        # 使用之前 verify_color_at 的逻辑来判断颜色是否“等于”初始颜色
+        r_diff = abs(current_color[0] - initial_color[0])
+        g_diff = abs(current_color[1] - initial_color[1])
+        b_diff = abs(current_color[2] - initial_color[2])
+        is_still_initial_color = (r_diff + g_diff + b_diff) <= tolerance
+
+        if not is_still_initial_color:
+            logger.info(f"颜色已变化为 {current_color}。等待成功！")
+            return True
+
+        time.sleep(interval)
+
+    logger.warning(f"超时 {timeout} 秒，坐标 ({x},{y}) 的颜色未发生变化。")
+    return False
+
+
+@register_action(name="scan_and_find_best_match", read_only=True, public=True)
+@requires_services(vision='Aura-Project/base/vision', app='Aura-Project/base/app')
+def scan_and_find_best_match(
+        app: AppProviderService,
+        vision: VisionService,
+        engine: ExecutionEngine,
+        template: str,
+        region: tuple[int, int, int, int],
+        # 新增参数: 'top', 'bottom', 'left', 'right'
+        priority: str = 'top',
+        threshold: float = 0.8
+) -> MatchResult:
+    """
+    在指定区域扫描所有匹配项，并根据优先级返回“最佳”的一个。
+    例如，在背包中找到最上面一排的物品，或在屏幕上找到最右边的敌人。
+
+    :param priority: 优先级规则。
+                     'top': Y坐标最小的 (最靠上)。
+                     'bottom': Y坐标最大的 (最靠下)。
+                     'left': X坐标最小的 (最靠左)。
+                     'right': X坐标最大的 (最靠右)。
+    :return: 最佳匹配的结果，如果一个都找不到则返回 found=False 的结果。
+    """
+    logger.info(f"扫描区域寻找最佳匹配项 '{template}'，优先级: {priority}")
+
+    # 复用强大的 find_all_images
+    multi_match_result = find_all_images(app, vision, engine, template, region, threshold)
+
+    if not multi_match_result.matches:
+        logger.warning("在扫描区域内未找到任何匹配项。")
+        return MatchResult(found=False)
+
+    matches = multi_match_result.matches
+    best_match = None
+
+    if priority == 'top':
+        best_match = min(matches, key=lambda m: m.center_point[1])
+    elif priority == 'bottom':
+        best_match = max(matches, key=lambda m: m.center_point[1])
+    elif priority == 'left':
+        best_match = min(matches, key=lambda m: m.center_point[0])
+    elif priority == 'right':
+        best_match = max(matches, key=lambda m: m.center_point[0])
+    else:
+        logger.error(f"无效的优先级规则: '{priority}'。")
+        return MatchResult(found=False)
+
+    logger.info(f"找到最佳匹配项，位于 {best_match.center_point}")
+    return best_match
+
+
+@register_action(name="drag_to_find", public=True)
+@requires_services(vision='Aura-Project/base/vision', app='Aura-Project/base/app')
+def drag_to_find(
+        app: AppProviderService,
+        vision: VisionService,
+        engine: ExecutionEngine,
+        drag_from_template: str,
+        drag_to_template: str,
+        # 新增参数: 允许指定拖拽源和目标的搜索区域
+        from_region: Optional[tuple[int, int, int, int]] = None,
+        to_region: Optional[tuple[int, int, int, int]] = None,
+        threshold: float = 0.8,
+        duration: float = 0.5
+) -> bool:
+    """
+    找到一个对象，然后将其拖拽到另一个找到的对象上。
+
+    :param drag_from_template: 要拖拽的起始物品的图像模板。
+    :param drag_to_template: 要拖拽到的目标位置的图像模板。
+    :return: 如果两个图像都找到并成功完成拖拽，返回 True。
+    """
+    logger.info(f"准备从 '{drag_from_template}' 拖拽到 '{drag_to_template}'...")
+
+    # 查找起点
+    source_match = find_image(app, vision, engine, drag_from_template, from_region, threshold)
+    if not source_match.found:
+        logger.error(f"拖拽失败：找不到起点图像 '{drag_from_template}'。")
+        return False
+
+    # 查找终点
+    target_match = find_image(app, vision, engine, drag_to_template, to_region, threshold)
+    if not target_match.found:
+        logger.error(f"拖拽失败：找不到终点图像 '{drag_to_template}'。")
+        return False
+
+    start_x, start_y = source_match.center_point
+    end_x, end_y = target_match.center_point
+
+    logger.info(f"执行拖拽: 从 {start_x, start_y} 到 {end_x, end_y}")
+    app.drag(start_x, start_y, end_x, end_y, duration=duration)
+
+    return True
+
+
+@register_action(name="verify_color_at", read_only=True, public=True)
+@requires_services(app='Aura-Project/base/app')
+def verify_color_at(
+        app: AppProviderService,
+        x: int,
+        y: int,
+        expected_color: tuple[int, int, int],
+        # 新增参数: 允许颜色有一定的容差
+        tolerance: int = 0
+) -> bool:
+    """
+    验证窗口内指定坐标的像素颜色是否与预期颜色相符（在容差范围内）。
+
+    :param expected_color: 预期的 (R, G, B) 颜色元组。
+    :param tolerance: 颜色容差。每个颜色通道的实际值与预期值的差的绝对值之和
+                     不能超过这个容差。
+    :return: 如果颜色匹配，返回 True，否则返回 False。
+    """
+    actual_color = app.get_pixel_color(x, y)
+
+    if tolerance == 0:
+        is_match = actual_color == expected_color
+    else:
+        r_diff = abs(actual_color[0] - expected_color[0])
+        g_diff = abs(actual_color[1] - expected_color[1])
+        b_diff = abs(actual_color[2] - expected_color[2])
+        is_match = (r_diff + g_diff + b_diff) <= tolerance
+
+    if is_match:
+        logger.debug(f"颜色验证成功在 ({x},{y})。期望: {expected_color}, 实际: {actual_color} (容差: {tolerance})")
+    else:
+        logger.info(f"颜色验证失败在 ({x},{y})。期望: {expected_color}, 实际: {actual_color} (容差: {tolerance})")
+
+    return is_match
 
 
 # --- 占位符与脚本执行行为 ---
@@ -488,7 +926,7 @@ def press_sequence(engine: ExecutionEngine, sequence: list) -> bool:
             return False
         action_name = step_data.get('action')
         logger.info(f"  - 序列步骤 {i + 1}: 执行 '{action_name}'")
-        if not engine._execute_single_step_logic(step_data):
+        if not  engine._execute_single_action_step(step_data):
             logger.error(f"序列在执行 '{action_name}' 时失败，序列中止。")
             return False
     logger.info("输入序列成功执行完毕。")
@@ -597,6 +1035,7 @@ def run_python(context: Context, code: str) -> Any:
         logger.error(f"执行 Python 代码时发生错误: {e}", exc_info=True)
         # 在失败时返回 None，让上层可以判断
         return None
+
 
 @register_action(name="log_test_step", read_only=True, public=True)
 def log_test_step(message: str, context_vars: dict = None):
