@@ -20,6 +20,7 @@ from packages.aura_shared_utils.utils.logger import logger
 from packages.aura_core.scheduler import Scheduler
 from packages.aura_core.api import service_registry
 
+
 class AuraApplication:
     """
     Aura IDE 应用程序的主封装类。
@@ -98,4 +99,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

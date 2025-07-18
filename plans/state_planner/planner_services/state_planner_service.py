@@ -215,7 +215,6 @@ class StatePlannerService:
 
         # 4. 执行计划
         for i in range(len(path) - 1):
-            # 检查超时
             if time.time() - start_time > timeout:
                 logger.error(f"规划执行超时（超过 {timeout} 秒）。")
                 self._publish_event("PLANNER_FAILED", {"reason": "执行超时"})
@@ -223,46 +222,66 @@ class StatePlannerService:
 
             current_step = path[i]
             next_step = path[i + 1]
-
-            logger.info(f"执行路径步骤: 从 '{current_step}' -> '{next_step}'")
-            self._publish_event("PLANNER_STEP_EXECUTING", {
-                "from": current_step,
-                "to": next_step,
-                "path_index": i + 1,
-                "total_steps": len(path) - 1
-            })
-
             transition_key = (current_step, next_step)
             transition_data = state_map.transitions.get(transition_key)
 
             if not transition_data:
+                # 这个错误检查非常重要，保持原样
                 logger.error(f"严重错误：路径有效但找不到转移定义 for {transition_key}")
                 self._publish_event("PLANNER_FAILED", {"reason": f"内部错误：找不到转移定义 for {transition_key}"})
                 return False
 
-            try:
-                self.execute_transition(plan_name, transition_data)
-                # 验证是否真的到达了下一个状态
-                time.sleep(1)
-                validated_state = self.get_current_state(plan_name, state_map)
-                if validated_state != next_step:
-                    logger.error(f"转移执行后状态验证失败！期望到达 '{next_step}'，但当前状态是 '{validated_state}'。")
-                    self._publish_event("PLANNER_FAILED", {
-                        "reason": "状态验证失败",
-                        "expected": next_step,
-                        "actual": validated_state
-                    })
-                    return False
+            # ### NEW: 从转移定义中获取重试配置 ###
+            retry_config = transition_data.get('retry', {})
+            max_attempts = retry_config.get('attempts', 1)
+            retry_delay = retry_config.get('delay', 1.0)  # 默认失败后等待1秒
 
-                self._publish_event("PLANNER_STEP_COMPLETED", {"state_reached": next_step})
-
-            except Exception as e:
-                logger.error(f"执行转移 {transition_key} 时失败: {e}")
-                self._publish_event("PLANNER_FAILED", {
-                    "reason": f"执行转移时发生异常",
+            step_succeeded = False
+            for attempt in range(1, max_attempts + 1):
+                logger.info(f"执行路径步骤: '{current_step}' -> '{next_step}' (尝试 {attempt}/{max_attempts})")
+                self._publish_event("PLANNER_STEP_EXECUTING", {
                     "from": current_step,
                     "to": next_step,
-                    "error": str(e)
+                    "attempt": attempt,
+                    "max_attempts": max_attempts
+                })
+
+                try:
+                    # 执行转移的核心动作
+                    self.execute_transition(plan_name, transition_data)
+
+                    # 等待一个短暂的时间让状态稳定下来
+                    # 这个时间可以考虑也做成可配置的 post_delay
+                    time.sleep(retry_config.get('post_delay', 1.0))
+
+                    # 验证状态是否已达到预期
+                    validated_state = self.get_current_state(plan_name, state_map)
+                    if validated_state == next_step:
+                        logger.info(f"步骤成功: 已到达 '{next_step}'")
+                        self._publish_event("PLANNER_STEP_COMPLETED",
+                                            {"state_reached": next_step, "attempts_used": attempt})
+                        step_succeeded = True
+                        break  # 成功，跳出重试循环
+                    else:
+                        logger.warning(f"尝试 {attempt} 失败: 期望到达 '{next_step}'，但当前状态是 '{validated_state}'。")
+
+                except Exception as e:
+                    logger.error(f"尝试 {attempt} 失败: 执行转移 {transition_key} 时发生异常: {e}", exc_info=True)
+
+                # 如果不是最后一次尝试，则等待后再重试
+                if attempt < max_attempts:
+                    logger.info(f"将在 {retry_delay} 秒后进行下一次尝试...")
+                    time.sleep(retry_delay)
+
+            # 在所有重试结束后，如果步骤仍然失败，则宣告整个规划失败
+            if not step_succeeded:
+                logger.error(
+                    f"步骤失败: 转移 '{current_step}' -> '{next_step}' 在所有 {max_attempts} 次尝试后均未成功。")
+                self._publish_event("PLANNER_FAILED", {
+                    "reason": "转移步骤执行失败",
+                    "from": current_step,
+                    "to": next_step,
+                    "attempts_made": max_attempts
                 })
                 return False
 
