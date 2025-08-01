@@ -189,3 +189,11 @@ class ControllerService:
             yield
         finally:
             self.key_up(key)
+
+
+if __name__ == '__main__':
+    controller = ControllerService()
+    time.sleep(10)
+    while True:
+        controller.press_key(key="f")
+        time.sleep(10)

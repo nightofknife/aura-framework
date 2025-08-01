@@ -1,6 +1,7 @@
 # plans/aura_base/services/app_provider_service.py (最终修正版)
 
 from contextlib import contextmanager
+from typing import Optional, Tuple
 
 from packages.aura_core.api import register_service
 from packages.aura_shared_utils.utils.logger import logger
@@ -47,8 +48,33 @@ class AppProviderService:
     # --- 封装后的高级API ---
     # 【【【核心修正 2/2：所有方法中的错误信息都使用 self.window_title】】】
 
-    def capture(self, rect: tuple[int, int, int, int] | None = None) -> CaptureResult:
-        return self.screen.capture(rect)
+    def capture(self, rect: Optional[Tuple[int, int, int, int]] = None) -> CaptureResult:
+        """
+        【升级版】窗口截图方法
+        现在支持三种模式：
+        1. 无窗口+无rect：截取全屏
+        2. 有窗口+无rect：截取整个窗口
+        3. 有窗口+有rect：直接截取窗口内的指定区域
+        """
+        # 直接调用screen服务的capture方法
+        result = self.screen.capture(rect)
+
+        # 如果窗口存在但截图失败，尝试重新查找窗口
+        if not result.success and self.window_title:
+            logger.info(f"窗口 '{self.window_title}' 可能已关闭，尝试重新查找...")
+            self.screen._update_hwnd()
+            result = self.screen.capture(rect)
+
+        return result
+
+    def get_window_size(self) -> Optional[Tuple[int, int]]:
+        """新增方法：获取窗口当前尺寸"""
+        rect = self.screen.get_client_rect()
+        if rect:
+            _, _, w, h = rect
+            return w, h
+        return None
+
 
     def move_to(self, x: int, y: int, duration: float = 0.25):
         global_coords = self._to_global_coords(x, y)
@@ -73,7 +99,6 @@ class AppProviderService:
         else:
             raise RuntimeError(f"无法定位窗口 '{self.window_title or '未指定'}'，拖拽失败。")
 
-    # ... (从 scroll 到文件末尾的其他方法，除了错误信息外，基本不变) ...
     def scroll(self, amount: int, direction: str = 'down'):
         self.controller.scroll(amount, direction)
 

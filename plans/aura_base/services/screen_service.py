@@ -73,9 +73,6 @@ class ScreenService:
         logger.info(
             f"截图服务已初始化。当前目标: {'全屏' if self.target_title is None else f'窗口<{self.target_title}>'}")
 
-    # 【【【核心修正 3/3：移除 set_target 方法】】】
-    # 移除 set_target 方法，强制所有配置通过 config.yaml 管理，这使得服务行为更可预测。
-    # def set_target(self, target_title: str = None): ...
 
     def _update_hwnd(self):
         if self.target_title:
@@ -88,7 +85,7 @@ class ScreenService:
         else:
             self.hwnd = None
 
-    # ... (从 get_client_rect 到文件末尾的所有其他方法都保持不变) ...
+
     def get_client_rect(self) -> tuple[int, int, int, int] | None:
         if not self.hwnd or not win32gui.IsWindow(self.hwnd):
             self._update_hwnd()
@@ -132,14 +129,26 @@ class ScreenService:
     @staticmethod
     def _bitmap_to_numpy(bitmap) -> np.ndarray | None:
         try:
-            bmp_info = bitmap.GetInfo()
-            bmp_str = bitmap.GetBitmapBits(True)
-            img = Image.frombuffer(
-                'RGB',
-                (bmp_info['bmWidth'], bmp_info['bmHeight']),
-                bmp_str, 'raw', 'BGRX', 0, 1
-            )
-            return np.array(img)
+            info = bitmap.GetInfo()
+            w, h, bpp = info['bmWidth'], info['bmHeight'], info['bmBitsPixel']
+            bits = bitmap.GetBitmapBits(True)
+
+            stride = ((w * bpp + 31) // 32) * 4
+            arr = np.frombuffer(bits, dtype=np.uint8)
+            arr = arr.reshape((h, stride))[:, : (w * (bpp // 8))]
+
+            if bpp == 32:
+                arr = arr.reshape((h, w, 4))
+                # 删掉这一行：arr = np.flipud(arr)
+                img = arr[:, :, :3][:, :, ::-1]  # BGRA/BGRX -> RGB
+            elif bpp == 24:
+                arr = arr.reshape((h, w, 3))
+                # 删掉这一行：arr = np.flipud(arr)
+                img = arr[:, :, ::-1]  # BGR -> RGB
+            else:
+                raise ValueError(f"Unsupported bpp: {bpp}")
+
+            return img.copy()
         except Exception as e:
             logger.error(f"错误: 位图转换失败 - {e}")
             return None

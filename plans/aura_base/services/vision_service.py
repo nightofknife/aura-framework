@@ -1,7 +1,7 @@
 # src/notifier_services/vision_service.py
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Tuple
 
 import cv2
 import numpy as np
@@ -162,3 +162,51 @@ class VisionService:
                 ))
 
         return MultiMatchResult(count=len(final_matches), matches=final_matches)
+
+    def find_color(self,
+                   source_image: np.ndarray,
+                   lower_hsv: Tuple[int, int, int],
+                   upper_hsv: Tuple[int, int, int],
+                   min_area: int = 50) -> MatchResult:
+        """
+        在源图像中查找指定HSV颜色范围内的最大区域。
+
+        :param source_image: 要搜索的图像 (BGR或RGB格式的NumPy数组)。
+        :param lower_hsv: HSV颜色范围的下限 (H, S, V)。
+        :param upper_hsv: HSV颜色范围的上限 (H, S, V)。
+        :param min_area: 匹配区域的最小像素面积，用于过滤噪点。
+        :return: 一个 MatchResult 对象。
+        """
+        if not isinstance(source_image, np.ndarray) or len(source_image.shape) != 3:
+            return MatchResult(found=False, debug_info={"error": "输入图像必须是BGR或RGB格式的NumPy数组。"})
+
+        # 1. 转换到HSV色彩空间
+        hsv_image = cv2.cvtColor(source_image, cv2.COLOR_BGR2HSV)
+
+        # 2. 创建颜色掩码
+        mask = cv2.inRange(hsv_image, np.array(lower_hsv), np.array(upper_hsv))
+
+        # 3. 查找轮廓
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            return MatchResult(found=False)
+
+        # 4. 找到面积最大的轮廓
+        best_contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(best_contour)
+
+        # 5. 检查面积是否满足阈值
+        if area >= min_area:
+            x, y, w, h = cv2.boundingRect(best_contour)
+            center_x = x + w // 2
+            center_y = y + h // 2
+            return MatchResult(
+                found=True,
+                top_left=(x, y),
+                center_point=(center_x, center_y),
+                rect=(x, y, w, h),
+                confidence=area  # 使用面积作为一种置信度
+            )
+
+        return MatchResult(found=False, confidence=area)
