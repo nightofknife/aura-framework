@@ -33,6 +33,21 @@ class OcrService:
     def __init__(self):
         self._thread_local_storage = threading.local()
 
+    def initialize_engine(self):
+        """
+        【新增】手动预初始化当前线程的OCR引擎。
+
+        在程序启动时或在执行任何OCR任务前调用此方法，
+        可以避免在第一次识别时因引擎加载而产生的性能延迟。
+
+        此方法是线程安全的，且可以安全地重复调用。
+        """
+        thread_id = threading.get_ident()
+        print(f"线程 {thread_id}: 收到手动初始化请求...")
+        # 直接调用 _get_engine()。它的内部逻辑就是“如果不存在则创建”，
+        # 这是最直接且代码复用最好的方式。
+        self._get_engine()
+
     def _get_engine(self) -> PaddleOCR:
         engine = getattr(self._thread_local_storage, 'ocr_engine', None)
         if engine is None:
@@ -122,6 +137,30 @@ class OcrService:
             if is_match:
                 found_matches.append(result)
         return MultiOcrResult(count=len(found_matches), results=found_matches)
+
+    def recognize_text(self, source_image: np.ndarray) -> OcrResult:
+        """
+        识别给定图像中可信度最高的单个文本。
+
+        此函数旨在快速获取屏幕上最清晰、最可信的文本信息。
+
+        :param source_image: 要识别的图像 (BGR格式的NumPy数组)。
+        :return: 一个 OcrResult 对象，包含信息最可靠的文本。如果未识别到任何文本，则返回 found=False 的结果。
+        """
+        # 1. 运行OCR并解析成标准格式
+        raw_results = self._run_ocr(source_image)
+        all_parsed_results = self._parse_results(raw_results)
+
+        # 2. 如果没有识别到任何结果，返回一个空的OcrResult
+        if not all_parsed_results:
+            return OcrResult(found=False)
+
+        # 3. 使用max()函数和lambda表达式，根据confidence字段找到最佳结果
+        best_result = max(all_parsed_results, key=lambda result: result.confidence)
+
+        # 4. 确保返回的结果标记为 'found' 并返回
+        best_result.found = True
+        return best_result
 
     def recognize_all(self, source_image: np.ndarray) -> MultiOcrResult:
         raw_results = self._run_ocr(source_image)

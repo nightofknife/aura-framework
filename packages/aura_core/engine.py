@@ -248,38 +248,38 @@ class ExecutionEngine:
                 logger.info(f"  -> 步骤失败，在 {retry_interval} 秒后进行第 {attempt + 1}/{max_attempts} 次重试...")
                 time.sleep(retry_interval)
 
-            try:
-                action_name = step_data.get('action')
-                if action_name and action_name.lower() == 'run_task':
-                    result = self._run_sub_task(step_data)
-                    if isinstance(result, JumpSignal):
-                        raise result
-                elif action_name:
-                    raw_params = step_data.get('params', {})
-                    result = self.injector.execute(action_name, raw_params)
-                else:
-                    result = True
+            # try:
+            action_name = step_data.get('action')
+            if action_name and action_name.lower() == 'run_task':
+                result = self._run_sub_task(step_data)
+                if isinstance(result, JumpSignal):
+                    raise result
+            elif action_name:
+                raw_params = step_data.get('params', {})
+                result = self.injector.execute(action_name, raw_params)
+            else:
+                result = True
 
-                # 判断步骤是否成功
-                step_succeeded = True
-                if result is False:
-                    step_succeeded = False
-                # 兼容 find_* 系列 action 的返回对象
-                elif hasattr(result, 'found') and result.found is False:
-                    step_succeeded = False
+            # 判断步骤是否成功
+            step_succeeded = True
+            if result is False:
+                step_succeeded = False
+            # 兼容 find_* 系列 action 的返回对象
+            elif hasattr(result, 'found') and result.found is False:
+                step_succeeded = False
 
-                if step_succeeded:
-                    if 'output_to' in step_data:
-                        self.context.set(step_data['output_to'], result)
-                        logger.info(f"  -> 步骤输出已保存到上下文变量: '{step_data['output_to']}'")
-                    if max_attempts > 1:
-                        logger.info(f"  -> 步骤在第 {attempt + 1} 次尝试中成功。")
-                    return True
-
-            except JumpSignal:
-                raise
-            except Exception as e:
-                logger.error(f"  -> 执行行为 '{step_data.get('action')}' 时发生异常: {e}", exc_info=False)  # 减少冗余堆栈
+            if step_succeeded:
+                if 'output_to' in step_data:
+                    self.context.set(step_data['output_to'], result)
+                    logger.info(f"  -> 步骤输出已保存到上下文变量: '{step_data['output_to']}'")
+                if max_attempts > 1:
+                    logger.info(f"  -> 步骤在第 {attempt + 1} 次尝试中成功。")
+                return True
+            #
+            # except JumpSignal:
+            #     raise
+            # except Exception as e:
+            #     logger.error(f"  -> 执行行为 '{step_data.get('action')}' 时发生异常: {e}", exc_info=False)  # 减少冗余堆栈
 
         # --- 步骤最终失败的处理逻辑 ---
         step_name = step_data.get('name', '未命名步骤')

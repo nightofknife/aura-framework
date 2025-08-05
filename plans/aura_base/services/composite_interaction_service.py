@@ -3,11 +3,13 @@
 import time
 from typing import Optional, Tuple, List
 
+import numpy as np
+
 from packages.aura_core.api import register_service
 from .app_provider_service import AppProviderService
 from .screen_service import ScreenService
 from .ocr_service import OcrService, OcrResult
-from .vision_service import VisionService
+from .vision_service import VisionService, MatchResult
 
 
 @register_service("composite-interaction", public=True)
@@ -35,7 +37,7 @@ class CompositeInteractionService:
     def click_text(
             self,
             text: str,
-            region: Optional[Tuple[int, int, int, int]] = None,
+            rect: Optional[Tuple[int, int, int, int]] = None,
             match_mode: str = "fuzzy",
             timeout: float = 3.0
     ) -> bool:
@@ -45,34 +47,32 @@ class CompositeInteractionService:
         print(f"[交互] 尝试点击文本: '{text}' (超时: {timeout}s)")
         start_time = time.time()
         while time.time() - start_time < timeout:
-            capture = self.screen.capture(rect=region)
+            capture = self.screen.capture(rect=rect)
             if not capture.success or capture.image is None:
-                time.sleep(0.2)
                 continue
 
             result = self.ocr.find_text(text, capture.image, match_mode=match_mode)
             if result.found and result.center_point:
-                click_x = result.center_point[0] + (region[0] if region else 0)
-                click_y = result.center_point[1] + (region[1] if region else 0)
+                click_x = result.center_point[0] + (rect[0] if rect else 0)
+                click_y = result.center_point[1] + (rect[1] if rect else 0)
 
                 self.app.click(click_x, click_y)
                 print(f"  [成功] 在 ({click_x}, {click_y}) 点击了 '{text}'。")
                 return True
 
-            time.sleep(0.3)
-
         print(f"  [失败] 超时 {timeout}s 后仍未找到文本 '{text}'。")
         return False
 
-    def click_image(self, image_path: str, region: Optional[Tuple[int, int, int, int]] = None,
+    def click_image(self, image_path: str, rect: Optional[Tuple[int, int, int, int]] = None,
                     timeout: float = 3.0) -> bool:
-        """查找并点击指定的图像/图标。"""
+        """查找并点击指定的图像/图标。
+        todo rect区域识别没写
+        """
         print(f"[交互] 尝试点击图像: '{image_path}'")
-        result = self.vision.wait_for_image(
-            image_path=image_path,
-            region=region,
-            timeout=timeout,
-            match_threshold=0.8
+        result = self.vision.find_template(
+            source_image=self.app.capture(),
+            template_image=image_path,
+            threshold=0.8
         )
         if result.found and result.center_point:
             self.app.click(result.center_point[0], result.center_point[1])
@@ -189,7 +189,7 @@ class CompositeInteractionService:
             raise ValueError("direction 参数必须是 'right', 'left', 'above', 'below' 之一")
 
         # 在小区域内进行OCR
-        all_results = self.ocr.recognize_all(capture.image, rect=target_rect)
+        all_results = self.ocr.recognize_all(capture.image)
         if all_results.results:
             # 将找到的所有文本片段连接起来
             found_text = " ".join([res.text for res in all_results.results])
@@ -211,14 +211,15 @@ class CompositeInteractionService:
         常用于游戏中的物品拖放、滑块验证等场景。
         """
         print(f"[交互] 尝试从 '{source_image_path}' 拖动到 '{target_image_path}'")
+        image = self.app.capture()
 
         # 同时查找源和目标
-        source_result = self.vision.find_template(source_image_path, threshold=0.8)
+        source_result = self.vision.find_template(source_image=image, template_image=source_image_path, threshold=0.8)
         if not source_result.found or not source_result.center_point:
             print(f"  [失败] 未找到源图像: '{source_image_path}'")
             return False
 
-        target_result = self.vision.find_template(target_image_path,threshold=0.8)
+        target_result = self.vision.find_template(source_image=image, template_image=target_image_path, threshold=0.8)
         if not target_result.found or not target_result.center_point:
             print(f"  [失败] 未找到目标图像: '{target_image_path}'")
             return False
@@ -229,3 +230,83 @@ class CompositeInteractionService:
         print(f"  [执行] 从 ({sx}, {sy}) 拖动到 ({tx}, {ty})")
         self.app.drag(sx, sy, tx, ty, duration=0.8)
         return True
+
+    def wait_for_image_to_appear(
+            self,
+            template_image: np.ndarray | str,
+            timeout: float = 10.0,
+            poll_interval: float = 0.5,
+            threshold: float = 0.8
+    ) -> MatchResult:
+        """
+        等待某个模板图像出现在屏幕上。
+
+        这个方法会周期性地通过 `get_source_image_func` 获取最新图像，
+        并在其中查找模板，直到找到或超时。
+
+
+        :param template_image: 要查找的模板图像 (路径或NumPy数组)。
+        :param timeout: 等待的總時長（秒）。
+        :param poll_interval: 每次检查之间的间隔时间（秒）。
+        :param threshold: 匹配的置信度阈值。
+        :return: 如果找到，返回包含位置信息的 MatchResult；如果超时，返回 found=False 的 MatchResult。
+        """
+        print(f"[视觉等待] 等待图像出现... (超时: {timeout}s)")
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            source_image = self.app.capture()
+            if source_image.success is False:
+                # 如果截图失败，短暂等待后重试
+                print("  [警告] 获取源图像失败，稍后重试...")
+                time.sleep(poll_interval)
+                continue
+
+            result = self.vision.find_template(source_image.image, template_image, threshold)
+            if result.found:
+                print(f"  [成功] 图像已出现，置信度 {result.confidence:.2f}。")
+                return result
+
+            time.sleep(poll_interval)
+
+        print(f"  [失败] 等待超时({timeout}s)，图像未出现。")
+        return MatchResult(found=False)
+
+    def wait_for_image_to_disappear(
+            self,
+            template_image: np.ndarray | str,
+            timeout: float = 10.0,
+            poll_interval: float = 0.5,
+            threshold: float = 0.8
+    ) -> bool:
+        """
+        等待某个模板图像从屏幕上消失。
+
+        这个方法会周期性地检查图像是否存在，直到图像消失或超时。
+
+
+        :param template_image: 要等待其消失的模板图像。
+        :param timeout: 等待的總時長（秒）。
+        :param poll_interval: 每次检查之间的间隔时间（秒）。
+        :param threshold: 用于判断图像是否存在的置信度阈值。
+        :return: 如果图像在超时前消失，返回 True；如果超时后图像仍然存在，返回 False。
+        """
+        print(f"[视觉等待] 等待图像消失... (超时: {timeout}s)")
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            source_image = self.app.capture()
+            if source_image.success is False:
+                # 如果截图都失败了，我们可以认为目标图像很可能不存在了
+                print("  [信息] 获取源图像失败，认定目标图像已消失。")
+                return True
+
+            result = self.vision.find_template(source_image.image, template_image, threshold)
+            if not result.found:
+                print("  [成功] 图像已消失。")
+                return True
+            else:
+                print(f"  [信息] 图像仍然存在，置信度 {result.confidence:.2f}...")
+
+            time.sleep(poll_interval)
+
+        print(f"  [失败] 等待超时({timeout}s)，图像仍然存在。")
+        return False

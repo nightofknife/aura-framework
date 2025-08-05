@@ -210,7 +210,7 @@ class ScreenService:
                 final_image = full_image[y: y + h, x: x + w]
                 relative_rect = sub_rect
             else:
-                final_image = full_image
+                final_image = full_image[:,:]
                 relative_rect = (0, 0, client_width, client_height)
             return CaptureResult(image=final_image, window_rect=window_rect, relative_rect=relative_rect, success=True)
         except Exception as e:
@@ -236,3 +236,8 @@ class ScreenService:
         else:
             logger.warning(f"找不到标题为 '{self.target_title}' 的窗口，将进行全屏截图。")
             return self._capture_fullscreen()
+
+
+if __name__ =="__main__":
+    confit = ConfigService()
+    temp = ScreenService()

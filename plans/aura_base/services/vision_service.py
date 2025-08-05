@@ -1,7 +1,7 @@
 # src/notifier_services/vision_service.py
 
 from dataclasses import dataclass, field
-from typing import Any, Tuple
+from typing import Any, Tuple, Optional
 
 import cv2
 import numpy as np
@@ -49,41 +49,73 @@ class VisionService:
 
     def _prepare_image(self, image: np.ndarray | str) -> np.ndarray:
         """
-        [内部辅助] 准备用于匹配的图像。
-        :param image: 图像路径(str)或NumPy数组(BGR)。
-        :return: 灰度图NumPy数组。
+        【最终健壮版】准备用于匹配的图像。
+        - 能够正确处理 BGR(3通道) 和 BGRA(4通道) 图像。
+        :param image: 图像路径(str)或NumPy数组。
+        :return: 单通道灰度图NumPy数组。
         """
+        # 1. 处理输入是字符串路径的情况
         if isinstance(image, str):
-            # 从路径加载，需要检查文件是否存在
             img = cv2.imread(image, cv2.IMREAD_GRAYSCALE)
             if img is None:
                 raise FileNotFoundError(f"无法从路径加载图像: {image}")
+            if len(img.shape) == 3:
+                img = np.squeeze(img)
             return img
+
+        # 2. 处理输入是NumPy数组的情况
         elif isinstance(image, np.ndarray):
-            # 将传入的BGR或BGRA图像转为灰度图
-            if len(image.shape) == 3:
-                return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            return image  # 假设已经是灰度图
+            # 如果已经是单通道灰度图，直接返回
+            if len(image.shape) == 2:
+                return image
+
+            # 如果是多通道图像
+            elif len(image.shape) == 3:
+                num_channels = image.shape[2]
+
+                if num_channels == 3:
+                    # 这是3通道BGR图像，使用 BGR2GRAY
+                    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                elif num_channels == 4:
+                    # 这是4通道BGRA图像，使用 BGRA2GRAY
+                    return cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
+                else:
+                    # 处理异常的通道数
+                    raise TypeError(f"不支持的图像通道数: {num_channels}")
+            else:
+                raise TypeError(f"不支持的图像形状: {image.shape}")
+
+        # 3. 处理其他不支持的类型
         else:
-            raise TypeError("不支持的图像类型，需要str(路径)或np.ndarray。")
+            raise TypeError(f"不支持的图像类型，需要str(路径)或np.ndarray。实际类型为{type(image)}")
 
     def find_template(self,
-                      source_image: np.ndarray,
+                      source_image: np.ndarray | str,
                       template_image: np.ndarray | str,
+                      mask_image: Optional[np.ndarray | str] = None,
                       threshold: float = 0.8) -> MatchResult:
         """
         【修改后】在源图像中查找最匹配的单个模板。
         无论成功与否，都会返回包含调试信息的结果。
         """
-        try:
-            source_gray = self._prepare_image(source_image)
-            template_gray = self._prepare_image(template_image)
-            h, w = template_gray.shape
-        except (FileNotFoundError, TypeError) as e:
-            print(f"错误: {e}")
-            return MatchResult(found=False)
+        # try:
+        source_gray = self._prepare_image(source_image)
+        template_gray = self._prepare_image(template_image)
+        print(source_gray.shape)
+        print(template_gray.shape)
+        h, w = template_gray.shape
+        mask = None
+        # 【新增】处理蒙版逻辑
+        if mask_image is not None:
+            mask = self._prepare_image(mask_image)
+            if mask.shape != template_gray.shape:
+                raise ValueError(f"蒙版尺寸 {mask.shape} 必须与模板尺寸 {template_gray.shape} 完全一致。")
 
-        result = cv2.matchTemplate(source_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        # except (FileNotFoundError, TypeError) as e:
+        #     print(f"错误: {e}")
+        #     return MatchResult(found=False,debug_info={"error": str(e)})
+
+        result = cv2.matchTemplate( image=source_gray,templ= template_gray,method= cv2.TM_CCOEFF_NORMED, mask=mask)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
         # 【关键修改】即使失败，也记录下最接近的匹配信息
@@ -114,6 +146,7 @@ class VisionService:
     def find_all_templates(self,
                            source_image: np.ndarray,
                            template_image: np.ndarray | str,
+                           mask_image: Optional[np.ndarray | str] = None,
                            threshold: float = 0.8,
                            nms_threshold: float = 0.5) -> MultiMatchResult:
         """
@@ -129,11 +162,18 @@ class VisionService:
             source_gray = self._prepare_image(source_image)
             template_gray = self._prepare_image(template_image)
             h, w = template_gray.shape
-        except (FileNotFoundError, TypeError) as e:
+            mask = None
+            # 【新增】处理蒙版逻辑
+            if mask_image is not None:
+                mask = self._prepare_image(mask_image)
+                if mask.shape != template_gray.shape:
+                    raise ValueError(f"蒙版尺寸 {mask.shape} 必须与模板尺寸 {template_gray.shape} 完全一致。")
+
+        except (FileNotFoundError, TypeError, ValueError) as e:
             print(f"错误: {e}")
             return MultiMatchResult()
 
-        result = cv2.matchTemplate(source_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        result = cv2.matchTemplate(source_gray, template_gray, cv2.TM_CCOEFF_NORMED, mask=mask)
         locations = np.where(result >= threshold)
 
         # 将结果打包成 (x, y, confidence) 的形式
@@ -173,7 +213,7 @@ class VisionService:
 
         :param source_image: 要搜索的图像 (BGR或RGB格式的NumPy数组)。
         :param lower_hsv: HSV颜色范围的下限 (H, S, V)。
-        :param upper_hsv: HSV颜色范围的上限 (H, S, V)。
+        :param upper_hsv: HSV颜色范围的  上限 (H, S, V)。
         :param min_area: 匹配区域的最小像素面积，用于过滤噪点。
         :return: 一个 MatchResult 对象。
         """

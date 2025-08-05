@@ -51,6 +51,17 @@ class ControllerService:
         if self._held_keys or self._held_mouse_buttons:
             logger.info("所有按下的键鼠已被释放。")
 
+    def release_key(self):
+        for key in list(self._held_keys):
+            self.key_up(key)
+        if self._held_keys:
+            logger.info("所有按下的按键已被释放。")
+    def release_mouse(self):
+        for button in list(self._held_mouse_buttons):
+            self.mouse_up(button)
+        if self._held_mouse_buttons:
+            logger.info("所有按下的鼠标已被释放。")
+
     # --- 鼠标方法 ---
 
     def move_to(self, x: int, y: int, duration: float = 0.25):
