@@ -49,45 +49,50 @@ class VisionService:
 
     def _prepare_image(self, image: np.ndarray | str) -> np.ndarray:
         """
-        【最终健壮版】准备用于匹配的图像。
-        - 能够正确处理 BGR(3通道) 和 BGRA(4通道) 图像。
+        【最终加固版】准备用于模板匹配的图像，确保输出为标准的单通道2D灰度图。
+
+        这个函数现在能够处理所有已知情况，包括您指出的PNG读取问题。
+
         :param image: 图像路径(str)或NumPy数组。
-        :return: 单通道灰度图NumPy数组。
+        :return: 标准的单通道2D灰度图 (H, W) NumPy 数组。
         """
-        # 1. 处理输入是字符串路径的情况
+        # 1. 统一输入：确保我们处理的是一个NumPy数组
         if isinstance(image, str):
-            img = cv2.imread(image, cv2.IMREAD_GRAYSCALE)
+            # 以“不变”模式加载，保留所有通道信息，让后续逻辑统一处理
+            img = cv2.imread(image, cv2.IMREAD_UNCHANGED)
             if img is None:
                 raise FileNotFoundError(f"无法从路径加载图像: {image}")
-            if len(img.shape) == 3:
-                img = np.squeeze(img)
-            return img
-
-        # 2. 处理输入是NumPy数组的情况
         elif isinstance(image, np.ndarray):
-            # 如果已经是单通道灰度图，直接返回
-            if len(image.shape) == 2:
-                return image
-
-            # 如果是多通道图像
-            elif len(image.shape) == 3:
-                num_channels = image.shape[2]
-
-                if num_channels == 3:
-                    # 这是3通道BGR图像，使用 BGR2GRAY
-                    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-                elif num_channels == 4:
-                    # 这是4通道BGRA图像，使用 BGRA2GRAY
-                    return cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
-                else:
-                    # 处理异常的通道数
-                    raise TypeError(f"不支持的图像通道数: {num_channels}")
-            else:
-                raise TypeError(f"不支持的图像形状: {image.shape}")
-
-        # 3. 处理其他不支持的类型
+            img = image
         else:
             raise TypeError(f"不支持的图像类型，需要str(路径)或np.ndarray。实际类型为{type(image)}")
+
+        # 2. 统一处理：将任何格式的NumPy数组转换为标准的2D灰度图 (H, W)
+
+        # 检查是否已经是2D灰度图
+        if len(img.shape) == 2:
+            return img
+
+        # 处理3D数组，这部分是关键
+        if len(img.shape) == 3:
+            height, width, channels = img.shape
+
+            if channels == 4:
+                # 4通道 BGRA -> 灰度
+                return cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+            elif channels == 3:
+                # 3通道 BGR -> 灰度
+                return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            elif channels == 1:
+                # 处理您提到的 (H, W, 1) 特殊情况，将其压缩为 (H, W)
+                return img.squeeze(axis=2)
+            else:
+                # 其他异常通道数的3D数组
+                raise TypeError(f"不支持的3D图像通道数: {channels}")
+
+        # 如果不是2D或3D，则是无法处理的形状
+        raise TypeError(f"不支持的图像形状: {img.shape}")
+
 
     def find_template(self,
                       source_image: np.ndarray | str,
@@ -101,8 +106,6 @@ class VisionService:
         # try:
         source_gray = self._prepare_image(source_image)
         template_gray = self._prepare_image(template_image)
-        print(source_gray.shape)
-        print(template_gray.shape)
         h, w = template_gray.shape
         mask = None
         # 【新增】处理蒙版逻辑
@@ -114,7 +117,7 @@ class VisionService:
         # except (FileNotFoundError, TypeError) as e:
         #     print(f"错误: {e}")
         #     return MatchResult(found=False,debug_info={"error": str(e)})
-
+        # print(source_gray.shape,template_gray.shape)
         result = cv2.matchTemplate( image=source_gray,templ= template_gray,method= cv2.TM_CCOEFF_NORMED, mask=mask)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
 
