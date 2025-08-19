@@ -1,4 +1,5 @@
-# plans/aura_ui/workspace_panel.py (优化版)
+# plans/aura_ui/workspace_panel.py (异步桥接版)
+
 import io
 import os
 import tkinter as tk
@@ -8,14 +9,11 @@ import yaml
 from PIL import Image, ImageTk
 
 from packages.aura_shared_utils.utils.logger import logger
-from .base_panel import BasePanel  # 【修改】导入BasePanel
+from .base_panel import BasePanel
 from .visual_task_editor import VisualTaskEditor
 
 
-class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
-    def __init__(self, parent, scheduler, ide, **kwargs):
-        super().__init__(parent, scheduler, ide, **kwargs)
-
+class WorkspacePanel(BasePanel):
     def _create_widgets(self):
         self.active_editor = None
         self.current_plan = tk.StringVar()
@@ -25,7 +23,6 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
 
         self._create_color_icons()
 
-        # ... (这部分UI创建代码完全不变) ...
         main_pane = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         main_pane.pack(fill=tk.BOTH, expand=True)
         left_frame = ttk.Frame(main_pane, padding=5)
@@ -55,17 +52,15 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
         self.editor_container.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
 
     def _initial_load(self):
-        """【新增】使用_initial_load钩子来加载初始数据。"""
-        self._populate_plans()
+        """初始加载时，请求一次全量数据。"""
+        self.populate_plans(self.scheduler.get_all_plans())
 
     def destroy(self):
-        """【新增】重写destroy方法，确保活动编辑器也被销毁。"""
         if self.active_editor and hasattr(self.active_editor, 'destroy'):
             self.active_editor.destroy()
         super().destroy()
 
     def _create_color_icons(self):
-        # ... (这部分逻辑完全不变) ...
         colors = {"folder": "#E69F00", "file": "#56B4E9", "task_file": "#009E73", "task": "#F0E442"}
         for name, color in colors.items():
             color_img = PhotoImage(width=16, height=16)
@@ -73,24 +68,21 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
             setattr(self, f"{name}_icon", color_img)
 
     def _force_refresh_all(self):
-        # ... (这部分逻辑完全不变) ...
+        """【修改】刷新现在只触发后端重载，UI更新由推送机制完成。"""
         logger.info("用户请求手动刷新方案包列表...")
-        selected_plan = self.current_plan.get()
         self.scheduler.reload_plans()
-        self._populate_plans()
-        if selected_plan in self.plan_combobox['values']:
-            self.plan_combobox.set(selected_plan)
-        self._populate_file_tree()
         if isinstance(self.active_editor, VisualTaskEditor):
             self.active_editor.update_actions_list()
-        logger.info("方案包列表刷新完毕。")
+        logger.info("后端资源重载请求已发送。")
 
-    def _populate_plans(self):
-        # ... (这部分逻辑完全不变) ...
-        plans = self.scheduler.get_all_plans()
+    def populate_plans(self, plans: list):
+        """【修改】被动接收方案包列表。"""
+        current_selection = self.current_plan.get()
         self.plan_combobox['values'] = plans
         if plans:
-            if self.current_plan.get() not in plans:
+            if current_selection in plans:
+                self.plan_combobox.set(current_selection)
+            else:
                 self.plan_combobox.current(0)
             self._populate_file_tree()
         else:
@@ -98,7 +90,6 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
             self.file_tree.delete(*self.file_tree.get_children())
 
     def _populate_file_tree(self, event=None):
-        # ... (这部分逻辑完全不变) ...
         for i in self.file_tree.get_children(): self.file_tree.delete(i)
         plan_name = self.current_plan.get()
         if not plan_name: return
@@ -108,8 +99,8 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
         except Exception as e:
             messagebox.showerror("错误", f"无法加载方案文件列表: {e}")
 
+    # ... (其余方法 _add_files_to_tree, _on_file_double_click, _load_editor_for_item, _save_current_file 保持不变) ...
     def _add_files_to_tree(self, parent_id, structure, current_path):
-        # ... (这部分逻辑完全不变) ...
         for name, item in sorted(structure.items()):
             full_path = os.path.join(current_path, name)
             is_dir = isinstance(item, dict)
@@ -138,7 +129,6 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
                 self.file_tree.insert(parent_id, "end", text=name, image=self.file_icon, tags=('file', full_path))
 
     def _on_file_double_click(self, event):
-        # ... (这部分逻辑完全不变) ...
         item_id = self.file_tree.focus()
         if not item_id: return
         tags = self.file_tree.item(item_id, "tags")
@@ -152,7 +142,6 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
         self._load_editor_for_item(file_path, item_type, task_name)
 
     def _load_editor_for_item(self, file_path, item_type, task_name=None):
-        # ... (这部分逻辑完全不变) ...
         if self.active_editor:
             self.active_editor.destroy()
             self.active_editor = None
@@ -161,8 +150,6 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
         display_name = f"{file_path} [{task_name}]" if task_name else file_path
         self.current_file_label.config(text=f"编辑: {display_name}")
         can_save = True
-
-        # 【修改】将依赖作为关键字参数传递，更清晰
         editor_kwargs = {'scheduler': self.scheduler, 'ide': self.ide}
 
         if item_type == 'task' or (item_type == 'file' and file_path.startswith('tasks' + os.sep) and any(
@@ -189,7 +176,6 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
             self.active_editor.pack(fill=tk.BOTH, expand=True)
 
     def _save_current_file(self):
-        # ... (这部分逻辑完全不变) ...
         if self.active_editor and hasattr(self.active_editor, 'save'):
             try:
                 self.active_editor.save()
@@ -199,7 +185,6 @@ class WorkspacePanel(BasePanel):  # 【修改】继承自BasePanel
             messagebox.showwarning("无操作", "当前编辑器不支持保存。")
 
 
-# 【修改】让子编辑器也继承BasePanel，虽然它们很简单，但保持一致性是好的实践
 class TextEditor(BasePanel):
     def __init__(self, parent, plan_name, file_path, **kwargs):
         self.plan_name = plan_name

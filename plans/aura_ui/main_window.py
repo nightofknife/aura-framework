@@ -3,7 +3,7 @@
 import queue
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, Type, Tuple
+from typing import Dict, Type, Tuple, Any
 
 # 导入所有需要的模块
 from packages.aura_core.scheduler import Scheduler
@@ -20,11 +20,6 @@ from .workspace_panel import WorkspacePanel
 
 
 class AuraIDE:
-    """
-    Aura IDE 的主窗口类。
-    负责聚合所有UI面板，并管理它们的生命周期。
-    """
-    # 【核心修正】TAB_DEFINITIONS 现在只定义面板类和padding，依赖注入将完全自动化
     TAB_DEFINITIONS: Dict[str, Tuple[Type[BasePanel], int]] = {
         "调度器监控": (SchedulerPanel, 10),
         "工作区": (WorkspacePanel, 0),
@@ -39,12 +34,15 @@ class AuraIDE:
         self.scheduler = scheduler
         self.panels: Dict[str, BasePanel] = {}
         self.log_queue: queue.Queue = queue.Queue()
+        self.ui_update_queue: queue.Queue = queue.Queue()  # 【新增】
 
-        # 【核心修正】一个统一的依赖注入容器
+        # 【修改】将 ui_update_queue 注入到 Scheduler 和依赖项中
+        self.scheduler.set_ui_update_queue(self.ui_update_queue)
         self.dependencies = {
             'scheduler': self.scheduler,
             'ide': self,
-            'log_queue': self.log_queue
+            'log_queue': self.log_queue,
+            'ui_update_queue': self.ui_update_queue
         }
 
         self._configure_root_window()
@@ -54,6 +52,10 @@ class AuraIDE:
         self._create_and_populate_tabs()
         self.root.bind("<Destroy>", self._on_destroy)
 
+        # 【新增】启动UI主更新循环
+        self.root.after(100, self._process_ui_updates)
+
+    # ... (_configure_root_window, _setup_logging, _create_main_widgets, _create_menu, _create_and_populate_tabs 不变) ...
     def _configure_root_window(self):
         self.root.title("Aura - 自动化框架控制台")
         self.root.geometry("1400x900")
@@ -80,15 +82,10 @@ class AuraIDE:
         menubar.add_cascade(label="工具", menu=tools_menu)
 
     def _create_and_populate_tabs(self):
-        """
-        【最终修正】使用正确的依赖注入方式创建所有面板。
-        """
         for tab_name, (PanelClass, padding) in self.TAB_DEFINITIONS.items():
             tab_frame = ttk.Frame(self.notebook, padding=padding)
             self.notebook.add(tab_frame, text=tab_name)
-
             try:
-                # 【核心修正】将依赖作为关键字参数(kwargs)传递
                 panel_instance = PanelClass(parent=tab_frame, **self.dependencies)
                 panel_instance.pack(expand=True, fill='both')
                 self.panels[tab_name] = panel_instance
@@ -97,6 +94,53 @@ class AuraIDE:
                 error_label = ttk.Label(tab_frame, text=f"加载失败:\n{e}", foreground="red")
                 error_label.pack(pady=20)
 
+    def _process_ui_updates(self):
+        """【新增】UI主心跳循环，处理所有来自后端的更新。"""
+        # 1. 处理日志队列 (移动自 SchedulerPanel)
+        if '调度器监控' in self.panels:
+            log_panel = self.panels['调度器监控']
+            if hasattr(log_panel, 'process_log_queue_once'):
+                log_panel.process_log_queue_once()
+
+        # 2. 处理事件总线队列 (移动自 EventBusMonitorPanel)
+        if '事件总线' in self.panels:
+            event_panel = self.panels['事件总线']
+            if hasattr(event_panel, 'process_event_queue_once'):
+                event_panel.process_event_queue_once()
+
+        # 3. 处理核心状态更新队列
+        try:
+            while not self.ui_update_queue.empty():
+                msg = self.ui_update_queue.get_nowait()
+                msg_type = msg.get('type')
+                data = msg.get('data')
+                self._dispatch_ui_update(msg_type, data)
+        except queue.Empty:
+            pass
+        finally:
+            # 安排下一次检查
+            self.root.after(100, self._process_ui_updates)
+
+    def _dispatch_ui_update(self, msg_type: str, data: Any):
+        """【新增】根据消息类型将数据分发给对应的面板。"""
+        if msg_type == 'master_status_update':
+            if '调度器监控' in self.panels:
+                self.panels['调度器监控'].update_master_status(data)
+
+        elif msg_type == 'run_status_single_update':
+            if '调度器监控' in self.panels:
+                self.panels['调度器监控'].update_single_task_status(data)
+
+        elif msg_type == 'full_status_update':
+            if '调度器监控' in self.panels:
+                self.panels['调度器监控'].update_schedule_status(data['schedule'])
+            if '服务管理器' in self.panels:
+                self.panels['服务管理器'].update_service_list(data['services'])
+            if '工作区' in self.panels or '任务浏览器' in self.panels:
+                self.panels['工作区'].populate_plans(data['workspace']['plans'])
+                self.panels['任务浏览器'].populate_all(data['workspace'])
+
+    # ... ( _open_* 方法不变) ...
     def _open_context_editor(self):
         ContextEditorWindow(self.root, self.scheduler)
 
@@ -108,9 +152,12 @@ class AuraIDE:
 
     def _on_destroy(self, event):
         if event.widget == self.root:
-            print("AuraIDE is being destroyed. Cleaning up panels...")
+            logger.info("AuraIDE is being destroyed. Stopping scheduler...")
+            # 【修改】确保在关闭UI时，后端也被停止
+            if self.scheduler and self.scheduler.is_running.is_set():
+                self.scheduler.stop_scheduler()
+
             for panel_name, panel_instance in self.panels.items():
                 if hasattr(panel_instance, 'destroy') and callable(panel_instance.destroy):
-                    print(f"Destroying panel: {panel_name}")
                     panel_instance.destroy()
-            print("All panels cleaned up.")
+            logger.info("All panels and scheduler cleaned up.")

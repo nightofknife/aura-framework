@@ -14,7 +14,7 @@ class PlannerDebuggerPanel(BasePanel):
         super().__init__(parent, scheduler, ide, **kwargs)
 
     def _create_widgets(self):
-        self.event_bus = self.scheduler.get_event_bus()
+        self.event_bus = self.scheduler.event_bus
         self.ui_queue = queue.Queue()
 
         # 【新增】用于存储订阅句柄的列表

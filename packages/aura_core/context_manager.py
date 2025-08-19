@@ -1,5 +1,3 @@
-# packages/aura_core/context_manager.py (全新文件)
-
 from pathlib import Path
 from typing import Optional
 
@@ -12,9 +10,8 @@ from .persistent_context import PersistentContext
 
 class ContextManager:
     """
-    上下文管理器。
-    负责为每次任务执行创建、初始化和管理上下文（Context），
-    包括处理持久化上下文的加载和保存。
+    【Async Refactor】上下文管理器。
+    创建上下文的过程现在是异步的，以支持异步加载持久化数据。
     """
 
     def __init__(self, plan_name: str, plan_path: Path):
@@ -22,20 +19,21 @@ class ContextManager:
         self.plan_path = plan_path
         self.persistent_context_path = self.plan_path / 'persistent_context.json'
 
-    def create_context(self, task_id: str, triggering_event: Optional[Event] = None) -> Context:
+    async def create_context(self, task_id: str, triggering_event: Optional[Event] = None) -> Context:
         """
-        为一次任务执行创建并初始化一个全新的上下文。
+        为一次任务执行异步创建并初始化一个全新的上下文。
         """
-        # 1. 创建基础 Context 对象
         context = Context(triggering_event=triggering_event)
 
-        # 2. 加载并注入持久化上下文
+        # 异步加载并注入持久化上下文
         persistent_context = PersistentContext(str(self.persistent_context_path))
+        # The initial load is sync, but we can make it async if needed for reloads
+        # await persistent_context.load()
         context.set('persistent_context', persistent_context)
         for key, value in persistent_context.get_all_data().items():
             context.set(key, value)
 
-        # 3. 注入配置服务和方案配置
+        # 注入配置服务 (同步操作，无需修改)
         try:
             config_service = service_registry.get_service_instance('config')
             config_service.set_active_plan(self.plan_name)
@@ -43,12 +41,11 @@ class ContextManager:
         except Exception:
             context.set('config', {})
 
-        # 4. 注入其他常用对象和元数据
+        # 注入其他元数据 (同步操作，无需修改)
         context.set('log', logger)
         debug_dir = self.plan_path / 'debug_screenshots'
         debug_dir.mkdir(parents=True, exist_ok=True)
         context.set('debug_dir', str(debug_dir))
-
         context.set('__task_name__', task_id)
         context.set('__plan_name__', self.plan_name)
         if triggering_event:
@@ -56,15 +53,16 @@ class ContextManager:
 
         return context
 
-    def get_persistent_context_data(self) -> dict:
-        """获取当前方案的持久化上下文数据。"""
+    async def get_persistent_context_data(self) -> dict:
+        """异步获取当前方案的持久化上下文数据。"""
         pc = PersistentContext(str(self.persistent_context_path))
+        await pc.load()
         return pc.get_all_data()
 
-    def save_persistent_context_data(self, data: dict):
-        """保存持久化上下文数据。"""
+    async def save_persistent_context_data(self, data: dict):
+        """异步保存持久化上下文数据。"""
         pc = PersistentContext(str(self.persistent_context_path))
-        pc._data.clear()  # 清空旧数据
+        pc._data.clear()
         for key, value in data.items():
             pc.set(key, value)
-        pc.save()
+        await pc.save()

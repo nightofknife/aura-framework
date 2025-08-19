@@ -1,5 +1,6 @@
 # plans/aura_ui/event_bus_monitor_panel.py (完整修正版)
 import json
+import queue
 import tkinter as tk
 from datetime import datetime
 from tkinter import ttk
@@ -58,12 +59,10 @@ class EventBusMonitorPanel(BasePanel):
         self.tree.pack(side='left', expand=True, fill='both')
         self.tree.bind("<Double-1>", self._on_double_click)
 
-    def _initial_load(self):
-        self.schedule_update(200, self._process_ui_queue, "process_event_queue")
-
-    def _process_ui_queue(self):
+    def process_event_queue_once(self):
+        """【修改】由AuraIDE主循环调用，处理所有当前事件。"""
+        if not self.ui_event_queue: return
         try:
-            if not self.ui_event_queue: return
             while not self.ui_event_queue.empty():
                 event_dict = self.ui_event_queue.get_nowait()
                 self.all_events.append(event_dict)
@@ -72,8 +71,8 @@ class EventBusMonitorPanel(BasePanel):
                     self.channel_filter_combo['values'] = (*self.channel_filter_combo['values'], channel)
                 if not self.is_paused:
                     self._add_event_to_tree(event_dict)
-        finally:
-            self.schedule_update(200, self._process_ui_queue, "process_event_queue")
+        except queue.Empty:
+            pass
 
     def _add_event_to_tree(self, event_dict, at_start=True):
         if not self._matches_filters(event_dict):

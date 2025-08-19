@@ -59,7 +59,7 @@ class AuraApplication:
 
     def _shutdown(self):
         """安全地停止所有服务和调度器。"""
-        if self.scheduler and self.scheduler.is_scheduler_running.is_set():
+        if self.scheduler and self.scheduler.is_running.is_set():
             logger.info("正在停止调度器...")
             self.scheduler.stop_scheduler()
             logger.info("调度器已停止。程序退出。")

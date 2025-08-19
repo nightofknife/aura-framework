@@ -1,34 +1,30 @@
-# packages/aura_core/middleware.py (Aura 3.0 - 阶段三)
-
+import asyncio
 from functools import partial
-from typing import Callable, List, Any, Dict
+from typing import Callable, List, Any, Dict, Awaitable
 
-# 导入框架核心定义
 from packages.aura_core.api import ActionDefinition
 from packages.aura_core.context import Context
+from packages.aura_shared_utils.utils.logger import logger
 
 
 class Middleware:
-    """中间件基类。所有中间件都应继承此类并实现 handle 方法。"""
+    """
+    【Async Refactor】异步中间件基类。
+    """
 
-    def handle(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any],
-               next_handler: Callable) -> Any:
+    async def handle(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any],
+                     next_handler: Callable[..., Awaitable[Any]]) -> Any:
         """
-        处理一个Action的执行。
-
-        :param action_def: 正在执行的Action的定义对象。
-        :param context: 当前的执行上下文。
-        :param params: 传递给Action的参数。
-        :param next_handler: 调用下一个中间件或最终Action执行器的句柄。
-        :return: Action的执行结果。
+        异步处理一个Action的执行。
+        :param next_handler: 一个 awaitable，调用下一个中间件或最终的Action执行器。
         """
-        # 默认实现是直接调用下一个处理器
-        return next_handler(action_def, context, params)
+        # 默认实现是直接调用并等待下一个处理器
+        return await next_handler(action_def, context, params)
 
 
 class MiddlewareManager:
     """
-    管理和执行中间件链。
+    【Async Refactor】管理和执行异步中间件链。
     """
 
     def __init__(self):
@@ -38,30 +34,35 @@ class MiddlewareManager:
         """添加一个中间件到链的末尾。"""
         self._middlewares.append(middleware)
 
-    def process(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any],
-                final_handler: Callable) -> Any:
+    async def process(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any],
+                      final_handler: Callable[..., Awaitable[Any]]) -> Any:
         """
-        处理一个Action，依次通过所有中间件，最后由 final_handler 执行。
-
-        :param action_def: 要执行的Action定义。
-        :param context: 执行上下文。
-        :param params: 传递给Action的参数。
-        :param final_handler: 最终执行Action的函数。
-        :return: Action的执行结果。
+        异步处理一个Action，依次通过所有中间件。
         """
-        # 如果没有中间件，直接调用最终处理器
         if not self._middlewares:
-            return final_handler(action_def, context, params)
+            return await final_handler(action_def, context, params)
 
-        # 将中间件链反转，以便我们可以从第一个开始构建调用链
-        # [m1, m2, m3] -> m1(m2(m3(final_handler)))
+        # 构建异步的调用链
         handler = final_handler
         for middleware in reversed(self._middlewares):
-            # 使用偏函数 (partial) 来固定 handler，为下一次迭代做准备
-            handler = partial(middleware.handle, next_handler=handler)
+            # 将下一个处理器（无论是另一个中间件还是最终执行器）绑定到当前中间件的 handle 方法
+            # 我们需要一个包装器来正确处理 partial 的异步调用
+            async def wrapper(h, ad, ctx, p, next_h):
+                # 检查 handle 是否是协程函数
+                if asyncio.iscoroutinefunction(middleware.handle):
+                    return await h(ad, ctx, p, next_h)
+                else:
+                    # 如果是同步的旧版中间件，在线程池中运行它
+                    logger.debug(f"正在线程池中运行同步中间件: {middleware.__class__.__name__}")
+                    loop = asyncio.get_running_loop()
+                    # partial 将同步函数和其参数打包
+                    sync_callable = partial(h, ad, ctx, p, lambda *a, **kw: asyncio.run_coroutine_threadsafe(next_h(*a, **kw), loop).result())
+                    return await loop.run_in_executor(None, sync_callable)
+
+            handler = partial(wrapper, middleware.handle, next_handler=handler)
 
         # 调用链的第一个处理器
-        return handler(action_def, context, params)
+        return await handler(action_def, context, params)
 
 
 # 创建一个全局单例

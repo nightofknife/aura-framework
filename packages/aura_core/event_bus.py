@@ -1,19 +1,16 @@
-# packages/aura_core/event_bus.py (最终优化版)
-
+import asyncio
 import fnmatch
-import threading
 import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Awaitable
 
 from packages.aura_shared_utils.utils.logger import logger
 
 
 @dataclass
 class Event:
-    # ... (Event 类保持不变) ...
     name: str
     channel: str = "global"
     payload: Dict[str, Any] = field(default_factory=dict)
@@ -34,70 +31,53 @@ class Event:
 
 class EventBus:
     """
-    一个线程安全的事件总线，支持频道隔离、通配符订阅和细粒度的取消订阅。
+    【Async Refactor】一个异步的、高性能的事件总线。
+    - 使用 asyncio.Lock 保证异步安全。
+    - 使用 asyncio.create_task 并发处理回调，取代了低效的线程模型。
+    - 兼容同步和异步的回调函数。
     """
 
     def __init__(self, max_depth: int = 10):
-        self._subscribers: Dict[str, Dict[str, List[Callable[[Event], None]]]] = defaultdict(lambda: defaultdict(list))
-        self._lock = threading.RLock()
+        self._subscribers: Dict[str, Dict[str, List[Callable[[Event], Any]]]] = defaultdict(lambda: defaultdict(list))
+        self._lock = asyncio.Lock()
         self.max_depth = max_depth
         logger.info(f"EventBus已初始化，最大事件深度设置为 {self.max_depth}。")
 
-    def subscribe(self, event_pattern: str, callback: Callable[[Event], None], channel: str = "global"):
+    async def subscribe(self, event_pattern: str, callback: Callable[[Event], Any], channel: str = "global") -> Tuple[str, str, Callable]:
         """
         订阅一种或多种事件。
-
-        :param event_pattern: 事件名称模式。
-        :param callback: 回调函数。
-        :param channel: 订阅的频道。
-        :return: 一个包含 (channel, event_pattern, callback) 的元组，作为取消订阅的句柄。
+        :param callback: 回调函数 (可以是同步或异步函数)。
         """
-        with self._lock:
-            # 检查是否重复订阅
+        async with self._lock:
             if callback not in self._subscribers[channel][event_pattern]:
                 self._subscribers[channel][event_pattern].append(callback)
-                logger.debug(f"新订阅: 频道 '{channel}', 模式 '{event_pattern}' -> 回调 {callback.__name__}")
+                logger.debug(f"新订阅: 频道 '{channel}', 模式 '{event_pattern}' -> 回调 {getattr(callback, '__name__', callback)}")
             else:
                 logger.warning(
-                    f"重复订阅尝试: 频道 '{channel}', 模式 '{event_pattern}' -> 回调 {callback.__name__} 已存在。")
-
-        # 【新增】返回一个句柄，用于取消订阅
+                    f"重复订阅尝试: 频道 '{channel}', 模式 '{event_pattern}' -> 回调 {getattr(callback, '__name__', callback)} 已存在。")
         return channel, event_pattern, callback
 
-    def unsubscribe(self, subscription_handle: Tuple[str, str, Callable]):
-        """
-        【全新方法】取消一个特定的事件订阅。
-
-        :param subscription_handle: 调用 subscribe() 时返回的句柄。
-        """
+    async def unsubscribe(self, subscription_handle: Tuple[str, str, Callable]):
         if not isinstance(subscription_handle, tuple) or len(subscription_handle) != 3:
             logger.error(f"取消订阅失败：提供了无效的句柄 '{subscription_handle}'。")
             return
 
         channel, event_pattern, callback = subscription_handle
-        with self._lock:
+        async with self._lock:
             try:
-                # 从订阅者列表中移除回调
                 self._subscribers[channel][event_pattern].remove(callback)
-                logger.debug(f"取消订阅成功: 频道 '{channel}', 模式 '{event_pattern}' -> 回调 {callback.__name__}")
-
-                # 如果一个模式下没有回调了，可以清理掉这个模式
+                logger.debug(f"取消订阅成功: 频道 '{channel}', 模式 '{event_pattern}' -> 回调 {getattr(callback, '__name__', callback)}")
                 if not self._subscribers[channel][event_pattern]:
                     del self._subscribers[channel][event_pattern]
-
-                # 如果一个频道下没有模式了，可以清理掉这个频道
                 if not self._subscribers[channel]:
                     del self._subscribers[channel]
-
             except (KeyError, ValueError):
-                # 如果句柄无效或回调已不存在，静默处理或记录警告
                 logger.warning(
                     f"取消订阅警告: 无法找到匹配的订阅。句柄: "
                     f"频道='{channel}', 模式='{event_pattern}', 回调={getattr(callback, '__name__', 'N/A')}"
                 )
 
-    def publish(self, event: Event):
-        # ... (publish 方法和 _execute_callback 方法保持不变) ...
+    async def publish(self, event: Event):
         if event.depth >= self.max_depth:
             logger.critical(
                 f"**熔断器触发**！事件链深度达到最大值 {self.max_depth}。"
@@ -107,41 +87,51 @@ class EventBus:
             return
         logger.info(f"发布事件: {event!r}")
         matching_callbacks = []
-        with self._lock:
-            channel_subs = self._subscribers.get(event.channel, {})
-            for pattern, callbacks in channel_subs.items():
+        async with self._lock:
+            # 复制一份以避免在迭代时修改
+            subscribers_copy = self._subscribers.copy()
+
+        channel_subs = subscribers_copy.get(event.channel, {})
+        for pattern, callbacks in channel_subs.items():
+            if fnmatch.fnmatch(event.name, pattern):
+                matching_callbacks.extend(callbacks)
+        if event.channel != '*':
+            wildcard_channel_subs = subscribers_copy.get('*', {})
+            for pattern, callbacks in wildcard_channel_subs.items():
                 if fnmatch.fnmatch(event.name, pattern):
                     matching_callbacks.extend(callbacks)
-            if event.channel != '*':
-                wildcard_channel_subs = self._subscribers.get('*', {})
-                for pattern, callbacks in wildcard_channel_subs.items():
-                    if fnmatch.fnmatch(event.name, pattern):
-                        matching_callbacks.extend(callbacks)
+
         if not matching_callbacks:
             logger.debug(f"事件 '{event.name}' 在频道 '{event.channel}' 上已发布，但没有订阅者。")
             return
+
         unique_callbacks = list(dict.fromkeys(matching_callbacks))
         logger.debug(f"事件 '{event.name}' 匹配到 {len(unique_callbacks)} 个订阅者。")
-        for callback in unique_callbacks:
-            thread = threading.Thread(target=self._execute_callback, args=(callback, event))
-            thread.daemon = True
-            thread.start()
 
-    def _execute_callback(self, callback: Callable[[Event], None], event: Event):
+        # 使用 asyncio.gather 并发执行所有回调
+        tasks = [self._execute_callback(cb, event) for cb in unique_callbacks]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _execute_callback(self, callback: Callable[[Event], Any], event: Event):
         try:
-            callback(event)
+            if asyncio.iscoroutinefunction(callback):
+                await callback(event)
+            else:
+                # 在默认的线程池中运行同步回调，避免阻塞事件循环
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, callback, event)
         except Exception as e:
             logger.error(
-                f"执行事件 '{event.name}' 的回调 '{callback.__name__}' 时发生错误: {e}",
+                f"执行事件 '{event.name}' 的回调 '{getattr(callback, '__name__', callback)}' 时发生错误: {e}",
                 exc_info=True
             )
 
-    def shutdown(self):
-        with self._lock:
+    async def shutdown(self):
+        async with self._lock:
             self._subscribers.clear()
         logger.info("EventBus已关闭，所有订阅已清除。")
 
-    def clear_subscriptions(self):
-        with self._lock:
+    async def clear_subscriptions(self):
+        async with self._lock:
             self._subscribers.clear()
         logger.info("EventBus的所有订阅已清除。")
