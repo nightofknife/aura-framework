@@ -1,27 +1,60 @@
-# src/utils/logger.py
+# packages/aura_shared_utils/utils/logger.py (Modified)
 
 import logging
 import os
 import queue
 import sys
 import time
+import asyncio
 from logging.handlers import RotatingFileHandler
 
+# This is the handler from the old Tkinter UI. It uses a standard thread-safe queue.
 from packages.aura_shared_utils.utils.ui_logger import QueueLogHandler
 
-# --- 【新增】为标准 logging 库添加自定义的 TRACE 级别 ---
-# 1. 定义 TRACE 级别的数值（比 DEBUG=10 更低）
+# --- Custom TRACE level setup (unchanged) ---
 TRACE_LEVEL_NUM = 5
-# 2. 注册级别名称和数值
 logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
-# 3. 为 Logger 类添加 trace 方法，这样 self.logger.trace() 才能工作
+
+
 def trace(self, message, *args, **kwargs):
     if self.isEnabledFor(TRACE_LEVEL_NUM):
-        # self._log 是 logging.Logger 内部的实际日志记录方法
         self._log(TRACE_LEVEL_NUM, message, args, **kwargs)
-# 4. 将新方法绑定到 logging.Logger 类上 (Monkey-patching)
+
+
 logging.Logger.trace = trace
-# --- 新增部分结束 ---
+
+
+# --- End of TRACE setup ---
+
+
+# --- 【新增】A logging handler to bridge to asyncio ---
+class AsyncioQueueHandler(logging.Handler):
+    """
+    A custom logging handler that puts records into an asyncio.Queue.
+    This is the bridge that allows synchronous logging calls from any thread
+    to be safely passed to the asynchronous world of the API server.
+    """
+
+    def __init__(self, log_queue: asyncio.Queue):
+        super().__init__()
+        self.log_queue = log_queue
+        # We get the event loop once during initialization. This assumes the handler
+        # is created in the same thread that will run the asyncio event loop.
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = asyncio.get_event_loop()
+
+    def emit(self, record):
+        """
+        This method is called by the logging framework for each log record.
+        """
+        # Format the record into a string.
+        msg = self.format(record)
+        # Use `call_soon_threadsafe` to schedule the `put_nowait` call on the
+        # event loop. This is the only safe way to interact with an asyncio
+        # queue from a different thread.
+        self.loop.call_soon_threadsafe(self.log_queue.put_nowait, msg)
 
 
 class Logger:
@@ -31,7 +64,6 @@ class Logger:
         if not cls._instance:
             cls._instance = super(Logger, cls).__new__(cls, *args, **kwargs)
             logger_obj = logging.getLogger("AuraFramework")
-            # 【修改】设置最低级别为我们新的 TRACE 级别
             logger_obj.setLevel(TRACE_LEVEL_NUM)
 
             if not logger_obj.handlers:
@@ -57,7 +89,10 @@ class Logger:
     def setup(self,
               log_dir: str = None,
               task_name: str = None,
-              ui_log_queue: queue.Queue = None):
+              ui_log_queue: queue.Queue = None,
+              api_log_queue: asyncio.Queue = None):  # 【新增】
+
+        # --- Legacy Tkinter UI Queue Handler (unchanged) ---
         if ui_log_queue and not self._get_handler("ui_queue"):
             queue_handler = QueueLogHandler(ui_log_queue)
             queue_handler.set_name("ui_queue")
@@ -65,8 +100,18 @@ class Logger:
             ui_formatter = logging.Formatter('%(asctime)s - %(levelname)-8s - %(message)s', datefmt='%H:%M:%S')
             queue_handler.setFormatter(ui_formatter)
             self.logger.addHandler(queue_handler)
-            self.info("UI日志队列已连接。")
 
+        # --- 【新增】API WebSocket Log Streaming Handler ---
+        if api_log_queue and not self._get_handler("api_queue"):
+            api_queue_handler = AsyncioQueueHandler(api_log_queue)
+            api_queue_handler.set_name("api_queue")
+            api_queue_handler.setLevel(logging.DEBUG)  # Stream DEBUG level and up
+            api_formatter = logging.Formatter('%(asctime)s - %(levelname)-8s - %(message)s', datefmt='%H:%M:%S')
+            api_queue_handler.setFormatter(api_formatter)
+            self.logger.addHandler(api_queue_handler)
+            self.info("API log streaming queue is connected.")
+
+        # --- File Handler (unchanged) ---
         if log_dir and task_name:
             old_file_handler = self._get_handler("task_file")
             if old_file_handler:
@@ -89,13 +134,10 @@ class Logger:
             )
             file_handler.setFormatter(file_formatter)
             self.logger.addHandler(file_handler)
-            self.info(f"日志系统已配置完成。日志文件位于: {log_file_path}")
+            self.info(f"File logging is configured. Log file: {log_file_path}")
 
-    # --- 【新增】添加 trace 方法到你的 Logger 类 ---
+    # --- Logging methods (unchanged) ---
     def trace(self, message, exc_info=False):
-        """
-        记录 TRACE 级别的日志，用于最详细的调试信息。
-        """
         self.logger.trace(message, exc_info=exc_info)
 
     def debug(self, message):
@@ -110,9 +152,8 @@ class Logger:
     def error(self, message, exc_info=False):
         self.logger.error(message, exc_info=exc_info)
 
-    def critical(self, message):
-        self.logger.critical(message)
+    def critical(self, message, exc_info=False):
+        self.logger.critical(message, exc_info=exc_info)
 
 
-# 创建一个全局可用的日志实例
 logger = Logger()

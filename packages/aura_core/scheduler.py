@@ -35,6 +35,9 @@ class Scheduler:
         self._scheduler_thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.num_event_workers = 4  # 可以根据需要调整
+        self.base_path = Path(__file__).resolve().parents[2]
+        self.is_running = asyncio.Event()
+
 
         # --- 遗留的线程安全锁，用于保护被UI线程访问的共享数据 ---
         self.shared_data_lock = threading.RLock()
@@ -66,7 +69,15 @@ class Scheduler:
         self.ui_event_queue = queue.Queue(maxsize=200)
         self.ui_update_queue: Optional[queue.Queue] = None
 
+        # 【新增】API实时通信队列
+        self.api_log_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+
         # --- 初始化流程 ---
+        logger.setup(
+            log_dir='logs',
+            task_name='aura_session',
+            api_log_queue=self.api_log_queue
+        )
         self._register_core_services()
         self.reload_plans()
 
@@ -109,8 +120,6 @@ class Scheduler:
 
                 if self._loop and self._loop.is_running():
                     asyncio.run_coroutine_threadsafe(self._async_reload_subscriptions(), self._loop)
-                else:
-                    asyncio.run(self.event_bus.clear_subscriptions())
 
                 self._push_ui_update('full_status_update', {
                     'schedule': self.get_schedule_status(),
@@ -438,6 +447,50 @@ class Scheduler:
         with self.shared_data_lock:
             return list(self.plans.keys())
 
+        # 请将此方法添加到 packages/aura_core/scheduler.py 的 Scheduler 类中
+
+    def get_plan_files(self, plan_name: str) -> Dict[str, Any]:
+        """
+        扫描指定plan的目录，并返回一个表示文件/文件夹结构的嵌套字典。
+        【修正版】: 此版本直接使用 base_path 构建路径，不再依赖 PluginManager 的状态。
+        """
+        logger.debug(f"请求获取 '{plan_name}' 的文件树...")
+
+        # 直接、可靠地构建 plan 的路径
+        plan_path = self.base_path / 'plans' / plan_name
+
+        if not plan_path.is_dir():
+            # 如果 plan 目录本身就不存在，则抛出清晰的错误
+            error_msg = f"Plan directory not found for plan '{plan_name}' at path: {plan_path}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
+
+        tree = {}
+        # 使用 rglob 递归遍历所有文件和文件夹
+        for path in sorted(plan_path.rglob('*')):
+            # 忽略 .git, __pycache__ 等常见忽略目录
+            if any(part in ['.git', '__pycache__', '.idea'] for part in path.parts):
+                continue
+
+            # 获取相对于 plan 根目录的路径部分
+            relative_parts = path.relative_to(plan_path).parts
+
+            current_level = tree
+            # 遍历路径的每一部分，在字典中创建嵌套结构
+            for part in relative_parts[:-1]:
+                current_level = current_level.setdefault(part, {})
+
+            # 处理路径的最后一部分（文件名或空目录名）
+            final_part = relative_parts[-1]
+            if path.is_file():
+                current_level[final_part] = None  # 文件用 None 表示
+            elif path.is_dir() and not any(path.iterdir()):
+                # 仅当目录为空时才显式添加，否则它会作为父级自动存在
+                current_level.setdefault(final_part, {})
+
+        logger.debug(f"为 '{plan_name}' 构建的文件树: {tree}")
+        return tree
+
     def get_tasks_for_plan(self, plan_name: str) -> List[str]:
         with self.shared_data_lock:
             tasks = []
@@ -460,21 +513,45 @@ class Scheduler:
                 status_list.append(status_item)
             return status_list
 
-    def get_plan_files(self, plan_name: str) -> Dict:
-        plan_path = self.base_path / 'plans' / plan_name
-        if not plan_path.is_dir(): return {}
+    def get_all_services_for_api(self) -> List[Dict[str, Any]]:
+        """
+        获取所有服务的状态，并将其格式化为适合API返回的、
+        可JSON序列化的字典列表。
+        这个返回的结构应该与 api_server.py 中定义的 ServiceInfoModel 匹配。
+        """
+        with self.shared_data_lock:
+            original_services = service_registry.get_all_service_definitions()
 
-        def build_tree(current_path: Path):
-            tree = {}
-            for item in sorted(current_path.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
-                if item.name.startswith('.') or item.name == '__pycache__': continue
-                if item.is_dir():
-                    tree[item.name] = build_tree(item)
-                else:
-                    tree[item.name] = None
-            return tree
+        api_safe_services = []
+        for service_def in original_services:
+            # 安全地提取类信息
+            class_info = {'module': None, 'name': None}
+            if hasattr(service_def.service_class, '__module__') and hasattr(service_def.service_class, '__name__'):
+                class_info['module'] = service_def.service_class.__module__
+                class_info['name'] = service_def.service_class.__name__
 
-        return build_tree(plan_path)
+            # 安全地提取插件信息（简化为字典）
+            plugin_info = None
+            if service_def.plugin:
+                plugin_info = {
+                    'name': service_def.plugin.name,
+                    'canonical_id': service_def.plugin.canonical_id,
+                    'version': service_def.plugin.version,
+                    'plugin_type': service_def.plugin.plugin_type
+                }
+
+            api_safe_services.append({
+                "alias": service_def.alias,
+                "fqid": service_def.fqid,
+                "status": service_def.status,
+                "public": service_def.public,
+                "service_class_info": class_info,
+                "plugin": plugin_info
+            })
+        return api_safe_services
+
+
+
 
     def get_file_content(self, plan_name: str, relative_path: str) -> str:
         file_path = self.base_path / 'plans' / plan_name / relative_path

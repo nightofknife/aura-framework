@@ -231,7 +231,8 @@ class ServiceRegistry:
         return dependencies
 
     def get_all_service_definitions(self) -> List[ServiceDefinition]:
-        with self._lock: return sorted(list(self._fqid_map.values()), key=lambda s: s.fqid)
+        with self._lock:
+            return sorted(list(self._fqid_map.values()), key=lambda s: s.fqid)
 
     def remove_services_by_prefix(self, prefix: str = "", exclude_prefix: Optional[str] = None):
         with self._lock:
