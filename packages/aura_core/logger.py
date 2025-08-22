@@ -9,7 +9,7 @@ import asyncio
 from logging.handlers import RotatingFileHandler
 
 # This is the handler from the old Tkinter UI. It uses a standard thread-safe queue.
-from packages.aura_shared_utils.utils.ui_logger import QueueLogHandler
+from packages.aura_core.ui_logger import QueueLogHandler
 
 # --- Custom TRACE level setup (unchanged) ---
 TRACE_LEVEL_NUM = 5

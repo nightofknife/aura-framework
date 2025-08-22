@@ -11,8 +11,8 @@ from resolvelib import Resolver, BaseReporter
 
 from packages.aura_core.api import service_registry, ServiceDefinition, ACTION_REGISTRY, ActionDefinition, hook_manager
 from packages.aura_core.builder import build_package_from_source, clear_build_cache, API_FILE_NAME
-from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.plugin_definition import PluginDefinition
+from packages.aura_core.logger import logger
 from .orchestrator import Orchestrator
 from .plugin_provider import PluginProvider
 

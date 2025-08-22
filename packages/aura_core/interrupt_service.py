@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Set, Optional
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 class InterruptService:

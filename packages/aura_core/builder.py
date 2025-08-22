@@ -11,8 +11,8 @@ import yaml
 
 from packages.aura_core.api import ACTION_REGISTRY, ActionDefinition
 from packages.aura_core.api import service_registry, ServiceDefinition
-from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.plugin_definition import PluginDefinition
+from packages.aura_core.logger import logger
 
 _PROCESSED_MODULES: Set[str] = set()
 PROJECT_BASE_PATH: Optional[Path] = None

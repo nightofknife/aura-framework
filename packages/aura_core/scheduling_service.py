@@ -4,7 +4,7 @@ from datetime import datetime
 from croniter import croniter
 
 from packages.aura_core.task_queue import Tasklet
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 class SchedulingService:

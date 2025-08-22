@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Awaitable
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 @dataclass

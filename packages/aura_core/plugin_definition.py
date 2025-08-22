@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Any
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 @dataclass

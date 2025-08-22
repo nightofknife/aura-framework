@@ -4,7 +4,7 @@ from typing import Dict, Any, List
 
 from resolvelib.providers import AbstractProvider
 
-from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
+from packages.aura_core.plugin_definition import PluginDefinition
 
 
 class PluginProvider(AbstractProvider):

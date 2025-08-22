@@ -4,7 +4,7 @@ from typing import Callable, List, Any, Dict, Awaitable
 
 from packages.aura_core.api import ActionDefinition
 from packages.aura_core.context import Context
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 class Middleware:

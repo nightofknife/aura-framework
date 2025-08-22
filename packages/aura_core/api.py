@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import Callable, Any, Dict, List, Optional, Type
 
 from packages.aura_core.inheritance_proxy import InheritanceProxy
-from packages.aura_shared_utils.models.plugin_definition import PluginDefinition
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.plugin_definition import PluginDefinition
+from packages.aura_core.logger import logger
 
 
 @dataclass

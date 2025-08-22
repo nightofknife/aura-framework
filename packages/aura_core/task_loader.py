@@ -5,7 +5,7 @@ import yaml
 from cachetools import TTLCache
 from cachetools.keys import hashkey
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 class TaskLoader:

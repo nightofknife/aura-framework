@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 from .action_injector import ActionInjector
 from .api import ACTION_REGISTRY
 from .context_manager import ContextManager

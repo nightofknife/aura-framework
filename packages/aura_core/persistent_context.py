@@ -3,7 +3,7 @@ import json
 import os
 from typing import Any, Dict
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 class PersistentContext:
