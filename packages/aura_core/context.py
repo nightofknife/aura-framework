@@ -1,9 +1,10 @@
-# packages/aura_core/context.py (Pydantic Refactor)
+# packages/aura_core/context.py (Stage 1 Refactor - Complete File)
+
 from __future__ import annotations
 import copy
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from packages.aura_core.logger import logger
 
@@ -15,7 +16,6 @@ if TYPE_CHECKING:
 
 class TaskContextModel(BaseModel):
     """
-    【Pydantic Refactor】
     Defines the structured data model for the task execution context.
     This provides type safety, autocompletion, and self-documentation.
     """
@@ -45,7 +45,6 @@ class TaskContextModel(BaseModel):
 
 class Context:
     """
-    【Pydantic Refactor】
     A smart wrapper for the TaskContextModel, providing a controlled interface.
     It maintains the original class's methods and behaviors (forking, sub-context checks)
     while leveraging Pydantic for core data integrity.
@@ -73,7 +72,8 @@ class Context:
         It prevents overwriting core, structured context variables.
         """
         key_lower = key.lower()
-        if hasattr(self._model, key_lower) and key_lower != 'dynamic_data':
+        # Allow setting 'error' for failure handlers
+        if hasattr(self._model, key_lower) and key_lower not in ['dynamic_data', 'error']:
             logger.warning(f"Attempted to overwrite core context variable '{key_lower}'. "
                            f"Dynamic values are stored separately. Use a different key.")
             return
@@ -105,14 +105,18 @@ class Context:
 
     def fork(self) -> 'Context':
         """
-        Creates a new, variable-isolated sub-context.
-        It inherits core services but gets a fresh dynamic_data store.
+        【Corrected】Creates a new, variable-isolated sub-context.
+        It inherits core services but gets a fresh, empty dynamic_data store.
         """
-        # Deepcopy the model to ensure data separation
-        forked_model = copy.deepcopy(self._model)
+        # Use Pydantic's copy method for a safe copy of the model structure
+        # and its data, including complex types.
+        forked_model = self._model.copy(deep=True)
+
+        # Explicitly set the forked properties
         forked_model.is_sub_context = True
-        # Clear dynamic data for the new sub-context
+        # A fork always starts with a clean slate for dynamic data
         forked_model.dynamic_data = {}
+
         return Context(forked_model)
 
     def __str__(self):

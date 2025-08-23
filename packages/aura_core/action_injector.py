@@ -1,20 +1,37 @@
-# packages/aura_core/action_injector.py (Modified)
+# packages/aura_core/action_injector.py (Stage 1 Refactor)
 import asyncio
 import inspect
 from ast import literal_eval
 from typing import Any, Dict, TYPE_CHECKING
 
 from jinja2 import Environment, BaseLoader, UndefinedError
-# 【Pydantic Refactor】 Import BaseModel and ValidationError
 from pydantic import BaseModel, ValidationError
 
 from packages.aura_core.logger import logger
-from .api import service_registry, ACTION_REGISTRY, ActionDefinition
+from .api import service_registry, ACTION_REGISTRY, ActionDefinition, register_action
 from .context import Context
+from .engine import JumpSignal  # Import JumpSignal
 
 if TYPE_CHECKING:
     from .engine import ExecutionEngine
 
+
+# --- Built-in Flow Control Actions ---
+# In a larger system, this could be in its own file and imported.
+
+@register_action(name="flow.go_task", read_only=True)
+def go_task(task_name: str):
+    """
+    A built-in action that immediately stops the current task and jumps to another.
+    This action works by raising a special JumpSignal exception.
+    The 'task_name' parameter should be the full task ID (e.g., 'plan_name/task_path/task_key').
+    """
+    if not task_name or not isinstance(task_name, str):
+        raise ValueError("flow.go_task requires a non-empty string for the 'task_name' parameter.")
+    raise JumpSignal(jump_type='go_task', target=task_name)
+
+
+# --- ActionInjector Class ---
 
 class ActionInjector:
     def __init__(self, context: Context, engine: 'ExecutionEngine'):
@@ -38,6 +55,9 @@ class ActionInjector:
             raise NameError(f"错误：找不到名为 '{action_name}' 的行为。")
 
         rendered_params = await self._render_params(raw_params)
+
+        # The JumpSignal must be caught at a higher level (Orchestrator).
+        # The injector's job is just to execute it.
         return await self._final_action_executor(action_def, self.context, rendered_params)
 
     async def _final_action_executor(self, action_def: ActionDefinition, context: Context,
@@ -125,7 +145,6 @@ class ActionInjector:
 
         return call_args
 
-    # ... (_render_params and _render_value remain unchanged) ...
     async def _render_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         context_data = self.context._data.copy()
         rendered_params = {}
@@ -143,10 +162,12 @@ class ActionInjector:
                 rendered_string = await template.render_async(context_data)
                 if is_pure_expression:
                     try:
+                        # Safely evaluate common Python literals
                         if rendered_string.lower() in ('true', 'false', 'none'):
                             return literal_eval(rendered_string.capitalize())
                         return literal_eval(rendered_string)
                     except (ValueError, SyntaxError):
+                        # Not a literal, return the rendered string itself
                         return rendered_string
                 return rendered_string
             except UndefinedError as e:
@@ -161,3 +182,4 @@ class ActionInjector:
             return [await self._render_value(item, context_data) for item in value]
         else:
             return value
+
