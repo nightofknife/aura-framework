@@ -2,6 +2,7 @@ import asyncio
 import fnmatch
 import time
 import uuid
+import dataclasses
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Awaitable
@@ -27,6 +28,11 @@ class Event:
     def __repr__(self):
         return (f"Event(name='{self.name}', channel='{self.channel}', "
                 f"payload={self.payload}, source='{self.source}', depth={self.depth})")
+
+    # 【新增】添加 to_dict 方法
+    def to_dict(self) -> Dict[str, Any]:
+        """将 Event 实例转换为字典，方便序列化。"""
+        return dataclasses.asdict(self)
 
 
 class EventBus:

@@ -1,39 +1,27 @@
-# packages/aura_core/action_injector.py (Stage 1 Refactor)
+# packages/aura_core/action_injector.py (Refactored)
 import asyncio
 import inspect
-from ast import literal_eval
 from typing import Any, Dict, TYPE_CHECKING
 
 from jinja2 import Environment, BaseLoader, UndefinedError
 from pydantic import BaseModel, ValidationError
 
 from packages.aura_core.logger import logger
-from .api import service_registry, ACTION_REGISTRY, ActionDefinition, register_action
+from .api import service_registry, ACTION_REGISTRY, ActionDefinition
 from .context import Context
-from .engine import JumpSignal  # Import JumpSignal
 
 if TYPE_CHECKING:
     from .engine import ExecutionEngine
 
 
-# --- Built-in Flow Control Actions ---
-# In a larger system, this could be in its own file and imported.
-
-@register_action(name="flow.go_task", read_only=True)
-def go_task(task_name: str):
-    """
-    A built-in action that immediately stops the current task and jumps to another.
-    This action works by raising a special JumpSignal exception.
-    The 'task_name' parameter should be the full task ID (e.g., 'plan_name/task_path/task_key').
-    """
-    if not task_name or not isinstance(task_name, str):
-        raise ValueError("flow.go_task requires a non-empty string for the 'task_name' parameter.")
-    raise JumpSignal(jump_type='go_task', target=task_name)
-
-
-# --- ActionInjector Class ---
-
 class ActionInjector:
+    """
+    【Refactored】负责解析和执行单个 Action。
+    - 修正了参数渲染和注入逻辑。
+    - 简化了模板渲染，移除了不安全的 literal_eval。
+    - 明确了参数解析的优先级。
+    """
+
     def __init__(self, context: Context, engine: 'ExecutionEngine'):
         self.context = context
         self.engine = engine
@@ -41,145 +29,158 @@ class ActionInjector:
         self._initialize_jinja_globals()
 
     def _initialize_jinja_globals(self):
-        try:
-            config_service = service_registry.get_service_instance('config')
-            self.jinja_env.globals['config'] = lambda key, default=None: config_service.get(key, default)
-        except Exception as e:
-            logger.warning(f"无法获取ConfigService，Jinja2中的 'config()' 函数将不可用: {e}")
-            self.jinja_env.globals['config'] = lambda key, default=None: default
+        """初始化 Jinja2 环境中的全局函数。"""
+
+        # 定义一个异步的 config 函数
+        async def get_config(key: str, default: Any = None) -> Any:
+            try:
+                # 假设 config_service.get 未来可能是异步的
+                config_service = service_registry.get_service_instance('config')
+                return config_service.get(key, default)
+            except Exception as e:
+                logger.warning(f"Jinja2 'config()' 函数无法获取ConfigService: {e}")
+                return default
+
+        self.jinja_env.globals['config'] = get_config
 
     async def execute(self, action_name: str, raw_params: Dict[str, Any]) -> Any:
-        action_name_lower = action_name.lower()
-        action_def = ACTION_REGISTRY.get(action_name_lower)
+        """
+        核心执行入口：获取 Action 定义，渲染参数，并调用执行器。
+        """
+        action_def = ACTION_REGISTRY.get(action_name.lower())
         if not action_def:
             raise NameError(f"错误：找不到名为 '{action_name}' 的行为。")
 
+        # 1. 渲染用户在 YAML 中提供的原始参数
         rendered_params = await self._render_params(raw_params)
 
-        # The JumpSignal must be caught at a higher level (Orchestrator).
-        # The injector's job is just to execute it.
-        return await self._final_action_executor(action_def, self.context, rendered_params)
+        # 2. 准备最终的调用参数，并执行 Action
+        # JumpSignal 异常会自然地向上传播到 engine 层被捕获
+        return await self._final_action_executor(action_def, rendered_params)
 
-    async def _final_action_executor(self, action_def: ActionDefinition, context: Context,
-                                     params: Dict[str, Any]) -> Any:
+    async def _final_action_executor(self, action_def: ActionDefinition, params: Dict[str, Any]) -> Any:
+        """
+        准备参数并以正确的方式（同步/异步）执行 Action 函数。
+        """
+        # 准备最终传递给 action 函数的参数字典
         call_args = self._prepare_action_arguments(action_def, params)
+
         if action_def.is_async:
             return await action_def.func(**call_args)
         else:
+            # 在线程池中执行同步函数，避免阻塞事件循环
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(None, lambda: action_def.func(**call_args))
 
-    def _prepare_action_arguments(self, action_def: ActionDefinition, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_action_arguments(self, action_def: ActionDefinition, rendered_params: Dict[str, Any]) -> Dict[
+        str, Any]:
         """
-        【Pydantic Refactor】
-        Prepares arguments for an action call.
-        - NEW: If a parameter is type-hinted as a Pydantic BaseModel, it will be automatically
-          instantiated and validated from the incoming `params` dictionary.
-        - RETAINED: Continues to support service injection and individual parameter injection
-          for backward compatibility.
+        【Refactored】准备 Action 的最终调用参数。
+        此方法实现了清晰的参数解析优先级，并支持 Pydantic 模型注入。
         """
         sig = action_def.signature
         call_args = {}
-        service_deps = action_def.service_deps
+        params_consumed_by_model = False
 
-        # A flag to track if params have been consumed by a Pydantic model
-        params_consumed = False
+        # 检查是否有 Pydantic 模型参数
+        pydantic_param_name = None
+        pydantic_model_class = None
+        for name, param_spec in sig.parameters.items():
+            if inspect.isclass(param_spec.annotation) and issubclass(param_spec.annotation, BaseModel):
+                pydantic_param_name = name
+                pydantic_model_class = param_spec.annotation
+                break
 
+        # 如果存在 Pydantic 模型，则优先用它来消费所有渲染后的参数
+        if pydantic_param_name and pydantic_model_class:
+            try:
+                call_args[pydantic_param_name] = pydantic_model_class(**rendered_params)
+                params_consumed_by_model = True
+            except ValidationError as e:
+                error_msg = f"执行行为 '{action_def.name}' 时参数验证失败。\n" \
+                            f"YAML中提供的参数无法匹配 '{pydantic_model_class.__name__}' 模型的定义。\n" \
+                            f"错误详情:\n{e}"
+                logger.error(error_msg)
+                raise ValueError(error_msg) from e
+
+        # 遍历函数签名中的所有参数，按优先级填充
         for param_name, param_spec in sig.parameters.items():
-            # --- Pydantic Model Injection Logic ---
-            annotation = param_spec.annotation
-            if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
-                try:
-                    # Instantiate the Pydantic model with the entire params dict
-                    # This performs validation, type casting, and default value assignment.
-                    call_args[param_name] = annotation(**params)
-                    params_consumed = True
-                    continue  # Move to the next parameter
-                except ValidationError as e:
-                    # Provide a developer-friendly error message
-                    error_msg = f"执行行为 '{action_def.name}' 时参数验证失败。\n" \
-                                f"YAML中提供的参数无法匹配 '{annotation.__name__}' 模型的定义。\n" \
-                                f"错误详情:\n{e}"
-                    logger.error(error_msg)
-                    raise ValueError(error_msg) from e
+            # 如果已被 Pydantic 模型处理，则跳过
+            if param_name == pydantic_param_name:
+                continue
 
-            # --- Existing Injection Logic (Services, Context, etc.) ---
+            # 忽略可变参数
             if param_spec.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
                 continue
 
-            if param_name in service_deps:
-                call_args[param_name] = service_registry.get_service_instance(service_deps[param_name])
+            # 优先级 1: 服务依赖注入 (@requires_services)
+            if param_name in action_def.service_deps:
+                call_args[param_name] = service_registry.get_service_instance(action_def.service_deps[param_name])
                 continue
 
+            # 优先级 2: 框架核心对象注入
             if param_name == 'context':
                 call_args[param_name] = self.context
                 continue
-
             if param_name == 'persistent_context':
                 call_args[param_name] = self.context.get('persistent_context')
                 continue
-
             if param_name == 'engine':
                 call_args[param_name] = self.engine
                 continue
 
-            # --- Individual Parameter Injection (only if not consumed by Pydantic) ---
-            if not params_consumed:
-                if param_name in params:
-                    call_args[param_name] = params[param_name]
-                    continue
-
-                injected_value = self.context.get(param_name)
-                if injected_value is not None:
-                    call_args[param_name] = injected_value
-                    continue
-
-            if param_spec.default is not inspect.Parameter.empty:
-                call_args[param_name] = param_spec.default
+            # 优先级 3: 用户在 YAML `params` 中提供的值 (仅当未被Pydantic模型消费时)
+            if not params_consumed_by_model and param_name in rendered_params:
+                call_args[param_name] = rendered_params[param_name]
                 continue
 
-            # If we are here, a required parameter is missing
-            # But if a Pydantic model consumed the params, we shouldn't raise for individual ones
-            if not params_consumed:
+            # 优先级 4: 从当前上下文中查找同名变量
+            context_value = self.context.get(param_name)
+            if context_value is not None:
+                call_args[param_name] = context_value
+                continue
+
+            # 优先级 5: 函数定义的默认值
+            if param_spec.default is not inspect.Parameter.empty:
+                # 这里不需要操作，因为 Python 调用时会自动处理
+                continue
+
+            # 如果到这里参数还未被赋值，说明缺少必要参数
+            if param_name not in call_args:
                 raise ValueError(f"执行行为 '{action_def.name}' 时缺少必要参数: '{param_name}'")
 
         return call_args
 
     async def _render_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        context_data = self.context._data.copy()
-        rendered_params = {}
-        for key, value in params.items():
-            rendered_params[key] = await self._render_value(value, context_data)
-        return rendered_params
+        """递归地渲染参数字典中的所有值。"""
+        # 传递给 Jinja 的上下文数据
+        context_data = self.context._data
+        return {key: await self._render_value(value, context_data) for key, value in params.items()}
 
     async def _render_value(self, value: Any, context_data: Dict[str, Any]) -> Any:
+        """
+        【Refactored】渲染单个值。
+        - 移除了 literal_eval，渲染结果忠于模板输出。
+        - 简化了逻辑，只处理字符串、字典和列表。
+        """
         if isinstance(value, str):
+            # 仅当包含模板标记时才进行渲染
             if "{{" not in value and "{%" not in value:
                 return value
-            is_pure_expression = value.startswith("{{") and value.endswith("}}")
             try:
                 template = self.jinja_env.from_string(value)
-                rendered_string = await template.render_async(context_data)
-                if is_pure_expression:
-                    try:
-                        # Safely evaluate common Python literals
-                        if rendered_string.lower() in ('true', 'false', 'none'):
-                            return literal_eval(rendered_string.capitalize())
-                        return literal_eval(rendered_string)
-                    except (ValueError, SyntaxError):
-                        # Not a literal, return the rendered string itself
-                        return rendered_string
-                return rendered_string
+                return await template.render_async(context_data)
             except UndefinedError as e:
-                logger.warning(f"渲染模板 '{value}' 时出错: {e.message}。返回 None。")
+                logger.warning(f"渲染模板 '{value}' 时出错: {e.message}。将返回 None。")
                 return None
             except Exception as e:
                 logger.error(f"渲染Jinja2模板 '{value}' 时发生严重错误: {e}")
-                return None
+                return None  # 返回 None 作为安全的默认值
         elif isinstance(value, dict):
             return {k: await self._render_value(v, context_data) for k, v in value.items()}
         elif isinstance(value, list):
             return [await self._render_value(item, context_data) for item in value]
         else:
+            # 对于非字符串、字典、列表类型，直接返回值
             return value
 

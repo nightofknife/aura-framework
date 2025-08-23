@@ -1,4 +1,4 @@
-# packages/aura_core/scheduler.py (完整修复版)
+# packages/aura_core/scheduler.py (Refactored to use PlanManager)
 
 import asyncio
 import queue
@@ -18,7 +18,8 @@ from packages.aura_core.task_queue import TaskQueue, Tasklet
 from packages.aura_core.logger import logger
 from .execution_manager import ExecutionManager
 from .interrupt_service import InterruptService
-from .plugin_manager import PluginManager
+# 【核心修改】导入 PlanManager 而不是 PluginManager
+from .plan_manager import PlanManager
 from .scheduling_service import SchedulingService
 
 if TYPE_CHECKING:
@@ -35,10 +36,21 @@ class Scheduler:
         self.num_event_workers = 4
         self.shared_data_lock = threading.RLock()
 
+        # --- 异步组件 (将在每次启动时初始化) ---
+        # 【修正】将异步组件的初始化提前，以确保 logger 能拿到队列
+        self.is_running: Optional[asyncio.Event] = None
+        self.pause_event: Optional[asyncio.Event] = None
+        self.task_queue: Optional[TaskQueue] = None
+        self.event_task_queue: Optional[TaskQueue] = None
+        self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
+        self.api_log_queue: Optional[asyncio.Queue] = None
+        self._initialize_async_components()
+
         # --- 核心服务实例 (只创建一次) ---
         self.state_store = StateStore()
         self.event_bus = EventBus()
-        self.plugin_manager = PluginManager(self.base_path)
+        # 【核心修改】实例化 PlanManager，并传入 pause_event
+        self.plan_manager = PlanManager(str(self.base_path), self.pause_event)
         self.execution_manager = ExecutionManager(self)
         self.scheduling_service = SchedulingService(self)
         self.interrupt_service = InterruptService(self)
@@ -53,16 +65,7 @@ class Scheduler:
         self.ui_event_queue = queue.Queue(maxsize=200)
         self.ui_update_queue: Optional[queue.Queue] = None
 
-        # --- 异步组件 (将在每次启动时初始化) ---
-        self.is_running: Optional[asyncio.Event] = None
-        self.pause_event: Optional[asyncio.Event] = None
-        self.task_queue: Optional[TaskQueue] = None
-        self.event_task_queue: Optional[TaskQueue] = None
-        self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
-        self.api_log_queue: Optional[asyncio.Queue] = None
-
         # --- 首次初始化流程 ---
-        self._initialize_async_components()  # 首次创建
         logger.setup(
             log_dir='logs',
             task_name='aura_session',
@@ -71,8 +74,9 @@ class Scheduler:
         self._register_core_services()
         self.reload_plans()
 
+    # ... (_initialize_async_components, set_ui_update_queue, _push_ui_update 不变) ...
     def _initialize_async_components(self):
-        """【新增】初始化或重置所有与事件循环相关的组件。"""
+        """初始化或重置所有与事件循环相关的组件。"""
         logger.debug("Scheduler: 正在初始化/重置异步组件...")
         self.is_running = asyncio.Event()
         self.pause_event = asyncio.Event()
@@ -81,14 +85,8 @@ class Scheduler:
         self.interrupt_queue = asyncio.Queue(maxsize=100)
         self.api_log_queue = asyncio.Queue(maxsize=500)
 
-        # 如果 logger 已经设置，需要更新它的队列引用
         if hasattr(logger, 'update_api_queue'):
             logger.update_api_queue(self.api_log_queue)
-        else:  # 兼容旧版 logger
-            if hasattr(logger, 'handlers'):
-                for handler in logger.handlers:
-                    if hasattr(handler, 'set_api_queue'):
-                        handler.set_api_queue(self.api_log_queue)
 
     def set_ui_update_queue(self, q: queue.Queue):
         self.ui_update_queue = q
@@ -109,8 +107,8 @@ class Scheduler:
         service_registry.register_instance('state_store', self.state_store, public=True, fqid='core/state_store')
         service_registry.register_instance('event_bus', self.event_bus, public=True, fqid='core/event_bus')
         service_registry.register_instance('scheduler', self, public=True, fqid='core/scheduler')
-        service_registry.register_instance('plugin_manager', self.plugin_manager, public=False,
-                                           fqid='core/plugin_manager')
+        # 【核心修改】注册 PlanManager 而不是 PluginManager
+        service_registry.register_instance('plan_manager', self.plan_manager, public=False, fqid='core/plan_manager')
         service_registry.register_instance('execution_manager', self.execution_manager, public=False,
                                            fqid='core/execution_manager')
         service_registry.register_instance('scheduling_service', self.scheduling_service, public=False,
@@ -124,20 +122,30 @@ class Scheduler:
             try:
                 config_service = service_registry.get_service_instance('config')
                 config_service.load_environment_configs(self.base_path)
-                self.plugin_manager.load_all_plugins(self.pause_event)
+
+                # 【核心修改】调用 PlanManager 的初始化方法
+                self.plan_manager.initialize()
+
                 self._load_plan_specific_data()
                 if self._loop and self._loop.is_running():
                     asyncio.run_coroutine_threadsafe(self._async_reload_subscriptions(), self._loop)
-                self._push_ui_update('full_status_update', {'schedule': self.get_schedule_status(),
-                                                            'services': self.get_all_services_status(),
-                                                            'interrupts': self.get_all_interrupts_status(),
-                                                            'workspace': {'plans': self.get_all_plans(),
-                                                                          'actions': self.actions.get_all_action_definitions()}})
+
+                # 【修正】从正确的源获取数据
+                self._push_ui_update('full_status_update', {
+                    'schedule': self.get_schedule_status(),
+                    'services': self.get_all_services_status(),
+                    'interrupts': self.get_all_interrupts_status(),
+                    'workspace': {
+                        'plans': self.get_all_plans(),
+                        'actions': self.actions.get_all_action_definitions()
+                    }
+                })
             except Exception as e:
                 logger.critical(f"框架资源加载失败: {e}", exc_info=True)
                 raise
         logger.info(f"======= 资源加载完毕 ... =======")
 
+    # ... (start/stop/run 和其他异步循环方法保持不变) ...
     async def _async_reload_subscriptions(self):
         await self.event_bus.clear_subscriptions()
         await self.event_bus.subscribe(event_pattern='*', callback=self._mirror_event_to_ui_queue, channel='*')
@@ -148,7 +156,6 @@ class Scheduler:
             logger.warning("调度器已经在运行中。")
             return
         logger.info("用户请求启动调度器及所有后台服务...")
-        # 【修正】在启动线程前，先启动执行器
         self.execution_manager.startup()
         self._scheduler_thread = threading.Thread(target=self._run_scheduler_in_thread, name="SchedulerThread",
                                                   daemon=True)
@@ -174,13 +181,11 @@ class Scheduler:
             self._loop.call_soon_threadsafe(self._main_task.cancel)
         if self._scheduler_thread and self._scheduler_thread.is_alive():
             self._scheduler_thread.join(timeout=10)
-        # 【修正】在所有异步任务结束后，关闭执行器
         self.execution_manager.shutdown()
         logger.info("调度器已安全停止。")
         self._push_ui_update('master_status_update', self.get_master_status())
 
     async def run(self):
-        # 【修正】在进入新循环后，立即重置所有异步组件
         self._initialize_async_components()
         self.is_running.set()
         self._loop = asyncio.get_running_loop()
@@ -203,8 +208,6 @@ class Scheduler:
             self._main_task = None
             logger.info("调度器主循环 (Commander) 已安全退出。")
 
-    # ... (从这里开始到文件末尾的所有其他方法都保持不变) ...
-    # ... (包括 _consume_main_task_queue, _consume_interrupt_queue, _event_worker_loop, 等等) ...
     async def _consume_main_task_queue(self):
         while True:
             tasklet = await self.task_queue.get()
@@ -225,7 +228,7 @@ class Scheduler:
             for task in tasks_to_cancel:
                 task.cancel()
             handler_task_id = f"interrupt/{rule_name}/{uuid.uuid4()}"
-            handler_item = {'plan_name': handler_rule['plan_name'], 'task_name': handler_rule['handler_task']}
+            handler_item = {'plan_name': handler_rule['plan_name'], 'handler_task': handler_rule['handler_task']}
             tasklet = Tasklet(task_name=handler_task_id, payload=handler_item, is_ad_hoc=True, execution_mode='sync')
             asyncio.create_task(self.execution_manager.submit(tasklet, is_interrupt_handler=True))
             self.interrupt_queue.task_done()
@@ -238,7 +241,8 @@ class Scheduler:
 
     @property
     def plans(self) -> Dict[str, 'Orchestrator']:
-        return self.plugin_manager.plans
+        # 【核心修改】从 PlanManager 获取 plans
+        return self.plan_manager.plans
 
     def _load_plan_specific_data(self):
         logger.info("--- 加载方案包特定数据 ---")
@@ -247,7 +251,9 @@ class Scheduler:
         self.user_enabled_globals.clear()
         self.all_tasks_definitions.clear()
         config_service = service_registry.get_service_instance('config')
-        for plugin_def in self.plugin_manager.plugin_registry.values():
+
+        # 【核心修改】从 PlanManager 的 plugin_registry 获取插件定义
+        for plugin_def in self.plan_manager.plugin_manager.plugin_registry.values():
             if plugin_def.plugin_type != 'plan': continue
             plan_name = plugin_def.path.name
             config_path = plugin_def.path / 'config.yaml'
@@ -262,6 +268,7 @@ class Scheduler:
             self._load_interrupt_file(plugin_def.path, plan_name)
         self._load_all_tasks_definitions()
 
+    # ... (_load_all_tasks_definitions, _subscribe_event_triggers, etc. 保持不变) ...
     def _load_all_tasks_definitions(self):
         logger.info("--- 加载所有任务定义 ---")
         self.all_tasks_definitions.clear()
@@ -297,7 +304,7 @@ class Scheduler:
                 if not isinstance(trigger, dict) or 'event' not in trigger: continue
                 event_pattern = trigger['event']
                 plan_name = task_id.split('/')[0]
-                plugin_def = self.plugin_manager.plugin_registry.get(f"plan/{plan_name}")
+                plugin_def = self.plan_manager.plugin_manager.plugin_registry.get(f"plan/{plan_name}")
                 if not plugin_def: continue
                 channel = trigger.get('channel', plugin_def.canonical_id)
                 from functools import partial
@@ -412,8 +419,10 @@ class Scheduler:
 
     def get_all_plans(self) -> List[str]:
         with self.shared_data_lock:
-            return list(self.plans.keys())
+            # 【核心修改】从 PlanManager 获取方案列表
+            return self.plan_manager.list_plans()
 
+    # ... (get_plan_files, get_tasks_for_plan, etc. 保持不变) ...
     def get_plan_files(self, plan_name: str) -> Dict[str, Any]:
         logger.debug(f"请求获取 '{plan_name}' 的文件树...")
         plan_path = self.base_path / 'plans' / plan_name
@@ -477,19 +486,22 @@ class Scheduler:
                  "public": service_def.public, "service_class_info": class_info, "plugin": plugin_info})
         return api_safe_services
 
-    def get_file_content(self, plan_name: str, relative_path: str) -> str:
-        file_path = self.base_path / 'plans' / plan_name / relative_path
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read()
+    # --- 【核心修改】文件操作代理 ---
+    async def get_file_content(self, plan_name: str, relative_path: str) -> str:
+        orchestrator = self.plan_manager.get_plan(plan_name)
+        if not orchestrator:
+            raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
+        return await orchestrator.get_file_content(relative_path)
 
-    def get_file_content_bytes(self, plan_name: str, relative_path: str) -> bytes:
-        file_path = self.base_path / 'plans' / plan_name / relative_path
-        with open(file_path, 'rb') as f:
-            return f.read()
+    async def get_file_content_bytes(self, plan_name: str, relative_path: str) -> bytes:
+        orchestrator = self.plan_manager.get_plan(plan_name)
+        if not orchestrator:
+            raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
+        return await orchestrator.get_file_content_bytes(relative_path)
 
-    def save_file_content(self, plan_name: str, relative_path: str, content: str):
-        file_path = self.base_path / 'plans' / plan_name / relative_path
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        logger.info(f"文件已保存: {relative_path}")
+    async def save_file_content(self, plan_name: str, relative_path: str, content: Any):
+        orchestrator = self.plan_manager.get_plan(plan_name)
+        if not orchestrator:
+            raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
+        await orchestrator.save_file_content(relative_path, content)
+        logger.info(f"文件已通过Orchestrator异步保存: {relative_path}")

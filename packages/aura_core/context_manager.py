@@ -1,4 +1,4 @@
-# packages/aura_core/context_manager.py (Modified)
+# packages/aura_core/context_manager.py (Refactored)
 from pathlib import Path
 from typing import Optional
 
@@ -7,7 +7,6 @@ from pydantic import ValidationError
 from packages.aura_core.api import service_registry
 from packages.aura_core.event_bus import Event
 from packages.aura_core.logger import logger
-# 【Pydantic Refactor】 Import the new Context and its underlying model
 from .context import Context, TaskContextModel
 from .persistent_context import PersistentContext
 
@@ -28,10 +27,10 @@ class ContextManager:
         """
         Asynchronously creates and initializes a new, structured context for a task execution.
         """
-        # Load persistent context
-        persistent_context = PersistentContext(str(self.persistent_context_path))
-        # This can be made async if the underlying I/O is async
-        await persistent_context.load()
+        # 【修正】使用 .create() 工厂方法，它已经包含了 load() 操作。
+        persistent_context = await PersistentContext.create(str(self.persistent_context_path))
+        # 【修正】移除下面这行多余的 load() 调用。
+        # await persistent_context.load()
 
         # Get config service
         try:
@@ -39,6 +38,7 @@ class ContextManager:
             config_service.set_active_plan(self.plan_name)
             active_config = config_service.active_plan_config
         except Exception:
+            # If config service fails, proceed with an empty config.
             active_config = {}
 
         # Prepare debug directory
@@ -46,7 +46,6 @@ class ContextManager:
         debug_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            # 【Pydantic Refactor】 Instantiate the Pydantic model with all gathered data
             context_model = TaskContextModel(
                 plan_name=self.plan_name,
                 task_name=task_id,
@@ -56,25 +55,26 @@ class ContextManager:
                 debug_dir=str(debug_dir),
                 event=triggering_event,
                 is_sub_context=False,
-                # Start with persistent data loaded into the dynamic data store
-                dynamic_data=persistent_context.get_all_data().copy()
+                dynamic_data=persistent_context.get_all_data() # .copy() is already done by get_all_data
             )
             return Context(context_model)
         except ValidationError as e:
             logger.critical(f"Failed to create valid Task Context: {e}")
             raise RuntimeError("Could not initialize a valid execution context.") from e
 
-
     async def get_persistent_context_data(self) -> dict:
         """Asynchronously gets the current plan's persistent context data."""
-        pc = PersistentContext(str(self.persistent_context_path))
-        await pc.load()
+        # 【修正】统一使用 .create() 工厂方法，代码更简洁一致。
+        pc = await PersistentContext.create(str(self.persistent_context_path))
         return pc.get_all_data()
 
     async def save_persistent_context_data(self, data: dict):
-        """Asynchronously saves persistent context data."""
+        """
+        Asynchronously saves persistent context data, completely overwriting the existing file.
+        """
+        # 【修正】逻辑更清晰：创建一个空实例，填充数据，然后保存。
         pc = PersistentContext(str(self.persistent_context_path))
-        pc._data.clear()
         for key, value in data.items():
             pc.set(key, value)
         await pc.save()
+
