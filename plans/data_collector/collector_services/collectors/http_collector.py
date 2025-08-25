@@ -4,7 +4,7 @@ from typing import Dict, Any
 
 import requests
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 class HttpCollector:

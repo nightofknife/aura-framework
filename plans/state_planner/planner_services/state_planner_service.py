@@ -9,7 +9,7 @@ import yaml
 from packages.aura_core.api import register_service, service_registry
 from packages.aura_core.engine import ExecutionEngine
 from packages.aura_core.event_bus import EventBus, Event
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 # 一个简单的图数据结构，用于状态规划

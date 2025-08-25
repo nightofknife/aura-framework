@@ -2,7 +2,7 @@
 import time
 from typing import Dict, Any, Callable
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 try:
     import feedparser

@@ -8,7 +8,7 @@ from tkinter import ttk, scrolledtext, messagebox, PhotoImage
 import yaml
 from PIL import Image, ImageTk
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 from .base_panel import BasePanel
 from .visual_task_editor import VisualTaskEditor
 

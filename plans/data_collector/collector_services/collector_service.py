@@ -6,7 +6,7 @@ from typing import Dict, Any, List
 import yaml
 
 from packages.aura_core.api import register_service
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 from .collectors.database_collector import DatabaseCollector
 from .collectors.file_collector import FileCollector
 from .collectors.http_collector import HttpCollector

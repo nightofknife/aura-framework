@@ -3,7 +3,7 @@
 from typing import Optional, Tuple
 
 from packages.aura_core.api import register_action, requires_services
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 @register_action(name="find_window", public=True, read_only=True)

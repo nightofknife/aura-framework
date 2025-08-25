@@ -7,7 +7,7 @@ import win32api
 import win32con
 
 from packages.aura_core.api import register_service
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 # --- 虚拟键码映射 (保持不变) ---
 KEY_MAP = {

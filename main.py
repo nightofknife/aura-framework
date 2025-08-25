@@ -18,13 +18,13 @@ if str(base_path) not in sys.path:
     sys.path.insert(0, str(base_path))
 
 # --- Core Imports ---
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 from packages.aura_core.scheduler import Scheduler
 from packages.aura_core.api import service_registry
-
-# --- API and UI Imports ---
-from api_server import app as fastapi_app
-from api_server import get_scheduler_instance # Import the dependency function
+#
+# # --- API and UI Imports ---
+# from aura_api_server import app as fastapi_app
+# from aura_api_server import get_scheduler_instance # Import the dependency function
 
 
 def run_tkinter_ui(scheduler: Scheduler):
@@ -64,11 +64,11 @@ async def main(launch_ui: bool):
     # This is the crucial step for dependency injection. We tell FastAPI that
     # whenever a route asks for `get_scheduler_instance`, it should be given
     # our live `scheduler` object.
-    fastapi_app.dependency_overrides[get_scheduler_instance] = lambda: scheduler
-
-    # Configure the Uvicorn server to run our FastAPI app.
-    config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=8000, log_level="info")
-    server = uvicorn.Server(config)
+    # fastapi_app.dependency_overrides[get_scheduler_instance] = lambda: scheduler
+    #
+    # # Configure the Uvicorn server to run our FastAPI app.
+    # config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=8000, log_level="info")
+    # server = uvicorn.Server(config)
 
     # --- Optional UI Setup ---
     if launch_ui:
@@ -82,11 +82,12 @@ async def main(launch_ui: bool):
     try:
         # Create tasks for the scheduler's main loop and the API server's loop.
         scheduler_task = asyncio.create_task(scheduler.run())
-        server_task = asyncio.create_task(server.serve())
+        # server_task = asyncio.create_task(server.serve())
 
         # `asyncio.gather` runs both tasks concurrently. The application will
         # keep running until one of them exits or is cancelled (e.g., by Ctrl+C).
-        await asyncio.gather(scheduler_task, server_task)
+        # await asyncio.gather(scheduler_task, server_task)
+        await asyncio.gather(scheduler_task)
 
     finally:
         logger.info("Main loop is shutting down. Stopping scheduler...")

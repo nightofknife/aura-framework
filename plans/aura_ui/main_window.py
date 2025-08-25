@@ -7,7 +7,7 @@ from typing import Dict, Type, Tuple, Any
 
 # 导入所有需要的模块
 from packages.aura_core.scheduler import Scheduler
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 from .base_panel import BasePanel  # 导入新的基类
 from .context_editor import ContextEditorWindow
 from .event_bus_monitor_panel import EventBusMonitorPanel

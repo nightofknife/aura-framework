@@ -29,7 +29,12 @@ class Orchestrator:
         self.task_loader = TaskLoader(self.plan_name, self.current_plan_path)
         self.loop = asyncio.get_running_loop()
 
-    async def execute_task(self, task_name_in_plan: str, triggering_event: Optional[Event] = None) -> Any:
+    async def execute_task(
+        self,
+        task_name_in_plan: str,
+        triggering_event: Optional[Event] = None,
+        initial_data: Optional[Dict[str, Any]] = None
+    ) -> Any:
         """
         异步执行一个任务，并处理任务链（go_task）和任务级失败（on_failure）。
         """
@@ -45,7 +50,12 @@ class Orchestrator:
             if not task_data:
                 raise ValueError(f"Task definition not found: {full_task_id}")
 
-            context = await self.context_manager.create_context(full_task_id, triggering_event)
+            context_initial_data = initial_data if original_context is None else None
+            context = await self.context_manager.create_context(
+                full_task_id,
+                triggering_event,
+                initial_data=context_initial_data
+            )
             if original_context is None:
                 original_context = context
 
@@ -185,7 +195,8 @@ class Orchestrator:
             with open(full_path, 'r', encoding='utf-8') as f:
                 return f.read()
 
-        return await self.loop.run_in_executor(None, read_file)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, read_file)
 
     async def get_file_content_bytes(self, relative_path: str) -> bytes:
         """【修正】异步、非阻塞地读取方案内的文件字节内容。"""
@@ -197,7 +208,8 @@ class Orchestrator:
             with open(full_path, 'rb') as f:
                 return f.read()
 
-        return await self.loop.run_in_executor(None, read_file_bytes)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, read_file_bytes)
 
     async def save_file_content(self, relative_path: str, content: Any):
         """【修正】异步、非阻塞地向方案内的文件写入内容。"""
@@ -210,5 +222,6 @@ class Orchestrator:
             with open(full_path, mode, encoding=encoding) as f:
                 f.write(content)
 
-        await self.loop.run_in_executor(None, write_file)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, write_file)
 

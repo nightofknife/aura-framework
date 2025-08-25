@@ -13,7 +13,7 @@ import win32ui
 from PIL import Image
 
 from packages.aura_core.api import register_service
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 # 【【【核心修正 1/3：导入 ConfigService】】】
 from .config_service import ConfigService
 

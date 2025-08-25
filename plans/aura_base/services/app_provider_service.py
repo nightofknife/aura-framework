@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from typing import Optional, Tuple
 
 from packages.aura_core.api import register_service
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 from .config_service import ConfigService
 from .controller_service import ControllerService
 from .screen_service import ScreenService, CaptureResult

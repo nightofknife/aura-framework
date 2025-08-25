@@ -77,18 +77,30 @@ class PluginManager:
                     raise
 
     def _resolve_dependencies_and_sort(self) -> List[str]:
+        """
+        【修正】使用 resolvelib 进行验证，然后手动构建一个兼容 graphlib 的字典来进行拓扑排序。
+        """
         logger.info("--- 阶段2: 解析依赖关系并确定加载顺序 ---")
         provider = PluginProvider(self.plugin_registry)
         reporter = BaseReporter()
         resolver = Resolver(provider, reporter)
         try:
-            result = resolver.resolve(self.plugin_registry.keys())
-            graph = result.graph
+            # 步骤 1: 使用 resolvelib 进行复杂的依赖验证（检查版本冲突等）
+            resolver.resolve(self.plugin_registry.keys())
+
+            # 步骤 2: 手动构建一个 TopologicalSorter 兼容的、简单的图字典
+            # key 是插件ID，value 是该插件依赖的插件ID集合
+            graph = {pid: set(pdef.dependencies.keys()) for pid, pdef in self.plugin_registry.items()}
+
+            # 步骤 3: 使用标准库进行拓扑排序
             ts = TopologicalSorter(graph)
             return list(ts.static_order())
+        except CycleError as e:
+            cycle_path = " -> ".join(e.args[1])
+            raise RuntimeError(f"检测到插件间的循环依赖，无法启动: {cycle_path}") from e
         except Exception as e:
             logger.error(f"依赖解析失败: {e}", exc_info=True)
-            raise RuntimeError("依赖解析失败，无法启动。")
+            raise RuntimeError("依赖解析失败，无法启动。") from e
 
     def _load_plugins_in_order(self, load_order: List[str]):
         logger.info("--- 阶段3: 按顺序加载/构建所有包 ---")
@@ -164,9 +176,12 @@ class PluginManager:
             relative_path = file_path.relative_to(self.base_path)
             module_name = str(relative_path).replace('/', '.').replace('\\', '.').removesuffix('.py')
 
+            # 【核心修正】
+            # 如果模块已经加载，直接返回它，不要 reload。
+            # reload 会导致 ImportError，因为它需要父包在 sys.modules 中，
+            # 而 spec_from_file_location 不会创建这些父包。
             if module_name in sys.modules:
-                # 重新加载模块以确保更改生效，这在开发模式下很有用
-                return importlib.reload(sys.modules[module_name])
+                return sys.modules[module_name]
 
             spec = importlib.util.spec_from_file_location(module_name, file_path)
             if spec is None: raise ImportError(f"Could not create spec for module at {file_path}")
@@ -177,6 +192,7 @@ class PluginManager:
             return module
         except Exception as e:
             logger.error(f"延迟加载模块 '{file_path}' 失败: {e}", exc_info=True)
-            raise  # 重新抛出异常，因为模块加载失败是严重错误
+            # 重新抛出异常，让上层知道加载失败
+            raise
 
 

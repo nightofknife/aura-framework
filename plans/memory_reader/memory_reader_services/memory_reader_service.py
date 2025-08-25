@@ -7,7 +7,7 @@ import win32con
 import win32process
 
 from packages.aura_core.api import register_service
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 # 定义Windows API需要的常量
 PROCESS_QUERY_INFORMATION = 0x0400

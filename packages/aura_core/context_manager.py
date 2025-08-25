@@ -1,6 +1,6 @@
 # packages/aura_core/context_manager.py (Refactored)
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from pydantic import ValidationError
 
@@ -23,27 +23,31 @@ class ContextManager:
         self.plan_path = plan_path
         self.persistent_context_path = self.plan_path / 'persistent_context.json'
 
-    async def create_context(self, task_id: str, triggering_event: Optional[Event] = None) -> Context:
+    async def create_context(
+            self,
+            task_id: str,
+            triggering_event: Optional[Event] = None,
+            initial_data: Optional[Dict[str, Any]] = None  # 【新增】
+    ) -> Context:
         """
-        Asynchronously creates and initializes a new, structured context for a task execution.
+        【API 修改】异步创建一个新的、结构化的上下文，并能合并从API传入的初始数据。
         """
-        # 【修正】使用 .create() 工厂方法，它已经包含了 load() 操作。
         persistent_context = await PersistentContext.create(str(self.persistent_context_path))
-        # 【修正】移除下面这行多余的 load() 调用。
-        # await persistent_context.load()
 
-        # Get config service
         try:
             config_service = service_registry.get_service_instance('config')
             config_service.set_active_plan(self.plan_name)
             active_config = config_service.active_plan_config
         except Exception:
-            # If config service fails, proceed with an empty config.
             active_config = {}
 
-        # Prepare debug directory
         debug_dir = self.plan_path / 'debug_screenshots'
         debug_dir.mkdir(parents=True, exist_ok=True)
+
+        # 【修改】合并持久化数据和从API传入的初始数据
+        dynamic_data = persistent_context.get_all_data()
+        if initial_data:
+            dynamic_data.update(initial_data)
 
         try:
             context_model = TaskContextModel(
@@ -55,7 +59,7 @@ class ContextManager:
                 debug_dir=str(debug_dir),
                 event=triggering_event,
                 is_sub_context=False,
-                dynamic_data=persistent_context.get_all_data() # .copy() is already done by get_all_data
+                dynamic_data=dynamic_data
             )
             return Context(context_model)
         except ValidationError as e:

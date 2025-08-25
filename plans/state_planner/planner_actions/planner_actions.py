@@ -3,7 +3,7 @@
 from packages.aura_core.api import register_action, requires_services, service_registry
 from packages.aura_core.context import Context
 from packages.aura_core.event_bus import Event
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 from ..planner_services.state_planner_service import StatePlannerService
 
 

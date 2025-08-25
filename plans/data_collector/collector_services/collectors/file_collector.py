@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Dict, Any, Callable, Optional
 
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 class FileMonitorTask:

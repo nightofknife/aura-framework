@@ -374,19 +374,32 @@ class Scheduler:
                     return {"status": "error", "message": "Task queue is full."}
             return {"status": "error", "message": "Task ID not found."}
 
-    def run_ad_hoc_task(self, plan_name: str, task_name: str):
+    def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None):
+        """
+        【API 修改】执行一个临时的、一次性的任务，并可以注入初始上下文参数。
+        """
         full_task_id = f"{plan_name}/{task_name}"
         if full_task_id not in self.all_tasks_definitions:
+            logger.error(f"Ad-hoc task failed: definition '{full_task_id}' not found.")
             return {"status": "error", "message": f"Task definition '{full_task_id}' not found."}
+
         task_def = self.all_tasks_definitions[full_task_id]
-        tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True,
-                          payload={'plan_name': plan_name, 'task_name': task_name},
-                          execution_mode=task_def.get('execution_mode', 'sync'))
+
+        # 【修改】将 params 传递给 Tasklet 的 initial_context 字段
+        tasklet = Tasklet(
+            task_name=full_task_id,
+            is_ad_hoc=True,
+            payload={'plan_name': plan_name, 'task_name': task_name},
+            execution_mode=task_def.get('execution_mode', 'sync'),
+            initial_context=params or {}
+        )
+
         try:
             self.task_queue.put_nowait(tasklet)
-            logger.info(f"临时任务 '{full_task_id}' 已加入执行队列。")
-            return {"status": "success"}
+            logger.info(f"临时任务 '{full_task_id}' 已加入执行队列，初始参数: {params}")
+            return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
         except asyncio.QueueFull:
+            logger.warning(f"Ad-hoc task failed: task queue is full for '{full_task_id}'.")
             return {"status": "error", "message": "Task queue is full."}
 
     def get_master_status(self) -> dict:
@@ -505,3 +518,22 @@ class Scheduler:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
         await orchestrator.save_file_content(relative_path, content)
         logger.info(f"文件已通过Orchestrator异步保存: {relative_path}")
+
+    def trigger_full_ui_update(self):
+        """
+        【新增】主动触发一次完整的UI状态更新。
+        这在有新客户端连接时非常有用，可以立即为其提供全量状态。
+        """
+        logger.debug("Scheduler: Triggering a full UI status update for new clients.")
+        # 【修正】从正确的源获取数据
+        payload = {
+            'schedule': self.get_schedule_status(),
+            'services': self.get_all_services_status(),
+            'interrupts': self.get_all_interrupts_status(),
+            'workspace': {
+                'plans': self.get_all_plans(),
+                # 注意: actions 列表可能很大，但对于UI初始化是必要的
+                'actions': self.actions.get_all_action_definitions()
+            }
+        }
+        self._push_ui_update('full_status_update', payload)

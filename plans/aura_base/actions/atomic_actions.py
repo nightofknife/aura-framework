@@ -13,7 +13,7 @@ from packages.aura_core.event_bus import EventBus, Event
 from packages.aura_core.exceptions import StopTaskException
 from packages.aura_core.persistent_context import PersistentContext
 from packages.aura_core.state_store import StateStore
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 # --- 服务与数据模型导入 (来自本包) ---
 from ..services.app_provider_service import AppProviderService
 from ..services.ocr_service import OcrService, OcrResult, MultiOcrResult

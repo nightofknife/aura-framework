@@ -8,7 +8,7 @@ import win32con
 import win32gui
 
 from packages.aura_core.api import register_service
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 # 复用你的KEY_MAP，它在这里同样适用
 KEY_MAP = {

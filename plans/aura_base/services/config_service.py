@@ -8,7 +8,7 @@ from typing import Dict, Any
 import yaml
 
 from packages.aura_core.api import register_service
-from packages.aura_shared_utils.utils.logger import logger
+from packages.aura_core.logger import logger
 
 
 @register_service(alias="config", public=True)

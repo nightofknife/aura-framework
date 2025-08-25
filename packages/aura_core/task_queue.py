@@ -27,6 +27,8 @@ class Tasklet:
     is_ad_hoc: bool = False
     triggering_event: Optional[Event] = None
 
+    initial_context: Optional[Dict[str, Any]] = field(default_factory=dict)
+
     # --- 新增字段支持异步调度 ---
     execution_mode: Literal['sync', 'async'] = 'sync'
     resource_tags: List[str] = field(default_factory=list)
