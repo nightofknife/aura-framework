@@ -1,4 +1,4 @@
-# packages/aura_shared_utils/utils/logger.py (Modified)
+# packages/aura_shared_utils/utils/logger.py (Modified with console_level support)
 
 import logging
 import os
@@ -7,6 +7,7 @@ import sys
 import time
 import asyncio
 from logging.handlers import RotatingFileHandler
+from typing import Optional
 
 # This is the handler from the old Tkinter UI. It uses a standard thread-safe queue.
 from packages.aura_core.ui_logger import QueueLogHandler
@@ -27,34 +28,41 @@ logging.Logger.trace = trace
 # --- End of TRACE setup ---
 
 
-# --- 【新增】A logging handler to bridge to asyncio ---
 class AsyncioQueueHandler(logging.Handler):
     """
     A custom logging handler that puts records into an asyncio.Queue.
-    This is the bridge that allows synchronous logging calls from any thread
-    to be safely passed to the asynchronous world of the API server.
     """
 
     def __init__(self, log_queue: asyncio.Queue):
         super().__init__()
         self.log_queue = log_queue
-        # We get the event loop once during initialization. This assumes the handler
-        # is created in the same thread that will run the asyncio event loop.
-        try:
-            self.loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self.loop = asyncio.get_event_loop()
+        self.loop = None
 
     def emit(self, record):
         """
         This method is called by the logging framework for each log record.
         """
-        # Format the record into a string.
-        msg = self.format(record)
-        # Use `call_soon_threadsafe` to schedule the `put_nowait` call on the
-        # event loop. This is the only safe way to interact with an asyncio
-        # queue from a different thread.
-        self.loop.call_soon_threadsafe(self.log_queue.put_nowait, msg)
+        if self.loop is None:
+            try:
+                # 【改动】延迟获取 loop，使其更健壮
+                self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # 如果没有正在运行的循环，则无法记录到队列，直接返回
+                return
+
+        # 【改动】将完整的 record 字典放入队列，让消费者（如 TUI）可以获取更丰富的信息
+        log_entry = {
+            'name': record.name,
+            'level': record.levelname,
+            'message': record.getMessage(),
+            'timestamp': record.created,
+        }
+
+        try:
+            self.loop.call_soon_threadsafe(self.log_queue.put_nowait, log_entry)
+        except Exception:
+            # 忽略将日志放入队列时可能发生的任何错误（例如，循环关闭）
+            pass
 
 
 class Logger:
@@ -66,7 +74,8 @@ class Logger:
             logger_obj = logging.getLogger("AuraFramework")
             logger_obj.setLevel(TRACE_LEVEL_NUM)
 
-            if not logger_obj.handlers:
+            # 【说明】保持默认的控制台处理器，作为未调用 setup 时的后备
+            if not any(h.name == "console" for h in logger_obj.handlers):
                 console_handler = logging.StreamHandler(sys.stdout)
                 console_handler.set_name("console")
                 console_handler.setLevel(logging.INFO)
@@ -80,7 +89,7 @@ class Logger:
             cls._instance.logger = logger_obj
         return cls._instance
 
-    def _get_handler(self, name: str):
+    def _get_handler(self, name: str) -> Optional[logging.Handler]:
         for handler in self.logger.handlers:
             if handler.name == name:
                 return handler
@@ -90,7 +99,19 @@ class Logger:
               log_dir: str = None,
               task_name: str = None,
               ui_log_queue: queue.Queue = None,
-              api_log_queue: asyncio.Queue = None):  # 【新增】
+              api_log_queue: asyncio.Queue = None,
+              console_level: Optional[int] = logging.INFO):  # 【改动】新增 console_level 参数
+
+        # --- 【改动】控制台处理器管理 ---
+        console_handler = self._get_handler("console")
+        if console_level is None:
+            # 如果传入 None，则移除控制台处理器
+            if console_handler:
+                self.logger.removeHandler(console_handler)
+        elif console_handler:
+            # 如果处理器存在，则更新其级别
+            console_handler.setLevel(console_level)
+        # 如果处理器不存在且 console_level 不是 None，它会在 __new__ 中被创建，这里无需操作
 
         # --- Legacy Tkinter UI Queue Handler (unchanged) ---
         if ui_log_queue and not self._get_handler("ui_queue"):
@@ -101,13 +122,11 @@ class Logger:
             queue_handler.setFormatter(ui_formatter)
             self.logger.addHandler(queue_handler)
 
-        # --- 【新增】API WebSocket Log Streaming Handler ---
+        # --- API WebSocket Log Streaming Handler ---
         if api_log_queue and not self._get_handler("api_queue"):
             api_queue_handler = AsyncioQueueHandler(api_log_queue)
             api_queue_handler.set_name("api_queue")
-            api_queue_handler.setLevel(logging.DEBUG)  # Stream DEBUG level and up
-            api_formatter = logging.Formatter('%(asctime)s - %(levelname)-8s - %(message)s', datefmt='%H:%M:%S')
-            api_queue_handler.setFormatter(api_formatter)
+            api_queue_handler.setLevel(logging.DEBUG)
             self.logger.addHandler(api_queue_handler)
             self.info("API log streaming queue is connected.")
 
@@ -135,6 +154,20 @@ class Logger:
             file_handler.setFormatter(file_formatter)
             self.logger.addHandler(file_handler)
             self.info(f"File logging is configured. Log file: {log_file_path}")
+
+    def update_api_queue(self, new_queue: asyncio.Queue):
+        """【新增】允许在运行时更新 API 日志队列。"""
+        api_handler = self._get_handler("api_queue")
+        if api_handler and isinstance(api_handler, AsyncioQueueHandler):
+            api_handler.log_queue = new_queue
+            self.info("API log queue has been updated.")
+        elif new_queue:
+            # 如果处理器不存在，则创建一个新的
+            api_queue_handler = AsyncioQueueHandler(new_queue)
+            api_queue_handler.set_name("api_queue")
+            api_queue_handler.setLevel(logging.DEBUG)
+            self.logger.addHandler(api_queue_handler)
+            self.info("New API log streaming queue is connected.")
 
     # --- Logging methods (unchanged) ---
     def trace(self, message, exc_info=False):

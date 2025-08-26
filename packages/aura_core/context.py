@@ -8,11 +8,9 @@ from pydantic import BaseModel, Field
 
 from packages.aura_core.logger import logger
 
-if TYPE_CHECKING:
-    from logging import Logger
-    from packages.aura_core.event_bus import Event
-    from .persistent_context import PersistentContext
 
+from packages.aura_core.event_bus import Event
+from .persistent_context import PersistentContext
 
 class TaskContextModel(BaseModel):
     """
@@ -24,7 +22,7 @@ class TaskContextModel(BaseModel):
     task_name: str
 
     # Core services and objects
-    log: Logger
+    log: logger
     persistent_context: PersistentContext
     config: Dict[str, Any]
     debug_dir: str
@@ -41,6 +39,8 @@ class TaskContextModel(BaseModel):
     class Config:
         # Allow complex types like Logger, Event, etc., which are not Pydantic models.
         arbitrary_types_allowed = True
+
+
 
 
 class Context:
@@ -74,7 +74,7 @@ class Context:
         key_lower = key.lower()
         # Allow setting 'error' for failure handlers
         if hasattr(self._model, key_lower) and key_lower not in ['dynamic_data', 'error']:
-            logger.warning(f"Attempted to overwrite core context variable '{key_lower}'. "
+            self._model.log.warning(f"Attempted to overwrite core context variable '{key_lower}'. "
                            f"Dynamic values are stored separately. Use a different key.")
             return
         self._model.dynamic_data[key_lower] = value
@@ -123,4 +123,3 @@ class Context:
         trigger_id = self._model.event.id if self._model.event else None
         return (f"Context(dynamic_keys={list(self._model.dynamic_data.keys())}, "
                 f"sub={self._model.is_sub_context}, trigger={trigger_id})")
-

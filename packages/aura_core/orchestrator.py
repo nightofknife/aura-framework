@@ -11,7 +11,7 @@ from .engine import ExecutionEngine, JumpSignal
 from .event_bus import Event
 from .task_loader import TaskLoader
 from .context import Context
-
+from plans.aura_base.services.config_service import current_plan_name
 
 class Orchestrator:
     """
@@ -27,7 +27,7 @@ class Orchestrator:
         self.pause_event = pause_event
         self.context_manager = ContextManager(self.plan_name, self.current_plan_path)
         self.task_loader = TaskLoader(self.plan_name, self.current_plan_path)
-        self.loop = asyncio.get_running_loop()
+
 
     async def execute_task(
         self,
@@ -38,74 +38,80 @@ class Orchestrator:
         """
         异步执行一个任务，并处理任务链（go_task）和任务级失败（on_failure）。
         """
-        current_task_in_plan = task_name_in_plan
-        last_result = None
-        # 捕获任务链中第一个任务的上下文，用于可能的 on_failure 处理器
-        original_context = None
+        # 【修复】在任务执行前，设置当前方案的配置上下文。
+        # self.plan_name 在 __init__ 中被设置，所以这里总是正确的。
+        token = current_plan_name.set(self.plan_name)
+        logger.debug(f"Configuration context set to: '{self.plan_name}'")
 
-        while current_task_in_plan:
-            full_task_id = f"{self.plan_name}/{current_task_in_plan}"
-            task_data = self.task_loader.get_task_data(current_task_in_plan)
+        try:
+            current_task_in_plan = task_name_in_plan
+            last_result = None
+            # 捕获任务链中第一个任务的上下文，用于可能的 on_failure 处理器
+            original_context = None
 
-            if not task_data:
-                raise ValueError(f"Task definition not found: {full_task_id}")
+            while current_task_in_plan:
+                full_task_id = f"{self.plan_name}/{current_task_in_plan}"
+                task_data = self.task_loader.get_task_data(current_task_in_plan)
 
-            context_initial_data = initial_data if original_context is None else None
-            context = await self.context_manager.create_context(
-                full_task_id,
-                triggering_event,
-                initial_data=context_initial_data
-            )
-            if original_context is None:
-                original_context = context
+                if not task_data:
+                    raise ValueError(f"Task definition not found: {full_task_id}")
 
-            engine = ExecutionEngine(context=context, orchestrator=self, pause_event=self.pause_event)
+                context_initial_data = initial_data if original_context is None else None
+                context = await self.context_manager.create_context(
+                    full_task_id,
+                    triggering_event,
+                    initial_data=context_initial_data
+                )
+                if original_context is None:
+                    original_context = context
 
-            try:
-                result = await engine.run(task_data, full_task_id)
-            except JumpSignal as e:
-                logger.info(f"Orchestrator caught JumpSignal: type={e.type}, target={e.target}")
-                result = {'status': e.type, 'next_task': e.target}
-            except Exception as e:
-                logger.critical(
-                    f"Orchestrator caught unhandled exception for task '{full_task_id}': {e}",
-                    exc_info=True)
-                result = {'status': 'error',
-                          'error_details': {'node_id': 'orchestrator', 'message': str(e), 'type': type(e).__name__}}
+                engine = ExecutionEngine(context=context, orchestrator=self, pause_event=self.pause_event)
 
-            last_result = result
+                try:
+                    result = await engine.run(task_data, full_task_id)
+                except JumpSignal as e:
+                    logger.info(f"Orchestrator caught JumpSignal: type={e.type}, target={e.target}")
+                    result = {'status': e.type, 'next_task': e.target}
+                except Exception as e:
+                    logger.critical(
+                        f"Orchestrator caught unhandled exception for task '{full_task_id}': {e}",
+                        exc_info=True)
+                    result = {'status': 'error',
+                              'error_details': {'node_id': 'orchestrator', 'message': str(e), 'type': type(e).__name__}}
 
-            # --- 任务级 on_failure 处理 ---
-            if result.get('status') == 'error' and 'on_failure' in task_data:
-                await self._run_failure_handler(task_data['on_failure'], original_context, result.get('error_details'))
-                # 运行完处理器后，终止任务链
-                current_task_in_plan = None
-                continue
+                last_result = result
 
-            # --- go_task 处理 ---
-            if result.get('status') == 'go_task' and result.get('next_task'):
-                next_full_task_id = result['next_task']
+                # --- 任务级 on_failure 处理 ---
+                if result.get('status') == 'error' and 'on_failure' in task_data:
+                    await self._run_failure_handler(task_data['on_failure'], original_context, result.get('error_details'))
+                    current_task_in_plan = None
+                    continue
 
-                # 解析下一个任务ID，支持 plan_name/task_name 和 task_name 两种格式
-                if '/' not in next_full_task_id:
-                    next_plan_name = self.plan_name
-                    next_task_in_plan = next_full_task_id
+                # --- go_task 处理 ---
+                if result.get('status') == 'go_task' and result.get('next_task'):
+                    next_full_task_id = result['next_task']
+                    if '/' not in next_full_task_id:
+                        next_plan_name = self.plan_name
+                        next_task_in_plan = next_full_task_id
+                    else:
+                        next_plan_name, next_task_in_plan = next_full_task_id.split('/', 1)
+
+                    if next_plan_name != self.plan_name:
+                        logger.error(f"go_task不支持跨方案跳转: from '{self.plan_name}' to '{next_plan_name}'")
+                        break
+
+                    logger.info(f"Jumping from task '{current_task_in_plan}' to '{next_task_in_plan}'...")
+                    current_task_in_plan = next_task_in_plan
+                    triggering_event = None
                 else:
-                    next_plan_name, next_task_in_plan = next_full_task_id.split('/', 1)
+                    current_task_in_plan = None
 
-                if next_plan_name != self.plan_name:
-                    logger.error(f"go_task不支持跨方案跳转: from '{self.plan_name}' to '{next_plan_name}'")
-                    break
+            return last_result
 
-                logger.info(f"Jumping from task '{current_task_in_plan}' to '{next_task_in_plan}'...")
-                current_task_in_plan = next_task_in_plan
-                # 触发事件仅用于任务链的第一个任务
-                triggering_event = None
-            else:
-                # 正常结束或失败后，终止任务链
-                current_task_in_plan = None
-
-        return last_result
+        finally:
+            # 【修复】无论任务成功与否，都必须重置上下文，以防污染其他任务。
+            current_plan_name.reset(token)
+            logger.debug(f"Configuration context reset (was: '{self.plan_name}')")
 
     async def _run_failure_handler(self, failure_data: Dict, original_context: Context, error_details: Optional[Dict]):
         """在隔离的上下文中执行任务级的 on_failure 处理器。"""

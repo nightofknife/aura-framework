@@ -1,4 +1,4 @@
-# packages/aura_core/scheduler.py (Refactored to use PlanManager)
+# packages/aura_core/scheduler.py (Final Fix: Delayed Init & Buffering)
 
 import asyncio
 import queue
@@ -18,7 +18,6 @@ from packages.aura_core.task_queue import TaskQueue, Tasklet
 from packages.aura_core.logger import logger
 from .execution_manager import ExecutionManager
 from .interrupt_service import InterruptService
-# 【核心修改】导入 PlanManager 而不是 PluginManager
 from .plan_manager import PlanManager
 from .scheduling_service import SchedulingService
 
@@ -36,21 +35,22 @@ class Scheduler:
         self.num_event_workers = 4
         self.shared_data_lock = threading.RLock()
 
-        # --- 异步组件 (将在每次启动时初始化) ---
-        # 【修正】将异步组件的初始化提前，以确保 logger 能拿到队列
+        # 【修复】新增一个普通的、线程安全的列表，用于缓冲启动前提交的任务。
+        self._pre_start_task_buffer: List[Tasklet] = []
+
+        # --- 异步组件 (将在每次启动时初始化，先置为None) ---
         self.is_running: Optional[asyncio.Event] = None
         self.pause_event: Optional[asyncio.Event] = None
         self.task_queue: Optional[TaskQueue] = None
         self.event_task_queue: Optional[TaskQueue] = None
         self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
         self.api_log_queue: Optional[asyncio.Queue] = None
-        self._initialize_async_components()
 
         # --- 核心服务实例 (只创建一次) ---
         self.state_store = StateStore()
         self.event_bus = EventBus()
-        # 【核心修改】实例化 PlanManager，并传入 pause_event
-        self.plan_manager = PlanManager(str(self.base_path), self.pause_event)
+        # 【修复】在创建PlanManager时，由于self.pause_event尚未创建，我们先传入None。
+        self.plan_manager = PlanManager(str(self.base_path), None)
         self.execution_manager = ExecutionManager(self)
         self.scheduling_service = SchedulingService(self)
         self.interrupt_service = InterruptService(self)
@@ -66,25 +66,28 @@ class Scheduler:
         self.ui_update_queue: Optional[queue.Queue] = None
 
         # --- 首次初始化流程 ---
-        logger.setup(
-            log_dir='logs',
-            task_name='aura_session',
-            api_log_queue=self.api_log_queue
-        )
+        # 【修复】日志队列也需要延迟初始化，先传入None。
+        logger.setup(log_dir='logs', task_name='aura_session', api_log_queue=None)
         self._register_core_services()
         self.reload_plans()
 
-    # ... (_initialize_async_components, set_ui_update_queue, _push_ui_update 不变) ...
     def _initialize_async_components(self):
-        """初始化或重置所有与事件循环相关的组件。"""
-        logger.debug("Scheduler: 正在初始化/重置异步组件...")
+        """
+        【修复】这个方法现在只应该在 `run()` 方法内部被调用。
+        它负责在正确的事件循环中创建所有 asyncio 对象。
+        """
+        logger.debug("Scheduler: 正在事件循环内初始化/重置异步组件...")
         self.is_running = asyncio.Event()
         self.pause_event = asyncio.Event()
+        # 【修复】将新创建的 pause_event 同步回 PlanManager
+        self.plan_manager.pause_event = self.pause_event
+
         self.task_queue = TaskQueue(maxsize=1000)
         self.event_task_queue = TaskQueue(maxsize=2000)
         self.interrupt_queue = asyncio.Queue(maxsize=100)
         self.api_log_queue = asyncio.Queue(maxsize=500)
 
+        # 【修复】将新创建的日志队列更新到 logger
         if hasattr(logger, 'update_api_queue'):
             logger.update_api_queue(self.api_log_queue)
 
@@ -107,7 +110,6 @@ class Scheduler:
         service_registry.register_instance('state_store', self.state_store, public=True, fqid='core/state_store')
         service_registry.register_instance('event_bus', self.event_bus, public=True, fqid='core/event_bus')
         service_registry.register_instance('scheduler', self, public=True, fqid='core/scheduler')
-        # 【核心修改】注册 PlanManager 而不是 PluginManager
         service_registry.register_instance('plan_manager', self.plan_manager, public=False, fqid='core/plan_manager')
         service_registry.register_instance('execution_manager', self.execution_manager, public=False,
                                            fqid='core/execution_manager')
@@ -122,15 +124,10 @@ class Scheduler:
             try:
                 config_service = service_registry.get_service_instance('config')
                 config_service.load_environment_configs(self.base_path)
-
-                # 【核心修改】调用 PlanManager 的初始化方法
                 self.plan_manager.initialize()
-
                 self._load_plan_specific_data()
                 if self._loop and self._loop.is_running():
                     asyncio.run_coroutine_threadsafe(self._async_reload_subscriptions(), self._loop)
-
-                # 【修正】从正确的源获取数据
                 self._push_ui_update('full_status_update', {
                     'schedule': self.get_schedule_status(),
                     'services': self.get_all_services_status(),
@@ -145,14 +142,13 @@ class Scheduler:
                 raise
         logger.info(f"======= 资源加载完毕 ... =======")
 
-    # ... (start/stop/run 和其他异步循环方法保持不变) ...
     async def _async_reload_subscriptions(self):
         await self.event_bus.clear_subscriptions()
         await self.event_bus.subscribe(event_pattern='*', callback=self._mirror_event_to_ui_queue, channel='*')
         await self._subscribe_event_triggers()
 
     def start_scheduler(self):
-        if self.is_running and self.is_running.is_set():
+        if self._scheduler_thread and self._scheduler_thread.is_alive():
             logger.warning("调度器已经在运行中。")
             return
         logger.info("用户请求启动调度器及所有后台服务...")
@@ -160,7 +156,7 @@ class Scheduler:
         self._scheduler_thread = threading.Thread(target=self._run_scheduler_in_thread, name="SchedulerThread",
                                                   daemon=True)
         self._scheduler_thread.start()
-        self._push_ui_update('master_status_update', self.get_master_status())
+        self._push_ui_update('master_status_update', {"is_running": True})
 
     def _run_scheduler_in_thread(self):
         try:
@@ -173,23 +169,41 @@ class Scheduler:
             logger.info("调度器事件循环已终止。")
 
     def stop_scheduler(self):
-        if not self.is_running or not self.is_running.is_set() or not self._loop:
+        if not self._scheduler_thread or not self._scheduler_thread.is_alive() or not self._loop:
             logger.warning("调度器已经处于停止状态。")
             return
         logger.info("用户请求停止调度器及所有后台服务...")
         if self._main_task:
             self._loop.call_soon_threadsafe(self._main_task.cancel)
-        if self._scheduler_thread and self._scheduler_thread.is_alive():
-            self._scheduler_thread.join(timeout=10)
+
+        self._scheduler_thread.join(timeout=10)
+        if self._scheduler_thread.is_alive():
+            logger.error("调度器线程在超时后未能停止。")
+
         self.execution_manager.shutdown()
+
+        self._scheduler_thread = None
+        self._loop = None
+
         logger.info("调度器已安全停止。")
-        self._push_ui_update('master_status_update', self.get_master_status())
+        self._push_ui_update('master_status_update', {"is_running": False})
 
     async def run(self):
+        # 【修复】这是最关键的修改。
+        # 1. 在事件循环开始时，才初始化所有 asyncio 对象。
         self._initialize_async_components()
         self.is_running.set()
         self._loop = asyncio.get_running_loop()
         self._main_task = asyncio.current_task()
+
+        # 2. 将缓冲区中的任务转移到新的异步队列中。
+        with self.shared_data_lock:
+            if self._pre_start_task_buffer:
+                logger.info(f"正在将 {len(self._pre_start_task_buffer)} 个缓冲任务移入执行队列...")
+                for tasklet in self._pre_start_task_buffer:
+                    await self.task_queue.put(tasklet)
+                self._pre_start_task_buffer.clear()
+
         logger.info("调度器异步核心 (Commander) 已启动...")
         try:
             await self._async_reload_subscriptions()
@@ -241,7 +255,6 @@ class Scheduler:
 
     @property
     def plans(self) -> Dict[str, 'Orchestrator']:
-        # 【核心修改】从 PlanManager 获取 plans
         return self.plan_manager.plans
 
     def _load_plan_specific_data(self):
@@ -251,8 +264,6 @@ class Scheduler:
         self.user_enabled_globals.clear()
         self.all_tasks_definitions.clear()
         config_service = service_registry.get_service_instance('config')
-
-        # 【核心修改】从 PlanManager 的 plugin_registry 获取插件定义
         for plugin_def in self.plan_manager.plugin_manager.plugin_registry.values():
             if plugin_def.plugin_type != 'plan': continue
             plan_name = plugin_def.path.name
@@ -268,7 +279,6 @@ class Scheduler:
             self._load_interrupt_file(plugin_def.path, plan_name)
         self._load_all_tasks_definitions()
 
-    # ... (_load_all_tasks_definitions, _subscribe_event_triggers, etc. 保持不变) ...
     def _load_all_tasks_definitions(self):
         logger.info("--- 加载所有任务定义 ---")
         self.all_tasks_definitions.clear()
@@ -360,50 +370,61 @@ class Scheduler:
             if self.run_statuses.get(task_id, {}).get('status') in ['queued', 'running']:
                 return {"status": "error", "message": "Task already queued or running."}
             item_to_run = next((item for item in self.schedule_items if item.get('id') == task_id), None)
-            if item_to_run:
-                logger.info(f"手动触发任务 '{item_to_run.get('name', task_id)}'，已高优先级加入队列。")
-                full_task_id = f"{item_to_run['plan_name']}/{item_to_run['task']}"
-                task_def = self.all_tasks_definitions.get(full_task_id, {})
-                tasklet = Tasklet(task_name=full_task_id, payload=item_to_run,
-                                  execution_mode=task_def.get('execution_mode', 'sync'))
+            if not item_to_run:
+                return {"status": "error", "message": "Task ID not found."}
+
+            logger.info(f"手动触发任务 '{item_to_run.get('name', task_id)}'...")
+            full_task_id = f"{item_to_run['plan_name']}/{item_to_run['task']}"
+            task_def = self.all_tasks_definitions.get(full_task_id, {})
+            tasklet = Tasklet(task_name=full_task_id, payload=item_to_run,
+                              execution_mode=task_def.get('execution_mode', 'sync'))
+
+            # 【修复】根据调度器状态，决定是将任务放入缓冲区还是活队列。
+            if self.is_running and self.is_running.is_set() and self._loop:
+                future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet, high_priority=True), self._loop)
                 try:
-                    self.task_queue.put_nowait(tasklet, high_priority=True)
-                    self.run_statuses.setdefault(task_id, {}).update({'status': 'queued', 'queued_at': datetime.now()})
-                    return {"status": "success"}
-                except asyncio.QueueFull:
-                    return {"status": "error", "message": "Task queue is full."}
-            return {"status": "error", "message": "Task ID not found."}
+                    future.result(timeout=2)
+                except (asyncio.TimeoutError, queue.Full):
+                    return {"status": "error", "message": "Task queue is full or unresponsive."}
+            else:
+                self._pre_start_task_buffer.insert(0, tasklet)
+
+            self.run_statuses.setdefault(task_id, {}).update({'status': 'queued', 'queued_at': datetime.now()})
+            return {"status": "success"}
 
     def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None):
-        """
-        【API 修改】执行一个临时的、一次性的任务，并可以注入初始上下文参数。
-        """
-        full_task_id = f"{plan_name}/{task_name}"
-        if full_task_id not in self.all_tasks_definitions:
-            logger.error(f"Ad-hoc task failed: definition '{full_task_id}' not found.")
-            return {"status": "error", "message": f"Task definition '{full_task_id}' not found."}
+        with self.shared_data_lock:
+            full_task_id = f"{plan_name}/{task_name}"
+            if full_task_id not in self.all_tasks_definitions:
+                return {"status": "error", "message": f"Task definition '{full_task_id}' not found."}
 
-        task_def = self.all_tasks_definitions[full_task_id]
+            task_def = self.all_tasks_definitions[full_task_id]
+            tasklet = Tasklet(
+                task_name=full_task_id,
+                is_ad_hoc=True,
+                payload={'plan_name': plan_name, 'task_name': task_name},
+                execution_mode=task_def.get('execution_mode', 'sync'),
+                initial_context=params or {}
+            )
 
-        # 【修改】将 params 传递给 Tasklet 的 initial_context 字段
-        tasklet = Tasklet(
-            task_name=full_task_id,
-            is_ad_hoc=True,
-            payload={'plan_name': plan_name, 'task_name': task_name},
-            execution_mode=task_def.get('execution_mode', 'sync'),
-            initial_context=params or {}
-        )
+            # 【修复】根据调度器状态，决定是将任务放入缓冲区还是活队列。
+            if self.is_running and self.is_running.is_set() and self._loop:
+                logger.info(f"临时任务 '{full_task_id}' 已通过线程安全方式加入正在运行的队列...")
+                future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet), self._loop)
+                try:
+                    future.result(timeout=2)
+                except (asyncio.TimeoutError, queue.Full):
+                    logger.warning(f"Ad-hoc task failed: task queue is full or unresponsive for '{full_task_id}'.")
+                    return {"status": "error", "message": "Task queue is full or unresponsive."}
+            else:
+                logger.info(f"调度器未运行，临时任务 '{full_task_id}' 已加入启动前缓冲区。")
+                self._pre_start_task_buffer.append(tasklet)
 
-        try:
-            self.task_queue.put_nowait(tasklet)
-            logger.info(f"临时任务 '{full_task_id}' 已加入执行队列，初始参数: {params}")
             return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
-        except asyncio.QueueFull:
-            logger.warning(f"Ad-hoc task failed: task queue is full for '{full_task_id}'.")
-            return {"status": "error", "message": "Task queue is full."}
 
     def get_master_status(self) -> dict:
-        return {"is_running": self.is_running.is_set() if self.is_running else False}
+        is_running = self._scheduler_thread is not None and self._scheduler_thread.is_alive()
+        return {"is_running": is_running}
 
     def get_schedule_status(self):
         with self.shared_data_lock:
@@ -432,10 +453,8 @@ class Scheduler:
 
     def get_all_plans(self) -> List[str]:
         with self.shared_data_lock:
-            # 【核心修改】从 PlanManager 获取方案列表
             return self.plan_manager.list_plans()
 
-    # ... (get_plan_files, get_tasks_for_plan, etc. 保持不变) ...
     def get_plan_files(self, plan_name: str) -> Dict[str, Any]:
         logger.debug(f"请求获取 '{plan_name}' 的文件树...")
         plan_path = self.base_path / 'plans' / plan_name
@@ -499,7 +518,6 @@ class Scheduler:
                  "public": service_def.public, "service_class_info": class_info, "plugin": plugin_info})
         return api_safe_services
 
-    # --- 【核心修改】文件操作代理 ---
     async def get_file_content(self, plan_name: str, relative_path: str) -> str:
         orchestrator = self.plan_manager.get_plan(plan_name)
         if not orchestrator:
@@ -520,20 +538,15 @@ class Scheduler:
         logger.info(f"文件已通过Orchestrator异步保存: {relative_path}")
 
     def trigger_full_ui_update(self):
-        """
-        【新增】主动触发一次完整的UI状态更新。
-        这在有新客户端连接时非常有用，可以立即为其提供全量状态。
-        """
         logger.debug("Scheduler: Triggering a full UI status update for new clients.")
-        # 【修正】从正确的源获取数据
         payload = {
             'schedule': self.get_schedule_status(),
             'services': self.get_all_services_status(),
             'interrupts': self.get_all_interrupts_status(),
             'workspace': {
                 'plans': self.get_all_plans(),
-                # 注意: actions 列表可能很大，但对于UI初始化是必要的
                 'actions': self.actions.get_all_action_definitions()
             }
         }
         self._push_ui_update('full_status_update', payload)
+

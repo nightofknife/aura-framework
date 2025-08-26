@@ -1,46 +1,43 @@
-# plans/aura_base/services/config_service.py (分层配置 v3.0)
+# plans/aura_base/services/config_service.py (v4.0 with Context Isolation)
 
 import os
 from collections import ChainMap
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import yaml
 
 from packages.aura_core.api import register_service
 from packages.aura_core.logger import logger
 
+# 【修复】引入 ContextVar，用于在任务执行期间隐式传递当前方案的名称。
+current_plan_name: ContextVar[Optional[str]] = ContextVar('current_plan_name', default=None)
+
 
 @register_service(alias="config", public=True)
 class ConfigService:
     """
-    【分层配置 v3.0】配置服务。
-    - 支持 .env 文件中的环境变量。
-    - 支持项目根目录的全局 config.yaml。
-    - 支持各插件内的 config.yaml 作为默认值。
-    - 使用 ChainMap 实现高效、动态的配置查找。
-    - get() 方法支持点状路径 (dot-notation) 访问。
+    【分层配置 v4.0 - 上下文隔离】
+    - 使用 ContextVar 来感知当前的执行方案，实现配置的自动隔离。
+    - 每个方案的配置现在存储在独立的命名空间下，解决了配置串扰问题。
+    - get() 方法会根据上下文动态构建配置查找链。
     """
 
     def __init__(self):
         # 配置层级，优先级从高到低
         self._env_config: Dict[str, Any] = {}  # 1. 来自 .env 和环境变量 (最高)
         self._global_config: Dict[str, Any] = {}  # 2. 来自项目根目录的 config.yaml
-        self._plan_configs: Dict[str, Any] = {}  # 3. 来自所有方案包的 config.yaml (合并)
 
-        # ChainMap 作为统一的配置访问入口
-        self.config_chain = ChainMap(
-            self._env_config,
-            self._global_config,
-            self._plan_configs
-        )
-        logger.info("ConfigService 已初始化。")
+        # 【修复】将 _plan_configs 改为字典的字典，按方案名隔离存储。
+        # 结构: { "plan_name_1": { ...config... }, "plan_name_2": { ...config... } }
+        self._plan_configs: Dict[str, Dict[str, Any]] = {}
+
+        # 【修复】不再使用固定的 ChainMap。将在 get() 方法中动态创建。
+        logger.info("ConfigService v4.0 (Context Isolation) 已初始化。")
 
     def load_environment_configs(self, base_path: Path):
-        """
-        由 Scheduler 在启动时调用，加载 .env 和全局 config.yaml。
-        """
-        # 1. 加载 .env 文件
+        # ... 此方法内容不变 ...
         try:
             from dotenv import load_dotenv
             dotenv_path = base_path / '.env'
@@ -52,17 +49,14 @@ class ConfigService:
         except Exception as e:
             logger.error(f"加载 .env 文件时出错: {e}")
 
-        # 将所有以 'AURA_' 开头的环境变量加载到配置中
         for key, value in os.environ.items():
             if key.upper().startswith('AURA_'):
-                # 将 AURA_DATABASE_USER 转换为 database.user
                 config_key = key.upper().replace('AURA_', '').lower().replace('_', '.')
                 self._set_nested_key(self._env_config, config_key, value)
 
         if self._env_config:
             logger.debug(f"已加载 {len(self._env_config)} 个环境变量配置。")
 
-        # 2. 加载全局 config.yaml
         global_config_path = base_path / 'config.yaml'
         if global_config_path.is_file():
             try:
@@ -74,22 +68,31 @@ class ConfigService:
 
     def register_plan_config(self, plan_name: str, config_data: dict):
         """
-        由 Scheduler 调用，注册方案包的配置。
-        这里我们将所有方案包的配置合并到一个层级，以简化逻辑。
-        如果需要方案包级别的覆盖，可以在全局 config.yaml 中按方案包名称嵌套。
+        【修复】注册方案包的配置到其独立的命名空间下。
+        不再进行合并，而是直接赋值。
         """
         if isinstance(config_data, dict):
-            # 使用深层合并，避免覆盖整个顶级键
-            self._deep_merge(self._plan_configs, config_data)
-            logger.debug(f"已为方案包 '{plan_name}' 注册默认配置。")
+            self._plan_configs[plan_name] = config_data
+            logger.debug(f"已为方案包 '{plan_name}' 注册隔离的配置。")
 
     def get(self, key_path: str, default: Any = None) -> Any:
         """
-        从合并后的配置中获取值，支持点状路径(dot-notation)访问。
-        查找顺序: 环境变量 -> 全局 config.yaml -> 插件 config.yaml
+        【修复】从动态构建的配置链中获取值。
+        查找顺序: 环境变量 -> 全局 config -> 当前方案的 config
         """
+        # 1. 从 contextvar 获取当前正在执行的方案名称
+        plan_name = current_plan_name.get()
+
+        # 2. 根据 plan_name 动态构建查找链
+        maps_to_chain = [self._env_config, self._global_config]
+        if plan_name and plan_name in self._plan_configs:
+            maps_to_chain.append(self._plan_configs[plan_name])
+
+        config_chain = ChainMap(*maps_to_chain)
+
+        # 3. 在动态链中查找值
         keys = key_path.split('.')
-        current_level = self.config_chain
+        current_level = config_chain
         try:
             for key in keys:
                 if not isinstance(current_level, (dict, ChainMap)):
@@ -99,17 +102,17 @@ class ConfigService:
         except KeyError:
             return default
 
+    # ... _set_nested_key 和 _deep_merge 方法保持不变，尽管 _deep_merge 不再被 register_plan_config 使用 ...
     def _set_nested_key(self, d: dict, key_path: str, value: Any):
-        """辅助函数，用于通过点状路径设置字典中的值"""
         keys = key_path.split('.')
         for key in keys[:-1]:
             d = d.setdefault(key, {})
         d[keys[-1]] = value
 
     def _deep_merge(self, destination: dict, source: dict):
-        """递归地合并字典"""
         for key, value in source.items():
             if isinstance(value, dict) and key in destination and isinstance(destination[key], dict):
                 self._deep_merge(destination[key], value)
             else:
                 destination[key] = value
+
