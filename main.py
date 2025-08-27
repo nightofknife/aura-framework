@@ -1,4 +1,4 @@
-# aura_cli_interactive.py (Version 3: Manual Scheduler Control)
+# aura_cli_interactive.py (Version 3 with Robust Startup Synchronization)
 
 import os
 import sys
@@ -12,8 +12,6 @@ try:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    # 【解释】导入框架核心组件。
-    # 我们需要 Scheduler 来作为所有操作的入口，需要 logger 来配置日志输出。
     from packages.aura_core.scheduler import Scheduler
     from packages.aura_core.logger import logger
 except ImportError as e:
@@ -22,11 +20,6 @@ except ImportError as e:
     sys.exit(1)
 
 # --- 全局状态 ---
-
-# 【解释】这两个全局变量是这个交互式CLI的核心状态。
-# - scheduler_instance: 缓存框架的主对象，避免重复初始化。
-# - scheduler_is_running: 一个简单的布尔标志，用于让我们的CLI知道调度器当前是否应该在后台运行。
-#   这与 Scheduler 内部的状态是解耦的，纯粹用于控制UI显示和逻辑分支。
 scheduler_instance: Optional[Scheduler] = None
 scheduler_is_running = False
 
@@ -37,12 +30,7 @@ def get_scheduler() -> Scheduler:
     if scheduler_instance is None:
         print("正在初始化Aura框架，加载所有定义...")
         try:
-            # 【修改与解释】在初始化时就配置好日志，并允许其输出到控制台。
-            # 框架行为：根据你的新设计，用户需要看到调度器运行时任务的实时日志。
-            # 修改原因：因此，我们不能再像之前一样用 `console_level=None` 来禁用控制台日志。
-            #            我们在这里启用它，并将日志文件存放在 'logs' 目录下，以便后续追溯。
             logger.setup(log_dir='logs', task_name='aura_cli_session')
-
             scheduler_instance = Scheduler()
             print("框架初始化完毕。\n")
             time.sleep(1)
@@ -53,38 +41,25 @@ def get_scheduler() -> Scheduler:
     return scheduler_instance
 
 
-# --- 辅助函数 (无改动) ---
+# --- 辅助函数 ---
 def clear_screen():
-    """清空控制台屏幕。"""
     os.system('cls' if os.name == 'nt' else 'clear')
 
 
 def print_header(title: str):
-    """打印一个带标题的分割线。"""
     print("\n" + "=" * 80)
     print(f" {title.center(78)} ")
     print("=" * 80)
 
 
 def wait_for_enter():
-    """暂停程序，等待用户按回车键。"""
     input("\n按回车键返回主菜单...")
 
 
 # --- 功能实现 ---
 
 def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
-    """
-    【重构与解释】这是一个统一的函数，用于将任务“加入队列”。
-    框架行为：Scheduler的 `run_manual_task` 和 `run_ad_hoc_task` 方法被设计为非阻塞的。
-              它们的作用是将一个任务请求提交给内部的 ExecutionManager 的执行队列，然后立即返回，
-              并不会等待任务完成。
-    修改原因：基于上述行为，此函数的核心职责被简化为：
-              1. 让用户选择一个任务。
-              2. 调用相应的 scheduler 方法将任务入队。
-              3. 明确地告诉用户“任务已加入队列”，而不是“任务已完成”。
-              它不再负责启动或停止调度器，实现了职责分离。
-    """
+    # ... 此函数内容不变 ...
     if ad_hoc_mode:
         all_tasks = []
         # 遍历所有方案的Orchestrator来收集任务定义
@@ -158,12 +133,7 @@ def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
 
 def manage_scheduler_lifecycle(scheduler: Scheduler):
     """
-    【新增与解释】手动控制调度器的启动与停止。
-    框架行为：Scheduler 提供了 `start_scheduler()` 和 `stop_scheduler()` 两个方法来控制其生命周期。
-              - `start_scheduler()`: 启动所有后台服务，如 ExecutionManager 的线程池，使其开始处理队列中的任务。
-              - `stop_scheduler()`: 优雅地关闭这些服务。
-    修改原因：这个函数就是这两个核心方法的UI封装。它使用全局标志 `scheduler_is_running` 来决定
-              是该调用启动方法还是停止方法，并向用户提供清晰的反馈。
+    手动控制调度器的启动与停止，并健壮地处理启动同步。
     """
     global scheduler_is_running
 
@@ -175,18 +145,36 @@ def manage_scheduler_lifecycle(scheduler: Scheduler):
         print("✅ 调度器已停止。所有后台任务已结束。")
     else:
         print("正在启动调度器...")
-        scheduler.start_scheduler()
-        scheduler_is_running = True
-        print("✅ 调度器已在后台启动。")
-        print("   它将自动执行队列中的所有任务。")
-        print("   你现在可以返回主菜单添加更多任务，或随时停止调度器。")
-        print("\n   👇 你将在下方看到任务的实时日志输出 👇")
+        scheduler.start_scheduler()  # 后台线程在这里启动
+
+        # 【高级方案】使用事件等待，而不是固定时间的 sleep
+        print("   正在等待核心服务初始化...")
+
+        # 等待事件被设置，最长等待15秒（超时以防万一）
+        completed = scheduler.startup_complete_event.wait(timeout=15)
+
+        if completed:
+            # 【高级方案】如果成功等到事件，将 scheduler_is_running 设为 True
+            scheduler_is_running = True
+            print("✅ 核心服务已就绪！")
+            print("✅ 调度器已在后台启动。")
+            print("   它将自动执行队列中的所有任务。")
+            print("   你现在可以返回主菜单添加更多任务，或随时停止调度器。")
+            print("\n   👇 你将在下方看到任务的实时日志输出 👇")
+        else:
+            # 【高级方案】如果超时，说明后台可能出了问题。
+            # 停止调度器以恢复到安全状态，并通知用户。
+            print("\n⚠️ 警告：核心服务启动超时。后台可能出现严重错误。")
+            print("   正在尝试自动停止调度器以进行恢复...")
+            scheduler.stop_scheduler()
+            scheduler_is_running = False  # 确保状态标志被重置
+            print("   调度器已停止。请检查日志文件以诊断问题。")
 
     wait_for_enter()
 
 
-# 【解释】这两个函数是只读操作，不需要修改，保持原样。
 def list_all_plans(scheduler: Scheduler):
+    # ... 此函数内容不变 ...
     clear_screen()
     print_header("所有已加载的方案 (Plans)")
     registry = scheduler.plan_manager.plugin_manager.plugin_registry
@@ -201,9 +189,8 @@ def list_all_plans(scheduler: Scheduler):
     wait_for_enter()
 
 
-# ... (接上一段代码) ...
-
 def list_all_actions(scheduler: Scheduler):
+    # ... 此函数内容不变 ...
     clear_screen()
     print_header("所有已注册的动作 (Actions)")
     action_defs = scheduler.actions.get_all_action_definitions()
@@ -219,12 +206,7 @@ def list_all_actions(scheduler: Scheduler):
 
 
 def display_menu():
-    """
-    【修改与解释】显示主菜单，并动态展示调度器状态。
-    修改原因：为了让用户清晰地知道当前调度器的状态以及下一步操作的含义，
-              菜单项现在会根据全局标志 `scheduler_is_running` 动态改变。
-              例如，选项 [5] 会明确地显示为“启动”或“停止”。
-    """
+    # ... 此函数内容不变 ...
     global scheduler_is_running
 
     print_header("Aura 交互式控制台")
@@ -245,12 +227,7 @@ def display_menu():
 
 
 def main():
-    """
-    【重构与解释】程序主循环。
-    修改原因：主循环的逻辑根据新的设计被大大简化。
-              它现在只负责显示菜单和根据用户的选择分发到对应的功能函数。
-              整个程序的健壮性大大提高，因为复杂的逻辑都被封装在各自的函数里。
-    """
+    # ... 此函数内容不变 ...
     scheduler = get_scheduler()
 
     while True:
@@ -269,8 +246,6 @@ def main():
         elif choice == '5':
             manage_scheduler_lifecycle(scheduler)
         elif choice == '6':
-            # 【新增与解释】在退出前，确保调度器被优雅地关闭。
-            # 这是一种良好的实践，可以防止任何后台线程或进程被意外遗留。
             if scheduler_is_running:
                 print("程序退出前，自动停止调度器...")
                 scheduler.stop_scheduler()
@@ -282,10 +257,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # 【解释】程序的入口点。
-    # 我们在这里直接调用 main() 函数来启动整个交互式应用。
-    # 日志配置等初始化工作已移至 get_scheduler() 中，使得入口非常干净。
     main()
-
-
-

@@ -1,6 +1,7 @@
 # packages/aura_core/scheduler.py (Final Fix: Delayed Init & Buffering)
 
 import asyncio
+import logging
 import queue
 import threading
 import uuid
@@ -34,6 +35,9 @@ class Scheduler:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.num_event_workers = 4
         self.shared_data_lock = threading.RLock()
+
+        # 新增一个线程安全的事件，用于通知主线程后台初始化已完成。
+        self.startup_complete_event = threading.Event()
 
         # 【修复】新增一个普通的、线程安全的列表，用于缓冲启动前提交的任务。
         self._pre_start_task_buffer: List[Tasklet] = []
@@ -151,6 +155,8 @@ class Scheduler:
         if self._scheduler_thread and self._scheduler_thread.is_alive():
             logger.warning("调度器已经在运行中。")
             return
+
+        self.startup_complete_event.clear()
         logger.info("用户请求启动调度器及所有后台服务...")
         self.execution_manager.startup()
         self._scheduler_thread = threading.Thread(target=self._run_scheduler_in_thread, name="SchedulerThread",
@@ -167,6 +173,7 @@ class Scheduler:
             logger.critical(f"调度器主事件循环崩溃: {e}", exc_info=True)
         finally:
             logger.info("调度器事件循环已终止。")
+            self.startup_complete_event.set()
 
     def stop_scheduler(self):
         if not self._scheduler_thread or not self._scheduler_thread.is_alive() or not self._loop:
@@ -208,12 +215,15 @@ class Scheduler:
         try:
             await self._async_reload_subscriptions()
             async with TaskGroup() as tg:
+                tg.create_task(self._log_consumer_loop())
                 tg.create_task(self._consume_interrupt_queue())
                 tg.create_task(self._consume_main_task_queue())
                 for i in range(self.num_event_workers):
                     tg.create_task(self._event_worker_loop(i + 1))
                 tg.create_task(self.scheduling_service.run())
                 tg.create_task(self.interrupt_service.run())
+                logger.info("所有核心后台服务已启动，向主线程发出信号。")
+                self.startup_complete_event.set()
         except asyncio.CancelledError:
             logger.info("调度器主任务被取消，正在优雅关闭...")
         finally:
@@ -221,6 +231,7 @@ class Scheduler:
             self._loop = None
             self._main_task = None
             logger.info("调度器主循环 (Commander) 已安全退出。")
+            self.startup_complete_event.set()
 
     async def _consume_main_task_queue(self):
         while True:
@@ -550,3 +561,49 @@ class Scheduler:
         }
         self._push_ui_update('full_status_update', payload)
 
+    async def _log_consumer_loop(self):
+        """
+        一个永久运行的后台任务，负责从 api_log_queue 中消费日志消息，
+        并将其重新注入到 logging 框架中，由其他处理器（如文件、控制台）处理。
+        """
+        logger.info("日志消费者服务已启动。")
+
+        # 获取底层的 logging.Logger 实例
+        underlying_logger = logger.logger
+
+        # 获取所有非API队列的处理器
+        # 我们不希望日志被重新放回它刚刚来自的队列，造成无限循环
+        handlers_to_use = [
+            h for h in underlying_logger.handlers if h.name != "api_queue"
+        ]
+
+        if not handlers_to_use:
+            logger.warning("日志消费者启动，但没有找到文件或控制台等目标处理器。日志将不会被记录。")
+
+        while True:
+            try:
+                # 从队列中获取由 AsyncioQueueHandler 创建的日志条目字典
+                log_entry = await self.api_log_queue.get()
+
+                if log_entry and isinstance(log_entry, dict):
+                    # 将字典重新构建为 logging.LogRecord 对象
+                    # 这是 logging 框架内部传递日志的方式
+                    record = logging.makeLogRecord(log_entry)
+
+                    # 使用目标处理器来处理这个记录
+                    for handler in handlers_to_use:
+                        # 检查处理器的级别，避免处理不必要的日志
+                        if record.levelno >= handler.level:
+                            handler.handle(record)
+
+                self.api_log_queue.task_done()
+
+            except asyncio.CancelledError:
+                logger.info("日志消费者服务已收到取消信号，正在关闭。")
+                break
+            except Exception as e:
+                # 即使处理单条日志失败，也不要让整个循环崩溃
+                # 使用 print 是因为如果 logger 本身出问题，再用 logger 记录可能会导致无限循环
+                print(f"CRITICAL: 日志消费者循环出现严重错误: {e}")
+                # 稍微等待一下，避免在持续错误的情况下疯狂占用CPU
+                await asyncio.sleep(1)

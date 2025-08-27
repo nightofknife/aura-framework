@@ -44,24 +44,43 @@ class AsyncioQueueHandler(logging.Handler):
         """
         if self.loop is None:
             try:
-                # 【改动】延迟获取 loop，使其更健壮
                 self.loop = asyncio.get_running_loop()
             except RuntimeError:
-                # 如果没有正在运行的循环，则无法记录到队列，直接返回
                 return
 
-        # 【改动】将完整的 record 字典放入队列，让消费者（如 TUI）可以获取更丰富的信息
+        # 【修复】将一个更完整的日志记录字典放入队列。
+        # 最关键的是添加了 record.levelno。
+        # 我们也添加了其他字段，以便能完美重建 LogRecord。
         log_entry = {
             'name': record.name,
-            'level': record.levelname,
-            'message': record.getMessage(),
-            'timestamp': record.created,
+            'msg': record.getMessage(), # 使用 'msg' 键，更符合 makeLogRecord 的期望
+            'args': record.args,
+            'levelname': record.levelname,
+            'levelno': record.levelno, # <<< 这是最关键的修复
+            'pathname': record.pathname,
+            'filename': record.filename,
+            'module': record.module,
+            'exc_info': record.exc_info,
+            'exc_text': record.exc_text,
+            'stack_info': record.stack_info,
+            'lineno': record.lineno,
+            'funcName': record.funcName,
+            'created': record.created,
+            'msecs': record.msecs,
+            'relativeCreated': record.relativeCreated,
+            'thread': record.thread,
+            'threadName': record.threadName,
+            'processName': record.processName,
+            'process': record.process,
         }
 
         try:
+            # 注意：原代码的 'message' 键改为了 'msg'，这更标准。
+            # 如果消费者需要 'message'，可以保留两者，但 'msg' 对于 makeLogRecord 更好。
+            # 为了向后兼容，我们同时保留 'message'
+            log_entry['message'] = log_entry['msg']
             self.loop.call_soon_threadsafe(self.log_queue.put_nowait, log_entry)
         except Exception:
-            # 忽略将日志放入队列时可能发生的任何错误（例如，循环关闭）
             pass
 
 
