@@ -418,7 +418,7 @@ class Scheduler:
                 initial_context=params or {}
             )
 
-            # 【修复】根据调度器状态，决定是将任务放入缓冲区还是活队列。
+            # 根据调度器状态，决定是将任务放入缓冲区还是活队列。
             if self.is_running and self.is_running.is_set() and self._loop:
                 logger.info(f"临时任务 '{full_task_id}' 已通过线程安全方式加入正在运行的队列...")
                 future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet), self._loop)

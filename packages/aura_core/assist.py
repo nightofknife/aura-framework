@@ -9,7 +9,7 @@ class Pathfinder:
     def __init__(self, world_map: dict):
         """
         初始化寻路器。
-        :param world_map: 从 world_map.yaml.md 加载的字典。
+        :param world_map: 从 world_map.yaml 加载的字典。
         """
         self.graph = {}
         # 将 world_map 中的 transitions 转换成邻接表，方便查找
