@@ -46,7 +46,7 @@ class Orchestrator:
 
         try:
             current_task_in_plan = task_name_in_plan
-            last_result = None
+            last_result:Any = None
             # 捕获任务链中第一个任务的上下文，用于可能的 on_failure 处理器
             original_context = None
 
@@ -67,9 +67,9 @@ class Orchestrator:
                     original_context = context
 
                 engine = ExecutionEngine(context=context, orchestrator=self, pause_event=self.pause_event)
-
+                result_from_engine: Dict[str, Any] = {}
                 try:
-                    result = await engine.run(task_data, full_task_id)
+                    result_from_engine = await engine.run(task_data, full_task_id)
                 except JumpSignal as e:
                     logger.info(f"Orchestrator caught JumpSignal: type={e.type}, target={e.target}")
                     result = {'status': e.type, 'next_task': e.target}
@@ -80,17 +80,40 @@ class Orchestrator:
                     result = {'status': 'error',
                               'error_details': {'node_id': 'orchestrator', 'message': str(e), 'type': type(e).__name__}}
 
-                last_result = result
+                if result_from_engine.get('status') == 'success':
+                    returns_template = task_data.get('returns')
+                    if returns_template:
+                        try:
+                            # 使用任务结束时的最终上下文来渲染返回值
+                            final_return_value = context.render(returns_template)
+                            logger.debug(
+                                f"任务 '{full_task_id}' 显式返回值: '{final_return_value}' (来自模板: '{returns_template}')")
+                            # 将这个显式返回值作为当前任务的最终结果
+                            last_result = final_return_value
+                        except Exception as e:
+                            logger.error(f"渲染任务 '{full_task_id}' 的返回值失败: {e}")
+                            # 渲染失败应视为任务失败
+                            raise ValueError(f"无法渲染返回值: {returns_template}") from e
+                    else:
+                        # 如果没有 'returns' 字段，任务成功执行完所有步骤就默认返回 True
+                        last_result = True
+                else:
+                    # 如果 engine 执行失败或跳转，直接使用 engine 的结果
+                    last_result = result_from_engine
+                # --- 逻辑结束 ---
 
                 # --- 任务级 on_failure 处理 ---
-                if result.get('status') == 'error' and 'on_failure' in task_data:
-                    await self._run_failure_handler(task_data['on_failure'], original_context, result.get('error_details'))
+                if isinstance(last_result, dict) and last_result.get(
+                        'status') == 'error' and 'on_failure' in task_data:
+                    await self._run_failure_handler(task_data['on_failure'], original_context,
+                                                    last_result.get('error_details'))
                     current_task_in_plan = None
                     continue
 
                 # --- go_task 处理 ---
-                if result.get('status') == 'go_task' and result.get('next_task'):
-                    next_full_task_id = result['next_task']
+                if isinstance(last_result, dict) and last_result.get('status') == 'go_task' and last_result.get(
+                        'next_task'):
+                    next_full_task_id = last_result['next_task']
                     if '/' not in next_full_task_id:
                         next_plan_name = self.plan_name
                         next_task_in_plan = next_full_task_id

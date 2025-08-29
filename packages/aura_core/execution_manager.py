@@ -196,6 +196,7 @@ class ExecutionManager:
         return None
 
     async def _run_internal_task(self, task_id: str) -> bool:
+        """【修改】一个内部辅助方法，现在能正确处理任务的显式返回值。"""
         if task_id not in self.scheduler.all_tasks_definitions:
             logger.error(f"内部任务执行失败: 任务 '{task_id}' 未定义。")
             return False
@@ -203,9 +204,33 @@ class ExecutionManager:
         tasklet = Tasklet(task_name=task_id, is_ad_hoc=True, execution_mode='sync')
 
         try:
-            await self._run_execution_chain(tasklet)
-            return True
-        except Exception:
+            # 直接调用 _run_execution_chain 并捕获其返回值
+            result = await self._run_execution_chain(tasklet)
+
+            # --- 【新】更健壮的返回值解析逻辑 ---
+            if isinstance(result, bool):
+                return result
+
+            if isinstance(result, str):
+                # 处理Jinja2可能返回字符串 "True" 或 "False" 的情况
+                if result.lower() == 'true':
+                    return True
+                if result.lower() == 'false':
+                    return False
+
+            # 如果返回的是字典，检查 'status' 字段。
+            # 这是为了兼容没有 'returns' 字段的老任务，它们成功时会返回 {'status': 'success'}
+            if isinstance(result, dict):
+                return result.get('status') == 'success'
+
+            # 对于其他类型 (int, NoneType等)，bool() 的行为是正确的
+            # 0 -> False, 1 -> True, None -> False
+            return bool(result)
+            # --- 逻辑结束 ---
+
+        except Exception as e:
+            # 任何未捕获的异常都意味着任务失败
+            logger.debug(f"内部任务 '{task_id}' 执行时发生异常，视为失败: {e}")
             return False
 
     async def _run_execution_chain(self, tasklet: Tasklet) -> Any:
