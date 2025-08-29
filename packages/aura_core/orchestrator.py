@@ -9,6 +9,7 @@ from .api import ACTION_REGISTRY
 from .context_manager import ContextManager
 from .engine import ExecutionEngine, JumpSignal
 from .event_bus import Event
+from .state_planner import StatePlanner
 from .task_loader import TaskLoader
 from .context import Context
 from plans.aura_base.services.config_service import current_plan_name
@@ -21,13 +22,13 @@ class Orchestrator:
     - 统一了代码风格和异步实践。
     """
 
-    def __init__(self, base_dir: str, plan_name: str, pause_event: asyncio.Event):
+    def __init__(self, base_dir: str, plan_name: str, pause_event: asyncio.Event, state_planner: Optional[StatePlanner] = None):
         self.plan_name = plan_name
         self.current_plan_path = Path(base_dir) / 'plans' / plan_name
         self.pause_event = pause_event
         self.context_manager = ContextManager(self.plan_name, self.current_plan_path)
         self.task_loader = TaskLoader(self.plan_name, self.current_plan_path)
-
+        self.state_planner = state_planner
 
     async def execute_task(
         self,

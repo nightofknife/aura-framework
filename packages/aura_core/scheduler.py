@@ -1,4 +1,4 @@
-# packages/aura_core/scheduler.py (Final Fix: Delayed Init & Buffering)
+# packages/aura_core/scheduler.py (最终正确版)
 
 import asyncio
 import logging
@@ -35,11 +35,7 @@ class Scheduler:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.num_event_workers = 4
         self.shared_data_lock = threading.RLock()
-
-        # 新增一个线程安全的事件，用于通知主线程后台初始化已完成。
         self.startup_complete_event = threading.Event()
-
-        # 【修复】新增一个普通的、线程安全的列表，用于缓冲启动前提交的任务。
         self._pre_start_task_buffer: List[Tasklet] = []
 
         # --- 异步组件 (将在每次启动时初始化，先置为None) ---
@@ -50,10 +46,14 @@ class Scheduler:
         self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
         self.api_log_queue: Optional[asyncio.Queue] = None
 
+        # --- 【架构修正】移除全局的状态规划器属性 ---
+        # self.state_map: Optional[StateMap] = None
+        # self.state_planner: Optional[StatePlanner] = None
+
         # --- 核心服务实例 (只创建一次) ---
         self.state_store = StateStore()
         self.event_bus = EventBus()
-        # 【修复】在创建PlanManager时，由于self.pause_event尚未创建，我们先传入None。
+        # 【架构修正】PlanManager 将负责加载 Plan 专属的规划器
         self.plan_manager = PlanManager(str(self.base_path), None)
         self.execution_manager = ExecutionManager(self)
         self.scheduling_service = SchedulingService(self)
@@ -70,28 +70,19 @@ class Scheduler:
         self.ui_update_queue: Optional[queue.Queue] = None
 
         # --- 首次初始化流程 ---
-        # 【修复】日志队列也需要延迟初始化，先传入None。
         logger.setup(log_dir='logs', task_name='aura_session', api_log_queue=None)
         self._register_core_services()
         self.reload_plans()
 
     def _initialize_async_components(self):
-        """
-        【修复】这个方法现在只应该在 `run()` 方法内部被调用。
-        它负责在正确的事件循环中创建所有 asyncio 对象。
-        """
         logger.debug("Scheduler: 正在事件循环内初始化/重置异步组件...")
         self.is_running = asyncio.Event()
         self.pause_event = asyncio.Event()
-        # 【修复】将新创建的 pause_event 同步回 PlanManager
         self.plan_manager.pause_event = self.pause_event
-
         self.task_queue = TaskQueue(maxsize=1000)
         self.event_task_queue = TaskQueue(maxsize=2000)
         self.interrupt_queue = asyncio.Queue(maxsize=100)
         self.api_log_queue = asyncio.Queue(maxsize=500)
-
-        # 【修复】将新创建的日志队列更新到 logger
         if hasattr(logger, 'update_api_queue'):
             logger.update_api_queue(self.api_log_queue)
 
@@ -115,12 +106,9 @@ class Scheduler:
         service_registry.register_instance('event_bus', self.event_bus, public=True, fqid='core/event_bus')
         service_registry.register_instance('scheduler', self, public=True, fqid='core/scheduler')
         service_registry.register_instance('plan_manager', self.plan_manager, public=False, fqid='core/plan_manager')
-        service_registry.register_instance('execution_manager', self.execution_manager, public=False,
-                                           fqid='core/execution_manager')
-        service_registry.register_instance('scheduling_service', self.scheduling_service, public=False,
-                                           fqid='core/scheduling_service')
-        service_registry.register_instance('interrupt_service', self.interrupt_service, public=False,
-                                           fqid='core/interrupt_service')
+        service_registry.register_instance('execution_manager', self.execution_manager, public=False, fqid='core/execution_manager')
+        service_registry.register_instance('scheduling_service', self.scheduling_service, public=False, fqid='core/scheduling_service')
+        service_registry.register_instance('interrupt_service', self.interrupt_service, public=False, fqid='core/interrupt_service')
 
     def reload_plans(self):
         logger.info("======= Scheduler: 开始加载所有框架资源 =======")
@@ -128,8 +116,14 @@ class Scheduler:
             try:
                 config_service = service_registry.get_service_instance('config')
                 config_service.load_environment_configs(self.base_path)
+
+                # 【架构修正】PlanManager.initialize() 现在会负责加载所有 Plan 及其专属资源，
+                # 包括它们各自的 states_map.yaml。这是核心变更点。
                 self.plan_manager.initialize()
+
+                # 加载所有 Plan 共享的 schedule, interrupts, tasks 等
                 self._load_plan_specific_data()
+
                 if self._loop and self._loop.is_running():
                     asyncio.run_coroutine_threadsafe(self._async_reload_subscriptions(), self._loop)
                 self._push_ui_update('full_status_update', {
@@ -155,12 +149,10 @@ class Scheduler:
         if self._scheduler_thread and self._scheduler_thread.is_alive():
             logger.warning("调度器已经在运行中。")
             return
-
         self.startup_complete_event.clear()
         logger.info("用户请求启动调度器及所有后台服务...")
         self.execution_manager.startup()
-        self._scheduler_thread = threading.Thread(target=self._run_scheduler_in_thread, name="SchedulerThread",
-                                                  daemon=True)
+        self._scheduler_thread = threading.Thread(target=self._run_scheduler_in_thread, name="SchedulerThread", daemon=True)
         self._scheduler_thread.start()
         self._push_ui_update('master_status_update', {"is_running": True})
 
@@ -182,35 +174,26 @@ class Scheduler:
         logger.info("用户请求停止调度器及所有后台服务...")
         if self._main_task:
             self._loop.call_soon_threadsafe(self._main_task.cancel)
-
         self._scheduler_thread.join(timeout=10)
         if self._scheduler_thread.is_alive():
             logger.error("调度器线程在超时后未能停止。")
-
         self.execution_manager.shutdown()
-
         self._scheduler_thread = None
         self._loop = None
-
         logger.info("调度器已安全停止。")
         self._push_ui_update('master_status_update', {"is_running": False})
 
     async def run(self):
-        # 【修复】这是最关键的修改。
-        # 1. 在事件循环开始时，才初始化所有 asyncio 对象。
         self._initialize_async_components()
         self.is_running.set()
         self._loop = asyncio.get_running_loop()
         self._main_task = asyncio.current_task()
-
-        # 2. 将缓冲区中的任务转移到新的异步队列中。
         with self.shared_data_lock:
             if self._pre_start_task_buffer:
                 logger.info(f"正在将 {len(self._pre_start_task_buffer)} 个缓冲任务移入执行队列...")
                 for tasklet in self._pre_start_task_buffer:
                     await self.task_queue.put(tasklet)
                 self._pre_start_task_buffer.clear()
-
         logger.info("调度器异步核心 (Commander) 已启动...")
         try:
             await self._async_reload_subscriptions()
@@ -307,7 +290,7 @@ class Scheduler:
                     if not isinstance(data, dict): continue
                     relative_path_str = task_file_path.relative_to(tasks_dir).with_suffix('').as_posix()
                     for task_key, task_definition in data.items():
-                        if isinstance(task_definition, dict) and 'steps' in task_definition:
+                        if isinstance(task_definition, dict) and ('steps' in task_definition or 'graph' in task_definition):
                             task_definition.setdefault('execution_mode', 'sync')
                             full_task_id = f"{plan_name}/{relative_path_str}/{task_key}"
                             self.all_tasks_definitions[full_task_id] = task_definition
@@ -331,7 +314,6 @@ class Scheduler:
                 from functools import partial
                 async def handler(event, task_id_to_run):
                     await self._handle_event_triggered_task(event, task_id_to_run)
-
                 callback = partial(handler, task_id_to_run=task_id)
                 callback.__name__ = f"event_trigger_for_{task_id.replace('/', '_')}"
                 await self.event_bus.subscribe(event_pattern, callback, channel=channel)
@@ -341,8 +323,7 @@ class Scheduler:
     async def _handle_event_triggered_task(self, event: Event, task_id: str):
         logger.info(f"事件 '{event.name}' (频道: {event.channel}) 触发了任务 '{task_id}'")
         task_def = self.all_tasks_definitions.get(task_id, {})
-        tasklet = Tasklet(task_name=task_id, triggering_event=event,
-                          execution_mode=task_def.get('execution_mode', 'sync'))
+        tasklet = Tasklet(task_name=task_id, triggering_event=event, execution_mode=task_def.get('execution_mode', 'sync'))
         await self.event_task_queue.put(tasklet)
 
     def _load_schedule_file(self, plan_dir: Path, plan_name: str):
@@ -383,14 +364,10 @@ class Scheduler:
             item_to_run = next((item for item in self.schedule_items if item.get('id') == task_id), None)
             if not item_to_run:
                 return {"status": "error", "message": "Task ID not found."}
-
             logger.info(f"手动触发任务 '{item_to_run.get('name', task_id)}'...")
             full_task_id = f"{item_to_run['plan_name']}/{item_to_run['task']}"
             task_def = self.all_tasks_definitions.get(full_task_id, {})
-            tasklet = Tasklet(task_name=full_task_id, payload=item_to_run,
-                              execution_mode=task_def.get('execution_mode', 'sync'))
-
-            # 【修复】根据调度器状态，决定是将任务放入缓冲区还是活队列。
+            tasklet = Tasklet(task_name=full_task_id, payload=item_to_run, execution_mode=task_def.get('execution_mode', 'sync'))
             if self.is_running and self.is_running.is_set() and self._loop:
                 future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet, high_priority=True), self._loop)
                 try:
@@ -399,7 +376,6 @@ class Scheduler:
                     return {"status": "error", "message": "Task queue is full or unresponsive."}
             else:
                 self._pre_start_task_buffer.insert(0, tasklet)
-
             self.run_statuses.setdefault(task_id, {}).update({'status': 'queued', 'queued_at': datetime.now()})
             return {"status": "success"}
 
@@ -408,17 +384,8 @@ class Scheduler:
             full_task_id = f"{plan_name}/{task_name}"
             if full_task_id not in self.all_tasks_definitions:
                 return {"status": "error", "message": f"Task definition '{full_task_id}' not found."}
-
             task_def = self.all_tasks_definitions[full_task_id]
-            tasklet = Tasklet(
-                task_name=full_task_id,
-                is_ad_hoc=True,
-                payload={'plan_name': plan_name, 'task_name': task_name},
-                execution_mode=task_def.get('execution_mode', 'sync'),
-                initial_context=params or {}
-            )
-
-            # 根据调度器状态，决定是将任务放入缓冲区还是活队列。
+            tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True, payload={'plan_name': plan_name, 'task_name': task_name}, execution_mode=task_def.get('execution_mode', 'sync'), initial_context=params or {})
             if self.is_running and self.is_running.is_set() and self._loop:
                 logger.info(f"临时任务 '{full_task_id}' 已通过线程安全方式加入正在运行的队列...")
                 future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet), self._loop)
@@ -430,7 +397,6 @@ class Scheduler:
             else:
                 logger.info(f"调度器未运行，临时任务 '{full_task_id}' 已加入启动前缓冲区。")
                 self._pre_start_task_buffer.append(tasklet)
-
             return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
 
     def get_master_status(self) -> dict:
@@ -522,11 +488,8 @@ class Scheduler:
                 class_info['name'] = service_def.service_class.__name__
             plugin_info = None
             if service_def.plugin:
-                plugin_info = {'name': service_def.plugin.name, 'canonical_id': service_def.plugin.canonical_id,
-                               'version': service_def.plugin.version, 'plugin_type': service_def.plugin.plugin_type}
-            api_safe_services.append(
-                {"alias": service_def.alias, "fqid": service_def.fqid, "status": service_def.status,
-                 "public": service_def.public, "service_class_info": class_info, "plugin": plugin_info})
+                plugin_info = {'name': service_def.plugin.name, 'canonical_id': service_def.plugin.canonical_id, 'version': service_def.plugin.version, 'plugin_type': service_def.plugin.plugin_type}
+            api_safe_services.append({"alias": service_def.alias, "fqid": service_def.fqid, "status": service_def.status, "public": service_def.public, "service_class_info": class_info, "plugin": plugin_info})
         return api_safe_services
 
     async def get_file_content(self, plan_name: str, relative_path: str) -> str:
@@ -562,48 +525,23 @@ class Scheduler:
         self._push_ui_update('full_status_update', payload)
 
     async def _log_consumer_loop(self):
-        """
-        一个永久运行的后台任务，负责从 api_log_queue 中消费日志消息，
-        并将其重新注入到 logging 框架中，由其他处理器（如文件、控制台）处理。
-        """
         logger.info("日志消费者服务已启动。")
-
-        # 获取底层的 logging.Logger 实例
         underlying_logger = logger.logger
-
-        # 获取所有非API队列的处理器
-        # 我们不希望日志被重新放回它刚刚来自的队列，造成无限循环
-        handlers_to_use = [
-            h for h in underlying_logger.handlers if h.name != "api_queue"
-        ]
-
+        handlers_to_use = [h for h in underlying_logger.handlers if h.name != "api_queue"]
         if not handlers_to_use:
             logger.warning("日志消费者启动，但没有找到文件或控制台等目标处理器。日志将不会被记录。")
-
         while True:
             try:
-                # 从队列中获取由 AsyncioQueueHandler 创建的日志条目字典
                 log_entry = await self.api_log_queue.get()
-
                 if log_entry and isinstance(log_entry, dict):
-                    # 将字典重新构建为 logging.LogRecord 对象
-                    # 这是 logging 框架内部传递日志的方式
                     record = logging.makeLogRecord(log_entry)
-
-                    # 使用目标处理器来处理这个记录
                     for handler in handlers_to_use:
-                        # 检查处理器的级别，避免处理不必要的日志
                         if record.levelno >= handler.level:
                             handler.handle(record)
-
                 self.api_log_queue.task_done()
-
             except asyncio.CancelledError:
                 logger.info("日志消费者服务已收到取消信号，正在关闭。")
                 break
             except Exception as e:
-                # 即使处理单条日志失败，也不要让整个循环崩溃
-                # 使用 print 是因为如果 logger 本身出问题，再用 logger 记录可能会导致无限循环
                 print(f"CRITICAL: 日志消费者循环出现严重错误: {e}")
-                # 稍微等待一下，避免在持续错误的情况下疯狂占用CPU
                 await asyncio.sleep(1)

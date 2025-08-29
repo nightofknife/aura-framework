@@ -68,8 +68,8 @@ def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
                 all_tasks.append(f"{plan_name}/{task_name}")
 
         if not all_tasks:
-            print("在所有方案中都未能找到任何任务定义。");
-            wait_for_enter();
+            print("在所有方案中都未能找到任何任务定义。")
+            wait_for_enter()
             return
 
         all_tasks.sort()
@@ -78,8 +78,8 @@ def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
     else:
         schedulable_tasks = scheduler.get_schedule_status()
         if not schedulable_tasks:
-            print("没有找到任何可调度的任务。请检查你的 schedule.yaml 文件。");
-            wait_for_enter();
+            print("没有找到任何可调度的任务。请检查你的 schedule.yaml 文件。")
+            wait_for_enter()
             return
         task_map = {i + 1: task for i, task in enumerate(schedulable_tasks)}
         header_title = "选择要运行的可调度任务"
@@ -104,8 +104,8 @@ def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
             choice_num = int(choice)
             task_to_run = task_map.get(choice_num)
             if not task_to_run:
-                print("无效的编号，请重试。");
-                time.sleep(1);
+                print("无效的编号，请重试。")
+                time.sleep(1)
                 continue
 
             if ad_hoc_mode:
@@ -127,7 +127,7 @@ def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
             wait_for_enter()
             return
         except ValueError:
-            print("无效的输入，请输入数字。");
+            print("无效的输入，请输入数字。")
             time.sleep(1)
 
 

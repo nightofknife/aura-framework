@@ -25,8 +25,8 @@ def ensure_state(
 
     :param state_planner: (注入) 状态规划器服务实例。
     :param context: (注入) 当前任务的上下文。
-    :param target: 目标状态的名称 (在 world_map.yaml 中定义)。
-    :param map: world_map.yaml 文件的路径 (相对于方案包根目录)。
+    :param target: 目标状态的名称 (在 states_map.yaml 中定义)。
+    :param map: states_map.yaml 文件的路径 (相对于方案包根目录)。
     :param timeout: (可选) 整个规划和执行过程的最大允许时间（秒）。默认为300。
     :param default_cost: (可选) 地图中未指定成本的转移的默认成本。默认为1。
     :return: 如果成功到达目标状态则返回 True，否则返回 False。
