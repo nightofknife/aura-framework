@@ -1,39 +1,61 @@
 
+---
 
-# **Core Module: `context.py`**
+# **核心模块: `context.py`**
 
 ## **1. 概述 (Overview)**
 
-`context.py` 定义了 `Context` 类，它是 Aura 框架中**数据流动的载体**。如果说 `ExecutionEngine` 是框架的大脑，那么 `Context` 就是流淌在其中的血液，负责在任务的各个步骤之间传递信息、状态和变量。
+`context.py` 定义了 `Context` 类，它是 Aura 框架中**结构化数据流的载体**。与旧版本不同，新版 `Context` 是一个围绕 Pydantic 数据模型 (`TaskContextModel`) 构建的智能接口。它不再是一个简单的键值存储，而是一个类型安全、自文档化的数据容器，负责在任务的各个步骤之间传递信息、状态和核心服务。
 
-它的本质是一个智能的、大小写不敏感的键值存储（字典），封装了任务执行期间的所有动态数据。
+它将框架的核心数据（如配置、日志服务）与任务执行期间产生的动态数据（如步骤输出）进行了明确的分离，极大地提升了系统的健robustness和可维护性。
 
-## **2. 在框架中的角色 (Role in the Framework)**
+## **2. 核心架构：模型与接口分离**
 
-`Context` 对象在任务的生命周期中扮演着核心角色。一个 `Context` 实例在任务开始时被创建，并被传递给 `ExecutionEngine`。随后，在任务的每一步执行中，它都会被 `ActionInjector` 用来：
+新版 `Context` 的设计采用了**模型-接口分离**的模式，由两个核心类组成：
 
-1.  **提供数据**: 为 Jinja2 模板渲染提供变量。
-2.  **存储结果**: 接收 Action 执行后的返回值 (通过 `output_to`)。
-3.  **状态传递**: 将一个步骤的结果传递给后续步骤。
+1.  **`TaskContextModel` (数据模型)**:
+    *   这是一个 Pydantic `BaseModel`，它严格定义了上下文中**必须存在的核心数据和服务的结构**。
+    *   它为 `plan_name`, `log`, `persistent_context`, `config` 等核心对象提供了明确的、类型化的字段。
+    *   它包含一个名为 `dynamic_data` 的字典字段，这是**唯一**用于存储用户自定义变量、步骤输出和循环变量的地方。
+    *   **目的**: 提供类型安全、数据验证和自动补全，确保框架所需的核心服务始终可用。
 
-此外，当任务调用子任务时，`Context` 通过其 `fork()` 方法来确保数据隔离，这是实现模块化和可复用任务的关键。
+2.  **`Context` (智能接口)**:
+    *   这是一个封装 `TaskContextModel` 实例的**公共 API**。
+    *   开发者和框架的其他部分通过 `Context` 类的方法 (`get`, `set`, `fork`) 与上下文数据进行交互。
+    *   **目的**: 提供一个受控的、方便的接口来访问和修改上下文数据，同时保护核心数据不被意外覆盖。
+
+## **3. 在框架中的角色 (Role in the Framework)**
+
+`Context` 对象在任务的生命周期中扮演着核心角色。一个 `Context` 实例在任务开始时被创建，并被传递给 `ExecutionEngine`。随后，在任务的每一步执行中，它都会被 `ActionInjector` 使用。
 
 ```mermaid
 graph TD
     subgraph "Task Lifecycle"
-        Start("任务开始") --> A["创建主 Context"];
+        Start("任务开始") --> A["创建 TaskContextModel 并封装为 Context 实例"];
+        
+        subgraph "Context 内部结构"
+            direction LR
+            A_Model["TaskContextModel<br>(核心服务: log, config...)<br>(动态数据: {})"]
+        end
+        
         A --> B[ExecutionEngine];
         
         B -- "处理 Step 1" --> C1(ActionInjector);
-        C1 -- "读取变量" --> A;
-        C1 -- "写入结果 (output_to)" --> A;
+        C1 -- "读取变量 (get)" --> A;
+        C1 -- "写入结果 (set)" --> A_Model;
 
         B -- "处理 Step 2" --> C2(ActionInjector);
-        C2 -- "读取 Step 1 的结果" --> A;
-        C2 -- "写入结果" --> A;
+        C2 -- "读取 Step 1 的结果 (get)" --> A;
+        C2 -- "写入结果 (set)" --> A_Model;
 
         B -- "调用子任务 (run_task)" --> F["调用 context.fork()"];
         F --> G["创建隔离的子 Context"];
+        
+        subgraph "Forked Context 内部结构"
+            direction LR
+            G_Model["TaskContextModel<br>(继承核心服务)<br>(动态数据: *清空*)"]
+        end
+        
         G -- "传递给子任务的 Engine" --> H[Sub-Task Execution];
         
         H -- "子任务结束" --> I["子 Context 被销毁"];
@@ -44,57 +66,55 @@ graph TD
     style G fill:#fff5e6,stroke:#333,stroke-width:2px
 ```
 
-## **3. Class: `Context`**
+## **4. Class: `Context`**
 
-### **3.1. 目的与职责 (Purpose & Responsibilities)**
+### **4.1. 核心方法 (Core Methods)**
 
-`Context` 类的设计目标是提供一个简单、可靠且隔离的变量存储区。其核心职责包括：
+#### **`get(key, default)`**
 
-1.  **数据存储**: 提供基本的 `set`, `get`, `delete` 方法来操作键值对。
-2.  **大小写不敏感**: 所有的键（key）在内部都会被转换为小写，这极大地提升了用户在 YAML 中编写变量名的容错性（例如，`{{ myVar }}` 和 `{{ myvar }}` 是等效的）。
-3.  **隔离性**: 通过 `fork()` 方法为子任务创建全新的、空白的上下文，防止父子任务之间发生意外的数据污染。
-4.  **状态标识**: 内部维护标志位（`_is_sub_context`, `_triggering_event`）来记录自身的来源和类型，供框架内部逻辑判断使用。
+*   **功能**: 从上下文中获取一个值。
+*   **核心机制**: 它实现了一个明确的查找优先级：
+    1.  **首先，在 `dynamic_data` (动态数据) 中查找**。这是用户通过 `set` 方法或 `output_to` 存入数据的地方。
+    2.  **然后，在 `TaskContextModel` 的核心字段中查找**。这允许访问 `log`, `config`, `plan_name` 等核心服务和元数据。
+    3.  如果都找不到，则返回 `default` 值。
 
-### **3.2. 初始化 (`__init__`)**
+***示例:***
+```python
+# 假设 context 中:
+# - model.plan_name = "my_plan"
+# - model.dynamic_data = {"my_variable": 123}
 
-*   **输入**:
-    *   `initial_data: Dict[str, Any]` (可选): 一个普通的字典，用于在上下文创建时预置一些初始数据。例如，`Orchestrator` 会用它来传入任务的启动参数。
-    *   `is_sub_context: bool` (内部使用): 一个布尔标志，用于明确地标记这个上下文是否是为子任务创建的。默认为 `False`。
-    *   `triggering_event: Optional[Event]` (内部使用): 记录触发此上下文创建的事件对象（如果适用）。这对于追溯任务启动的源头（例如，是哪个定时器或哪个 Webhook 触发的）非常有用。
+context.get("my_variable")  # -> 返回 123 (来自 dynamic_data)
+context.get("plan_name")    # -> 返回 "my_plan" (来自核心模型)
+context.get("non_existent") # -> 返回 None (默认值)
+```
 
-### **3.3. 核心方法 (Core Methods)**
+#### **`set(key, value)`**
 
-#### **`set(key, value)` / `get(key, default)` / `delete(key)`**
-
-这些是标准的字典操作方法，但都内置了将 `key` 转换为小写的逻辑，这是其“智能”的体现。
+*   **功能**: 向上下文中设置一个值。
+*   **核心机制**:
+    *   此方法**只能**向 `dynamic_data` 字典中写入数据。
+    *   它有一个**保护机制**：如果尝试设置的 `key` 与 `TaskContextModel` 的一个核心字段同名，操作将被阻止并记录一条警告。这可以防止用户意外地覆盖核心服务（如 `log` 或 `config`）。
 
 #### **`fork()`**
 
-这是实现子任务数据隔离的关键方法。
+这是实现子任务数据隔离的关键方法，其行为在新架构下更加精确。
 
-*   **功能**: 创建并返回一个新的 `Context` 实例。
+*   **功能**: 创建并返回一个新的、变量隔离的子 `Context` 实例。
 *   **核心机制**:
-    1.  它**不会**复制父上下文的任何数据 (`_data`)。新创建的 `Context` 是完全空白的。
-    2.  它会将新 `Context` 的 `is_sub_context` 标志**硬编码为 `True`**。
-    3.  它会将父上下文的 `_triggering_event` 传递给子上下文，确保整个调用链的触发源头信息得以保留。
+    1.  它使用 Pydantic 的 `copy(deep=True)` 方法深度复制底层的 `TaskContextModel`。这意味着所有核心服务和元数据（如 `log`, `config`, `persistent_context`）都会被**继承**到子上下文中。
+    2.  复制完成后，它会**显式地将子上下文的 `dynamic_data` 重置为一个空字典 `{}`**。
+    3.  同时，它会将新 `Context` 的 `is_sub_context` 标志设置为 `True`。
 
-这种“完全隔离，显式传递”的设计模式（父任务需要通过 `run_task` 的 `pass_params` 显式传递数据给子任务）是一种健壮的设计，它使得子任务的行为更加可预测，易于独立测试和复用。
+这种 **“继承核心，清空动态”** 的设计模式是新版 `Context` 的核心优势。它确保了子任务可以访问所有必要的框架服务，但又从一个干净的、无污染的变量环境开始执行，使其行为高度可预测、易于测试和复用。
 
 #### **`is_sub_context()` 和 `get_triggering_event()`**
 
-这些是只读的访问器方法，允许框架的其他部分安全地查询上下文的状态，而无需直接访问内部的私有变量（如 `_is_sub_context`）。
-
-## **4. 与其他模块的交互 (Interaction with Other Modules)**
-
-*   **`Orchestrator`**: 在任务启动时，负责创建**主上下文 (Main Context)**，并可能传入初始参数。
-*   **`ExecutionEngine`**: 持有 `Context` 的引用，并在执行 `run_task` 时调用 `context.fork()` 来创建子上下文。
-*   **`ActionInjector`**: **重度使用者**。它从 `Context` 中读取数据用于渲染模板，并将 `output_to` 的结果写回 `Context`。它还会将 `Context` 实例本身注入到需要它的 Action 函数中。
-*   **`ContextManager`**: 在任务开始前，负责将**持久化上下文** (`persistent_context.json`) 的数据加载到主上下文中。
-*   **`EventBus`**: 当通过事件触发任务时，`Event` 对象会被传递给 `Context` 的构造函数，从而在整个任务执行期间保留事件信息。
+这些是只读的访问器方法，允许框架的其他部分安全地查询上下文的状态，它们直接从底层的 Pydantic 模型中读取相应的值。
 
 ## **5. 总结 (Summary)**
 
-`Context` 类虽然代码简单，但其在 Aura 框架中的概念地位至关重要。它是连接任务所有步骤的“胶水”，是实现动态和数据驱动自动化的基础。其大小写不敏感的设计提升了用户体验，而其 `fork()` 方法所实现的严格隔离机制则是保证复杂任务流健壮性和可维护性的核心设计决策。任何对 Aura 任务数据流的分析，都离不开对 `Context` 对象的理解。
+重构后的 `Context` 类是 Aura 框架在健壮性和可维护性方面迈出的一大步。通过引入 Pydantic 模型，它从一个灵活但易出错的字典，转变为一个结构清晰、类型安全的“数据契约”。
 
-
+其核心设计思想——**分离核心服务与动态数据**——并通过 `get`, `set`, `fork` 方法实施严格的访问和隔离策略，有效地防止了数据污染，使得复杂的任务流更加可靠和易于调试。理解这个新的、基于模型的上下文是掌握现代 Aura 任务执行流程的关键。
 

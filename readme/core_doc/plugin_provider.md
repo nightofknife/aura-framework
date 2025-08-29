@@ -1,5 +1,7 @@
 
-# **Core Module: `plugin_provider.py`**
+---
+
+# **核心模块: `plugin_provider.py`**
 
 ## **1. 概述 (Overview)**
 

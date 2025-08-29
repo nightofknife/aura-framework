@@ -1,16 +1,17 @@
 
+---
 
-# **Core Module: `persistent_context.py`**
+# **核心模块: `persistent_context.py` (异步版)**
 
 ## **1. 概述 (Overview)**
 
-`persistent_context.py` 定义了 `PersistentContext` 类，它是 Aura 框架中实现**数据持久化**的基础工具。它的核心职责是提供一个简单的、与磁盘文件绑定的键值存储，允许任务在多次运行之间保存和恢复状态。
+`persistent_context.py` 定义了 `PersistentContext` 类，它是 Aura 框架中实现**异步数据持久化**的基础工具。它的核心职责是提供一个简单的、与磁盘文件绑定的键值存储，允许任务在多次运行之间安全地、非阻塞地保存和恢复状态。
 
-可以将其看作是一个智能的、自动进行 JSON 序列化和反序列化的 Python 字典。它将复杂的“读文件 -> 解析JSON -> 操作数据 -> 序列化JSON -> 写文件”流程封装在一个简洁的面向对象接口背后。
+可以将其看作是一个智能的、自动进行 JSON 序列化和反序列化的 Python 字典，但其所有的磁盘 I/O 操作都是通过 `asyncio` 事件循环和线程池来异步执行的。
 
 ## **2. 在框架中的角色 (Role in the Framework)**
 
-`PersistentContext` 是**底层的数据存取工具**，它通常不被终端用户或高层逻辑直接使用，而是作为 `ContextManager` 的底层实现。`ContextManager` 负责**何时**以及**如何**将持久化数据与运行时的 `Context` 相结合的**策略**，而 `PersistentContext` 则负责**具体**的、与文件系统交互的**机制**。
+`PersistentContext` 是**底层的数据存取工具**，它作为 `ContextManager` 的底层实现。`ContextManager` 负责**何时**以及**如何**将持久化数据与运行时的 `Context` 相结合的**策略**，而 `Persistent-Context` 则负责**具体**的、与文件系统进行异步、安全交互的**机制**。
 
 ```mermaid
 graph TD
@@ -19,20 +20,20 @@ graph TD
     end
 
     subgraph "本模块 (Mechanism Layer)"
-        PC(PersistentContext)
+        PC(Async PersistentContext)
     end
 
     subgraph "物理层 (Physical Layer)"
         File["persistent_context.json"]
     end
 
-    CM -- "1. 在 create_context() 时，实例化" --> PC
-    PC -- "2. 在 __init__() 或 load() 时，读取" --> File
+    CM -- "1. 在 create_context() 时，await PersistentContext.create()" --> PC
+    PC -- "2. 在 create() 中，异步读取" --> File
     PC -- "3. 将数据返回给" --> CM
     CM -- "4. 将数据注入运行时的 Context" --> InMemCtx["In-Memory Context"]
 
     InMemCtx -- "用户在任务中调用 'persistent_context.save()'" --> PC
-    PC -- "5. 调用 save() 时，写入" --> File
+    PC -- "5. 调用 save() 时，异步写入" --> File
 
     style PC fill:#e0f2f1,stroke:#333,stroke-width:2px
 ```
@@ -41,47 +42,38 @@ graph TD
 
 ### **3.1. 目的与职责 (Purpose & Responsibilities)**
 
-`PersistentContext` 的设计目标是提供一个简单、原子化的接口来处理持久化数据。其核心职责包括：
+`PersistentContext` 的设计目标是提供一个简单、原子化且非阻塞的接口来处理持久化数据。其核心职责包括：
 
-1.  **自动加载**: 在实例化时，自动尝试从指定的 `filepath` 加载 JSON 数据到内存中的 `_data` 字典。如果文件不存在或解析失败，则优雅地处理，初始化为一个空字典。
-2.  **内存操作**: 提供标准的 `get` 和 `set` 方法，用于在内存中对数据进行读写。这些操作是快速的，不涉及即时的磁盘 I/O。
-3.  **按需保存**: 提供一个显式的 `save()` 方法，用于将内存中 `_data` 的当前状态序列化为 JSON 并写回磁盘文件。
-4.  **封装复杂性**: 将文件存在性检查、编码处理 (`utf-8`)、JSON 序列化/反序列化以及相关的异常处理全部封装在内部。
+1.  **异步加载**: 通过 `async load()` 方法，将磁盘 I/O 操作委托给线程池执行，从而在不阻塞 `asyncio` 事件循环的情况下加载 JSON 数据。
+2.  **内存操作**: 提供标准的 `get` 和 `set` 方法，用于在内存中对数据进行快速读写。
+3.  **异步保存**: 提供一个 `async save()` 方法，同样通过线程池将内存数据异步写回磁盘文件。
+4.  **并发安全**: **【新增】** 使用 `asyncio.Lock` 来保护所有的文件读写操作。这可以防止多个协程同时尝试读取或写入同一个持久化上下文文件，从而避免数据损坏或竞争条件。
 
-### **3.2. 核心方法 (Core Methods)**
+### **3.2. 核心方法与设计决策 (Core Methods)**
 
-#### **`__init__(self, filepath)` 和 `load()`**
+#### **`async create(cls, filepath)` (异步工厂)**
 
-*   **`__init__`**: 构造函数接收一个文件路径，并立即调用 `load()` 方法。这确保了对象一旦创建，其内存状态就与磁盘状态（或一个空状态）同步。
-*   **`load()`**:
-    *   **健壮性**: 使用 `try...except` 块来捕获所有可能的错误（如文件不存在、权限问题、JSON 格式错误）。在任何错误情况下，它都会保证 `self._data` 是一个有效的空字典，防止后续操作失败。
-    *   **懒加载/自动加载**: 这种在初始化时自动加载的设计，简化了使用者的代码。使用者无需手动调用 `load()`。
+*   **【新增】** 这是一个**类方法 (classmethod)**，也是**推荐的实例化方式**。
+*   **设计模式**: 它遵循了**异步工厂模式**。由于 `__init__` 不能是 `async` 的，而我们希望在对象创建后立即加载数据（一个 I/O 操作），因此将实例化和异步初始化这两个步骤封装在 `create` 方法中。
+*   **流程**: `instance = cls(filepath)` -> `await instance.load()` -> `return instance`。
 
-#### **`save()`**
+#### **`async load()`** 和 **`async save()`**
 
-*   **显式调用**: 这是一个**需要显式调用**的方法。数据在内存中的改变（通过 `set()`）**不会**自动同步到磁盘。这种设计是故意的，原因如下：
-    1.  **性能**: 避免了每次 `set()` 都进行一次昂贵的磁盘 I/O 操作。
-    2.  **原子性/事务性**: 允许用户进行一系列的 `set()` 操作，然后在所有操作都完成后，调用一次 `save()` 来原子地保存最终状态。
-*   **序列化**: 使用 `json.dump`，并指定了 `indent=4` 和 `ensure_ascii=False`。
-    *   `indent=4`: 使得生成的 JSON 文件具有良好的可读性，方便人工查看和调试。
-    *   `ensure_ascii=False`: 允许直接在 JSON 文件中存储中文字符或其他非 ASCII 字符，而不是将它们转义成 `\uXXXX` 的形式。
+*   **异步 I/O**: 这两个方法的核心是 `loop.run_in_executor(None, ...)`。它们将同步的、可能阻塞的文件读写逻辑（`_sync_load_internal`, `_sync_save_internal`）提交到默认的线程池中执行。这使得调用 `load()` 或 `save()` 的协程可以 `await` 结果，而事件循环可以继续处理其他任务。
+*   **并发控制**: 每个方法都使用 `async with self._lock:` 来确保在任何时刻只有一个读或写操作在进行中，保证了操作的原子性。
+*   **健壮性**: `load` 方法中的 `try...except` 块确保了即使文件不存在或损坏，`self._data` 也会被安全地初始化为空字典。`save` 方法会确保目标目录存在。
 
-#### **`set(key, value)` 和 `get(key, default)`**
+#### **`set(key, value)`** 和 **`get(key, default)`**
 
-标准的字典式操作接口，直接作用于内存中的 `self._data` 字典。
+标准的字典式操作接口，直接作用于内存中的 `self._data` 字典，这些操作是同步且快速的。
 
 #### **`get_all_data()`**
 
-提供一个方法来获取整个数据字典的引用，这主要被 `ContextManager` 用来将所有持久化数据一次性地复制到运行时的 `Context` 中。
+提供一个方法来获取整个数据字典的**副本 (`.copy()`)**。返回副本而不是直接引用，是一种防御性编程实践，可以防止外部代码意外地修改 `PersistentContext` 的内部状态。
 
-## **4. 与其他模块的交互 (Interaction with Other Modules)**
+## **4. 总结 (Summary)**
 
-*   **`ContextManager`**: **主要使用者**。`ContextManager` 实例化 `PersistentContext`，调用 `get_all_data()` 来读取数据，并将 `PersistentContext` 实例本身注入到运行时 `Context` 中（键为 `persistent_context`）。
-*   **用户 (通过 YAML)**: 终端用户可以在任务的 YAML 文件中通过 `{{ persistent_context.save() }}` 来调用 `save()` 方法，或者通过 `{{ persistent_context.set('my_var', 'my_value') }}` (虽然不推荐，因为不会自动保存) 来间接使用它。更常见的是，用户直接修改由 `ContextManager` 注入到顶层的变量，然后在任务结束时由框架（或在特定步骤中）统一保存。
-
-## **5. 总结 (Summary)**
-
-`PersistentContext` 是 Aura 框架中一个简单而坚固的基石。它通过一个清晰的面向对象接口，优雅地封装了与 JSON 文件进行数据持久化交互的所有底层细节。其“内存操作 + 显式保存”的设计模式，在保证高性能的同时，也为上层逻辑提供了实现原子性更新的能力。它是实现任务间状态记忆功能不可或缺的一环。
+异步重构后的 `PersistentContext` 是 Aura 框架中一个现代化、健壮的基石。它通过一个清晰的异步接口，优雅地封装了与 JSON 文件进行数据持久化交互的所有底层细节。其“异步工厂”的实例化方式、基于线程池的非阻塞 I/O，以及通过 `asyncio.Lock` 实现的并发安全机制，共同构成了一个高性能、高可靠性的数据持久化工具，完美地融入了 Aura 的异步架构中。
 
 
 

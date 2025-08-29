@@ -1,12 +1,13 @@
-    
 
-# **Core Module: `builder.py`**
+---
+
+# **核心模块: `builder.py`**
 
 ## **1. 概述 (Overview)**
 
 `builder.py` 是 Aura 框架的**插件构建引擎**。它的核心职责是将开发者编写的、人类可读的插件源代码（`.py` 和 `.yaml` 文件）转换成 Aura 运行时能够理解和使用的内部结构。
 
-可以将其看作是一个**轻量级的“编译器”或“扫描器”**。它在框架启动或插件加载时运行，负责动态地发现、解析和注册插件提供的所有功能。这个模块是 Aura 强大插件化架构的基石。
+可以将其看作是一个**轻量级的“扫描器”与“注册器”**。它在框架启动或插件加载时运行，负责动态地发现、解析和注册插件提供的所有功能（Actions, Services, Tasks）。这个模块是 Aura 强大插件化架构的基石。
 
 ## **2. 在框架中的角色 (Role in the Framework)**
 
@@ -16,7 +17,7 @@
 
 ```mermaid
 graph TD
-    subgraph "输入 (Source Code)"
+    subgraph "输入 (Plugin Source Code)"
         PluginSource["Plugin Source Files <br> (actions.py, services.py, tasks/*.yaml)"]
     end
 
@@ -38,7 +39,7 @@ graph TD
 ```
 
 如图所示，`builder` 消耗插件的源代码，并产生两种关键的“构建产物”：
-1.  **内存中的注册表**: 它直接调用 `api.py` 中的 `ACTION_REGISTRY.register()` 和 `service_registry.register()`，将发现的 Action 和 Service 实时注册到内存中，供运行时立即使用。
+1.  **内存中的注册**: 它直接调用 `api.py` 中的 `ACTION_REGISTRY.register()` 和 `service_registry.register()`，将发现的 Action 和 Service 实时注册到内存中，供运行时立即使用。
 2.  **磁盘上的 API 文件**: 它会为每个插件生成一个 `api.yaml` 文件，作为该插件对外暴露能力的静态清单。这个文件对于 UI 工具、静态分析或未来的包管理系统非常有用。
 
 ## **3. 核心功能: `build_package_from_source()`**
@@ -55,7 +56,7 @@ graph TD
 
 ```mermaid
 flowchart TD
-    Start["build_package_from_source(plugin_def)"] --> A["清空构建缓存 _PROCESSED_MODULES"];
+    Start["build_package_from_source(plugin_def)"] --> A["清空构建缓存"];
     A --> B{"遍历插件目录下的所有 .py 文件"};
     B --> C["加载 .py 文件为 Python 模块"];
     C --> D["处理模块，查找并注册 Services <br> (_process_service_file)"];
@@ -71,19 +72,17 @@ flowchart TD
 
 ## **4. 关键机制 (Key Mechanisms)**
 
-`builder.py` 的强大功能依赖于几个核心的 Python 编程技术。
-
 ### **4.1. 动态模块加载 (`_load_module_from_path`)**
 
 *   **功能**: 这是 `builder` 能够处理任意位置插件的魔法所在。它不依赖于传统的 `sys.path`，而是使用 `importlib.util` 库根据文件的绝对路径直接将其加载为一个 Python 模块。
 *   **交互**:
     *   它会检查 `sys.modules`，避免重复加载已经存在的模块。
     *   加载成功后，会将新模块添加到 `sys.modules`，以便后续的 `import` 语句可以找到它。
-    *   使用 `_PROCESSED_MODULES` 集合作为本地缓存，防止在单次构建流程中重复处理同一个文件。
+    *   使用 `_PROCESSED_MODULES` 作为本地缓存，防止在单次构建流程中重复处理同一个文件。
 
 ### **4.2. 反射与内省 (`_process_service_file` & `_process_action_file`)**
 
-*   **功能**: `builder` 不会去“理解”Action 或 Service 的代码逻辑。相反，它使用 Python 的 `inspect` 模块来**反射**地检查模块内容。
+*   **功能**: `builder` 不会去“理解”Action 或 Service 的代码逻辑。相反，它使用 Python 的 `inspect` 模块来**反射**地检查已加载模块的内容。
 *   **交互**:
     1.  它遍历模块中所有的类和函数。
     2.  它检查每个对象是否有一个特殊的元数据属性（`_aura_service_meta` 或 `_aura_action_meta`）。这个属性是在代码中由 `@register_service` 和 `@register_action` 装饰器附加的。
@@ -98,11 +97,50 @@ flowchart TD
     *   它会递归地扫描 `tasks` 目录下的所有 `.yaml` 文件。
     *   对于每个文件，它会使用 `yaml.safe_load()` 进行解析。
     *   **支持多格式**: 这是一个关键特性。它能智能地判断 YAML 文件的格式：
-        *   **旧格式 (单任务)**: 如果文件顶层包含 `steps` 键，则认为整个文件是一个任务。
-        *   **新格式 (多任务)**: 否则，它会遍历文件顶层的所有键，将每个键都视为一个独立的任务定义。
+        *   **单任务格式**: 如果文件顶层包含 `steps` 键，则认为整个文件定义了一个任务。任务的 ID 根据其文件名和相对路径生成。
+        *   **多任务格式**: 否则，它会遍历文件顶层的所有键，将每个键都视为一个独立的任务定义。这允许在一个 YAML 文件中定义多个逻辑上相关的任务。
     *   它会查找每个任务定义中的 `meta.entry_point: true` 标志。只有带有此标志的任务才会被视为公共入口点，并被记录到 `api.yaml` 中。
+
+***示例: 多任务格式的 `tasks/email_operations.yaml`***
+```yaml
+# 一个文件中定义了两个任务
+send_welcome_email:
+  meta:
+    title: "发送欢迎邮件"
+    description: "向新用户发送一封欢迎邮件。"
+    entry_point: true  # 这个任务会作为公开入口点
+    icon: "mdi:email-fast-outline"
+  params:
+    - user_id
+  steps:
+    - action: log
+      params:
+        message: "准备发送欢迎邮件给用户 {{ user_id }}"
+    # ... 更多步骤
+
+send_newsletter:
+  meta:
+    title: "发送月度简报"
+    description: "向所有订阅者发送月度简报。"
+    entry_point: true # 这个任务也会作为公开入口点
+    icon: "mdi:newspaper-variant-multiple"
+  steps:
+    - action: log
+      params:
+        message: "开始发送月度简报..."
+    # ... 更多步骤
+
+# 这是一个内部任务，不会被公开
+_fetch_email_template:
+  meta:
+    # 没有 entry_point: true，所以是私有的
+    description: "内部辅助任务，用于获取邮件模板"
+  steps:
+    # ...
+```
+在上面的例子中，`_process_task_entry_points` 会将 `send_welcome_email` 和 `send_newsletter` 识别为公开的入口点，并将它们的元数据添加到 `api.yaml` 中，而 `_fetch_email_template` 则会被忽略。
 
 ## **5. 总结 (Summary)**
 
-`builder.py` 是 Aura 插件化架构的“引导程序”和“翻译官”。它通过动态加载、反射和元数据解析等高级技术，将分散在各个插件中的源代码，系统性地整合进框架的统一管理体系中。它将复杂的发现和注册过程与核心的执行逻辑完全解耦，使得框架的扩展变得简单而清晰。任何希望理解 Aura 如何加载和管理插件的开发者，都必须首先理解 `builder.py` 的工作流程和核心机制。
+`builder.py` 是 Aura 插件化架构的“引导程序”和“翻译官”。它通过动态加载、反射和元数据解析等技术，将分散在各个插件中的源代码，系统性地整合进框架的统一管理体系中。它将复杂的发现和注册过程与核心的执行逻辑完全解耦，使得框架的扩展变得简单而清晰。理解 `builder.py` 的工作流程和核心机制，是理解 Aura 如何加载和管理插件的关键。
 

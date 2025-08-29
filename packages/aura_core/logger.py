@@ -8,9 +8,30 @@ import time
 import asyncio
 from logging.handlers import RotatingFileHandler
 from typing import Optional
+import logging
+import queue
 
-# This is the handler from the old Tkinter UI. It uses a standard thread-safe queue.
-from packages.aura_core.ui_logger import QueueLogHandler
+
+class QueueLogHandler(logging.Handler):
+    """
+    一个自定义的日志处理器，它将日志记录发送到一个队列中，
+    以便UI线程可以安全地从中消费。
+    """
+
+    def __init__(self, log_queue: queue.Queue):
+        super().__init__()
+        self.log_queue = log_queue
+
+    def emit(self, record):
+        """
+        当日志被记录时，此方法会被调用。
+        它格式化日志消息并将其放入队列。
+        """
+        log_entry = self.format(record)
+        self.log_queue.put(log_entry)
+
+
+
 
 # --- Custom TRACE level setup (unchanged) ---
 TRACE_LEVEL_NUM = 5

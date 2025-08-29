@@ -578,32 +578,65 @@ class ExecutionEngine:
             logger.info("接收到恢复信号，任务将继续执行。")
 
     async def _run_sub_task(self, step_data: Dict[str, Any], injector: ActionInjector) -> Any:
-        if not self.orchestrator: return False
+        """
+        【升级版】执行一个子任务，支持通过 'with' 传递参数，并通过子任务的 'returns' 字段接收返回值。
+        """
+        if not self.orchestrator:
+            logger.error("无法执行子任务：Engine 未关联到 Orchestrator。")
+            return False
+
         rendered_params = await injector._render_params(step_data.get('params', {}))
         sub_task_id = rendered_params.get('task_name')
-        if not sub_task_id: return False
+        if not sub_task_id:
+            logger.error("run_task 失败：'task_name' 参数缺失。")
+            return False
 
         sub_task_data = self.orchestrator.load_task_data(sub_task_id)
-        if not sub_task_data: return False
+        if not sub_task_data:
+            logger.error(f"run_task 失败：找不到子任务定义 '{sub_task_id}'。")
+            return False
 
+        # 1. 【升级】创建隔离上下文并传递参数
+        #    - 使用 'with' 作为新的标准参数键。
+        #    - 为了向后兼容，仍然支持旧的 'pass_params'。
         sub_context = injector.context.fork()
-        for key, value in rendered_params.get('pass_params', {}).items():
+        params_to_pass = rendered_params.get('with', rendered_params.get('pass_params', {}))
+
+        # 【新】将传入的参数也放入子上下文的 'params' 命名空间下，方便子任务引用
+        sub_context.set('params', params_to_pass)
+        # 也将参数直接注入顶层，方便直接访问
+        for key, value in params_to_pass.items():
             sub_context.set(key, value)
 
-        sub_engine = ExecutionEngine(sub_context, self.orchestrator, self.pause_event)
-        sub_task_result = await sub_engine.run(sub_task_data, sub_task_id)
+        logger.info(f"  -> 调用子任务 '{sub_task_id}' 并传递参数: {list(params_to_pass.keys())}")
 
-        if sub_task_result.get('status') == 'go_task': raise JumpSignal('go_task', sub_task_result['next_task'])
-        if sub_task_result.get('status') == 'success' and sub_task_result.get('next_task'): self.next_task_target = \
-        sub_task_result['next_task']
+        # 2. 创建新的引擎实例并执行子任务
+        sub_engine_id = f"{self.engine_id}.{sub_task_id}"
+        sub_engine = ExecutionEngine(sub_context, self.orchestrator, self.pause_event, parent_node_id=sub_engine_id)
+        # 【关键】直接调用 Orchestrator.execute_task，因为它已经包含了处理 'returns' 的逻辑
+        sub_task_result = await self.orchestrator.execute_task(
+            task_name_in_plan=sub_task_id.split('/', 1)[1] if '/' in sub_task_id else sub_task_id,
+            initial_data=params_to_pass  # 直接将初始数据传递下去
+        )
 
-        return_value = {}
-        if isinstance(sub_task_data.get('outputs'), dict):
-            sub_injector = ActionInjector(sub_context, sub_engine)
-            for key, value_expr in sub_task_data['outputs'].items():
-                return_value[key] = await sub_injector._render_value(value_expr, sub_context._data)
-        return return_value
+        # 3. 【升级】处理返回值
+        #    Orchestrator.execute_task 的返回值就是子任务 `returns` 字段渲染后的结果。
+        #    我们不再需要手动处理旧的 'outputs' 字段。
+        #    如果子任务执行失败或跳转，Orchestrator 会抛出异常或返回特殊字典，我们需要处理这些情况。
 
+        if isinstance(sub_task_result, dict):
+            # 检查是否是跳转信号
+            if sub_task_result.get('status') == 'go_task':
+                raise JumpSignal('go_task', sub_task_result['next_task'])
+            # 检查是否是错误信号
+            if sub_task_result.get('status') == 'error':
+                logger.error(f"  -> 子任务 '{sub_task_id}' 执行失败。")
+                # 让整个 run_task 步骤失败
+                return False
+
+                # 如果不是特殊信号字典，那么 sub_task_result 就是子任务的返回值
+        logger.info(f"  -> 子任务 '{sub_task_id}' 返回结果: {repr(sub_task_result)}")
+        return sub_task_result
     async def _capture_debug_screenshot(self, failed_step_name: str):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._sync_capture_screenshot, failed_step_name)
