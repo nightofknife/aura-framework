@@ -21,6 +21,7 @@ from .execution_manager import ExecutionManager
 from .interrupt_service import InterruptService
 from .plan_manager import PlanManager
 from .scheduling_service import SchedulingService
+from .state_planner import StatePlanner
 
 if TYPE_CHECKING:
     from packages.aura_core.orchestrator import Orchestrator
@@ -215,6 +216,8 @@ class Scheduler:
             self._main_task = None
             logger.info("调度器主循环 (Commander) 已安全退出。")
             self.startup_complete_event.set()
+
+
 
     async def _consume_main_task_queue(self):
         while True:

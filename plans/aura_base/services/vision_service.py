@@ -1,5 +1,7 @@
-# src/notifier_services/vision_service.py
+# src/notifier_services/vision_service.py (异步升级版)
 
+import asyncio
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Tuple, Optional
 
@@ -7,144 +9,54 @@ import cv2
 import numpy as np
 
 from packages.aura_core.api import register_service
+from packages.aura_core.logger import logger
 
 
-# --- 返回值数据结构 ---
+# --- 返回值数据结构 (保持不变) ---
 
 @dataclass
 class MatchResult:
-    """封装单次匹配操作的结果。"""
     found: bool = False
-    # 匹配区域的左上角坐标 (x, y)
     top_left: tuple[int, int] | None = None
-    # 匹配区域的中心点坐标 (x, y)
     center_point: tuple[int, int] | None = None
-    # 匹配区域的矩形 (x, y, w, h)
     rect: tuple[int, int, int, int] | None = None
-    # 匹配的置信度/相似度
     confidence: float = 0.0
     debug_info: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class MultiMatchResult:
-    """封装多次匹配操作的结果。"""
     count: int = 0
-    # MatchResult 对象的列表
     matches: list[MatchResult] = field(default_factory=list)
 
 
 @register_service(alias="vision", public=True)
 class VisionService:
     """
-    一个无状态的视觉服务，提供模板匹配和未来可能的特征匹配功能。
-    所有方法都接收图像数据作为参数。
+    【异步升级版】一个无状态的视觉服务。
+    - 对外保持100%兼容的同步接口。
+    - 内部将CPU密集型的图像计算移至后台线程执行，避免阻塞事件循环。
     """
 
     def __init__(self):
-        print("视觉服务已初始化。")
-        # 如果需要基于特征的匹配，可以在这里初始化检测器
-        # self.detector = cv2.ORB_create(nfeatures=1000)
-        # self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        logger.info("视觉服务 (异步核心版) 已初始化。")
+        # --- 桥接器组件 ---
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_lock = threading.Lock()
 
-    def _prepare_image(self, image: np.ndarray | str) -> np.ndarray:
-        """
-        【最终加固版】准备用于模板匹配的图像，确保输出为标准的单通道2D灰度图。
-
-        这个函数现在能够处理所有已知情况，包括您指出的PNG读取问题。
-
-        :param image: 图像路径(str)或NumPy数组。
-        :return: 标准的单通道2D灰度图 (H, W) NumPy 数组。
-        """
-        # 1. 统一输入：确保我们处理的是一个NumPy数组
-        if isinstance(image, str):
-            # 以“不变”模式加载，保留所有通道信息，让后续逻辑统一处理
-            img = cv2.imread(image, cv2.IMREAD_UNCHANGED)
-            if img is None:
-                raise FileNotFoundError(f"无法从路径加载图像: {image}")
-        elif isinstance(image, np.ndarray):
-            img = image
-        else:
-            raise TypeError(f"不支持的图像类型，需要str(路径)或np.ndarray。实际类型为{type(image)}")
-
-        # 2. 统一处理：将任何格式的NumPy数组转换为标准的2D灰度图 (H, W)
-
-        # 检查是否已经是2D灰度图
-        if len(img.shape) == 2:
-            return img
-
-        # 处理3D数组，这部分是关键
-        if len(img.shape) == 3:
-            height, width, channels = img.shape
-
-            if channels == 4:
-                # 4通道 BGRA -> 灰度
-                return cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
-            elif channels == 3:
-                # 3通道 BGR -> 灰度
-                return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            elif channels == 1:
-                # 处理您提到的 (H, W, 1) 特殊情况，将其压缩为 (H, W)
-                return img.squeeze(axis=2)
-            else:
-                # 其他异常通道数的3D数组
-                raise TypeError(f"不支持的3D图像通道数: {channels}")
-
-        # 如果不是2D或3D，则是无法处理的形状
-        raise TypeError(f"不支持的图像形状: {img.shape}")
-
+    # =========================================================================
+    # Section 1: 公共同步接口 (保持100%向后兼容)
+    # =========================================================================
 
     def find_template(self,
                       source_image: np.ndarray | str,
                       template_image: np.ndarray | str,
                       mask_image: Optional[np.ndarray | str] = None,
                       threshold: float = 0.8) -> MatchResult:
-        """
-        【修改后】在源图像中查找最匹配的单个模板。
-        无论成功与否，都会返回包含调试信息的结果。
-        """
-        # try:
-        source_gray = self._prepare_image(source_image)
-        template_gray = self._prepare_image(template_image)
-        h, w = template_gray.shape
-        mask = None
-        # 【新增】处理蒙版逻辑
-        if mask_image is not None:
-            mask = self._prepare_image(mask_image)
-            if mask.shape != template_gray.shape:
-                raise ValueError(f"蒙版尺寸 {mask.shape} 必须与模板尺寸 {template_gray.shape} 完全一致。")
-
-        # except (FileNotFoundError, TypeError) as e:
-        #     print(f"错误: {e}")
-        #     return MatchResult(found=False,debug_info={"error": str(e)})
-        # print(source_gray.shape,template_gray.shape)
-        result = cv2.matchTemplate( image=source_gray,templ= template_gray,method= cv2.TM_CCOEFF_NORMED, mask=mask)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-
-        # 【关键修改】即使失败，也记录下最接近的匹配信息
-        best_match_confidence = max_val
-        best_match_rect = (max_loc[0], max_loc[1], w, h)
-
-        if best_match_confidence >= threshold:
-            top_left = max_loc
-            center_x = top_left[0] + w // 2
-            center_y = top_left[1] + h // 2
-            return MatchResult(
-                found=True,
-                top_left=top_left,
-                center_point=(center_x, center_y),
-                rect=(top_left[0], top_left[1], w, h),
-                confidence=best_match_confidence
-            )
-        else:
-            # 失败了，但返回一个带有调试信息的失败结果
-            return MatchResult(
-                found=False,
-                confidence=best_match_confidence,
-                debug_info={
-                    "best_match_rect_on_fail": best_match_rect
-                }
-            )
+        """【同步接口】在源图像中查找最匹配的单个模板。"""
+        return self._submit_to_loop_and_wait(
+            self.find_template_async(source_image, template_image, mask_image, threshold)
+        )
 
     def find_all_templates(self,
                            source_image: np.ndarray,
@@ -152,104 +64,200 @@ class VisionService:
                            mask_image: Optional[np.ndarray | str] = None,
                            threshold: float = 0.8,
                            nms_threshold: float = 0.5) -> MultiMatchResult:
-        """
-        在源图像中查找所有匹配的模板实例。
-
-        :param source_image: 在其中进行搜索的图像 (BGR或灰度图)。
-        :param template_image: 要查找的模板图像 (路径或BGR/灰度图)。
-        :param threshold: 匹配的置信度阈值。
-        :param nms_threshold: 非极大值抑制(NMS)的重叠阈值，用于合并重叠的框。
-        :return: 一个 MultiMatchResult 对象。
-        """
-        try:
-            source_gray = self._prepare_image(source_image)
-            template_gray = self._prepare_image(template_image)
-            h, w = template_gray.shape
-            mask = None
-            # 【新增】处理蒙版逻辑
-            if mask_image is not None:
-                mask = self._prepare_image(mask_image)
-                if mask.shape != template_gray.shape:
-                    raise ValueError(f"蒙版尺寸 {mask.shape} 必须与模板尺寸 {template_gray.shape} 完全一致。")
-
-        except (FileNotFoundError, TypeError, ValueError) as e:
-            print(f"错误: {e}")
-            return MultiMatchResult()
-
-        result = cv2.matchTemplate(source_gray, template_gray, cv2.TM_CCOEFF_NORMED, mask=mask)
-        locations = np.where(result >= threshold)
-
-        # 将结果打包成 (x, y, confidence) 的形式
-        rects = []
-        for pt in zip(*locations[::-1]):
-            rects.append([pt[0], pt[1], pt[0] + w, pt[1] + h])
-
-        scores = [result[pt[1], pt[0]] for pt in zip(*locations[::-1])]
-
-        # 使用非极大值抑制来合并重叠的检测框
-        indices = cv2.dnn.NMSBoxes(rects, np.array(scores, dtype=np.float32), threshold, nms_threshold)
-
-        final_matches = []
-        if len(indices) > 0:
-            for i in indices.flatten():
-                box = rects[i]
-                top_left = (box[0], box[1])
-                center_x = top_left[0] + w // 2
-                center_y = top_left[1] + h // 2
-                final_matches.append(MatchResult(
-                    found=True,
-                    top_left=top_left,
-                    center_point=(center_x, center_y),
-                    rect=(top_left[0], top_left[1], w, h),
-                    confidence=scores[i]
-                ))
-
-        return MultiMatchResult(count=len(final_matches), matches=final_matches)
+        """【同步接口】在源图像中查找所有匹配的模板实例。"""
+        return self._submit_to_loop_and_wait(
+            self.find_all_templates_async(source_image, template_image, mask_image, threshold, nms_threshold)
+        )
 
     def find_color(self,
                    source_image: np.ndarray,
                    lower_hsv: Tuple[int, int, int],
                    upper_hsv: Tuple[int, int, int],
                    min_area: int = 50) -> MatchResult:
-        """
-        在源图像中查找指定HSV颜色范围内的最大区域。
+        """【同步接口】在源图像中查找指定HSV颜色范围内的最大区域。"""
+        return self._submit_to_loop_and_wait(
+            self.find_color_async(source_image, lower_hsv, upper_hsv, min_area)
+        )
 
-        :param source_image: 要搜索的图像 (BGR或RGB格式的NumPy数组)。
-        :param lower_hsv: HSV颜色范围的下限 (H, S, V)。
-        :param upper_hsv: HSV颜色范围的  上限 (H, S, V)。
-        :param min_area: 匹配区域的最小像素面积，用于过滤噪点。
-        :return: 一个 MatchResult 对象。
-        """
+    # =========================================================================
+    # Section 2: 内部异步核心实现
+    # =========================================================================
+
+    async def find_template_async(self,
+                                  source_image: np.ndarray | str,
+                                  template_image: np.ndarray | str,
+                                  mask_image: Optional[np.ndarray | str] = None,
+                                  threshold: float = 0.8) -> MatchResult:
+        """【异步内核】将模板匹配计算调度到后台线程。"""
+        try:
+            # 图像准备是快速的CPU操作，可以在调用前完成
+            source_gray = self._prepare_image(source_image)
+            template_gray = self._prepare_image(template_image)
+            h, w = template_gray.shape
+            mask = self._prepare_image(mask_image) if mask_image is not None else None
+
+            if mask is not None and mask.shape != template_gray.shape:
+                raise ValueError(f"蒙版尺寸 {mask.shape} 必须与模板尺寸 {template_gray.shape} 完全一致。")
+
+            # 将阻塞的 cv2.matchTemplate 放入线程池
+            min_val, max_val, min_loc, max_loc = await asyncio.to_thread(
+                cv2.minMaxLoc,
+                cv2.matchTemplate(source_gray, template_gray, cv2.TM_CCOEFF_NORMED, mask)
+            )
+
+            best_match_confidence = max_val
+            if best_match_confidence >= threshold:
+                top_left = max_loc
+                return MatchResult(
+                    found=True,
+                    top_left=top_left,
+                    center_point=(top_left[0] + w // 2, top_left[1] + h // 2),
+                    rect=(top_left[0], top_left[1], w, h),
+                    confidence=best_match_confidence
+                )
+            else:
+                return MatchResult(
+                    found=False,
+                    confidence=best_match_confidence,
+                    debug_info={"best_match_rect_on_fail": (max_loc[0], max_loc[1], w, h)}
+                )
+        except (FileNotFoundError, TypeError, ValueError) as e:
+            logger.error(f"模板匹配预处理失败: {e}")
+            return MatchResult(found=False, debug_info={"error": str(e)})
+
+    async def find_all_templates_async(self,
+                                       source_image: np.ndarray,
+                                       template_image: np.ndarray | str,
+                                       mask_image: Optional[np.ndarray | str] = None,
+                                       threshold: float = 0.8,
+                                       nms_threshold: float = 0.5) -> MultiMatchResult:
+        """【异步内核】将查找所有模板的计算调度到后台线程。"""
+        try:
+            source_gray = self._prepare_image(source_image)
+            template_gray = self._prepare_image(template_image)
+            h, w = template_gray.shape
+            mask = self._prepare_image(mask_image) if mask_image is not None else None
+
+            if mask is not None and mask.shape != template_gray.shape:
+                raise ValueError(f"蒙版尺寸 {mask.shape} 必须与模板尺寸 {template_gray.shape} 完全一致。")
+
+            # 将核心计算部分放入后台线程
+            def _find_and_filter():
+                result = cv2.matchTemplate(source_gray, template_gray, cv2.TM_CCOEFF_NORMED, mask=mask)
+                locations = np.where(result >= threshold)
+
+                rects = [[pt[0], pt[1], pt[0] + w, pt[1] + h] for pt in zip(*locations[::-1])]
+                scores = [result[pt[1], pt[0]] for pt in zip(*locations[::-1])]
+
+                if not rects:
+                    return []
+
+                indices = cv2.dnn.NMSBoxes(rects, np.array(scores, dtype=np.float32), threshold, nms_threshold)
+
+                final_matches = []
+                if len(indices) > 0:
+                    for i in indices.flatten():
+                        box = rects[i]
+                        top_left = (box[0], box[1])
+                        final_matches.append(MatchResult(
+                            found=True,
+                            top_left=top_left,
+                            center_point=(top_left[0] + w // 2, top_left[1] + h // 2),
+                            rect=(top_left[0], top_left[1], w, h),
+                            confidence=scores[i]
+                        ))
+                return final_matches
+
+            matches = await asyncio.to_thread(_find_and_filter)
+            return MultiMatchResult(count=len(matches), matches=matches)
+
+        except (FileNotFoundError, TypeError, ValueError) as e:
+            logger.error(f"查找所有模板预处理失败: {e}")
+            return MultiMatchResult()
+
+    async def find_color_async(self,
+                               source_image: np.ndarray,
+                               lower_hsv: Tuple[int, int, int],
+                               upper_hsv: Tuple[int, int, int],
+                               min_area: int = 50) -> MatchResult:
+        """【异步内核】将颜色查找计算调度到后台线程。"""
         if not isinstance(source_image, np.ndarray) or len(source_image.shape) != 3:
             return MatchResult(found=False, debug_info={"error": "输入图像必须是BGR或RGB格式的NumPy数组。"})
 
-        # 1. 转换到HSV色彩空间
-        hsv_image = cv2.cvtColor(source_image, cv2.COLOR_BGR2HSV)
+        def _find_largest_contour():
+            hsv_image = cv2.cvtColor(source_image, cv2.COLOR_BGR2HSV)
+            mask = cv2.inRange(hsv_image, np.array(lower_hsv), np.array(upper_hsv))
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # 2. 创建颜色掩码
-        mask = cv2.inRange(hsv_image, np.array(lower_hsv), np.array(upper_hsv))
+            if not contours:
+                return None, 0
 
-        # 3. 查找轮廓
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            best_contour = max(contours, key=cv2.contourArea)
+            return best_contour, cv2.contourArea(best_contour)
 
-        if not contours:
-            return MatchResult(found=False)
+        best_contour, area = await asyncio.to_thread(_find_largest_contour)
 
-        # 4. 找到面积最大的轮廓
-        best_contour = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(best_contour)
-
-        # 5. 检查面积是否满足阈值
-        if area >= min_area:
+        if best_contour is not None and area >= min_area:
             x, y, w, h = cv2.boundingRect(best_contour)
-            center_x = x + w // 2
-            center_y = y + h // 2
             return MatchResult(
                 found=True,
                 top_left=(x, y),
-                center_point=(center_x, center_y),
+                center_point=(x + w // 2, y + h // 2),
                 rect=(x, y, w, h),
-                confidence=area  # 使用面积作为一种置信度
+                confidence=area
             )
 
         return MatchResult(found=False, confidence=area)
+
+    # =========================================================================
+    # Section 3: 内部辅助工具 (同步)
+    # =========================================================================
+
+    def _prepare_image(self, image: np.ndarray | str | None) -> np.ndarray | None:
+        """
+        准备用于模板匹配的图像，确保输出为标准的单通道2D灰度图。
+        现在可以接受 None 并直接返回 None。
+        """
+        if image is None:
+            return None
+
+        if isinstance(image, str):
+            img = cv2.imread(image, cv2.IMREAD_UNCHANGED)
+            if img is None: raise FileNotFoundError(f"无法从路径加载图像: {image}")
+        elif isinstance(image, np.ndarray):
+            img = image
+        else:
+            raise TypeError(f"不支持的图像类型，需要str(路径)或np.ndarray。实际类型为{type(image)}")
+
+        if len(img.shape) == 2: return img
+        if len(img.shape) == 3:
+            channels = img.shape[2]
+            if channels == 4: return cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+            if channels == 3: return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            if channels == 1: return img.squeeze(axis=2)
+            raise TypeError(f"不支持的3D图像通道数: {channels}")
+
+        raise TypeError(f"不支持的图像形状: {img.shape}")
+
+    # =========================================================================
+    # Section 4: 同步/异步桥接器
+    # =========================================================================
+
+    def _get_running_loop(self) -> asyncio.AbstractEventLoop:
+        """线程安全地获取正在运行的事件循环。"""
+        with self._loop_lock:
+            if self._loop is None or self._loop.is_closed():
+                from packages.aura_core.api import service_registry
+                scheduler = service_registry.get_service_instance('scheduler')
+                if scheduler and scheduler._loop and scheduler._loop.is_running():
+                    self._loop = scheduler._loop
+                else:
+                    raise RuntimeError("VisionService无法找到正在运行的asyncio事件循环。")
+            return self._loop
+
+    def _submit_to_loop_and_wait(self, coro: asyncio.Future) -> Any:
+        """将一个协程从同步代码提交到事件循环，并阻塞等待其结果。"""
+        loop = self._get_running_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+

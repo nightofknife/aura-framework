@@ -184,3 +184,25 @@ class ActionInjector:
             # 对于非字符串、字典、列表类型，直接返回值
             return value
 
+    async def render_return_value(self, template_value: Any) -> Any:
+        """
+        【新】专门用于渲染任务 'returns' 字段的方法。
+        它会执行渲染，并对结果进行智能的类型转换。
+        """
+        # 1. 使用 _render_value 渲染模板
+        #    我们直接使用 self.context._data 作为数据源
+        rendered_value = await self._render_value(template_value, self.context._data)
+
+        # 2. 对渲染后的字符串结果进行智能类型转换
+        if isinstance(rendered_value, str):
+            try:
+                # 使用 ast.literal_eval 安全地将字符串转换为 Python 对象
+                # 例如: "True" -> True, "123" -> 123, '["a"]' -> ['a']
+                import ast
+                return ast.literal_eval(rendered_value)
+            except (ValueError, SyntaxError, TypeError):
+                # 如果解析失败（说明它就是一个普通的字符串），则保持原样
+                return rendered_value
+
+        # 3. 如果渲染结果不是字符串（例如，模板返回了一个数字），直接返回
+        return rendered_value

@@ -1,4 +1,4 @@
-# packages/aura_core/plan_manager.py (修改版)
+# packages/aura_core/plan_manager.py (修正版)
 
 import asyncio
 from pathlib import Path
@@ -9,7 +9,6 @@ import yaml
 from .logger import logger
 from .orchestrator import Orchestrator
 from .plugin_manager import PluginManager
-# 【架构修正】导入 StatePlanner 相关的类
 from .state_planner import StateMap, StatePlanner
 
 
@@ -26,7 +25,7 @@ class PlanManager:
 
     def initialize(self):
         """
-        【修改】执行完整的初始化流程：加载插件，然后为每个方案准备 Orchestrator 及其专属的状态规划器。
+        【修正版】执行完整的初始化流程，确保 Orchestrator 和 StatePlanner 的依赖关系正确建立。
         """
         logger.info("======= PlanManager: 开始初始化 =======")
         self.plugin_manager.load_all_plugins()
@@ -38,10 +37,19 @@ class PlanManager:
                 plan_name = plugin_def.path.name
                 plan_path = plugin_def.path
 
-                # --- 【架构修正】为每个 Plan 加载其专属的状态规划器 ---
-                state_planner_instance: Optional[StatePlanner] = None
-                state_map_path = plan_path / 'states_map.yaml'
+                # --- 【修复】步骤 1: 先创建 Orchestrator 实例 ---
+                # 此时 state_planner 暂时为 None
+                logger.info(f"  -> 创建 Orchestrator for plan: '{plan_name}'")
+                orchestrator = Orchestrator(
+                    base_dir=str(self.base_path),
+                    plan_name=plan_name,
+                    pause_event=self.pause_event,
+                    state_planner=None
+                )
+                self.plans[plan_name] = orchestrator
 
+                # --- 【修复】步骤 2: 检查并创建 StatePlanner，将 Orchestrator 注入 ---
+                state_map_path = plan_path / 'states_map.yaml'
                 if state_map_path.is_file():
                     try:
                         logger.info(f"  -> 发现方案 '{plan_name}' 的状态地图，正在初始化规划器...")
@@ -49,22 +57,16 @@ class PlanManager:
                             data = yaml.safe_load(f)
                         if data and isinstance(data.get('states'), dict) and isinstance(data.get('transitions'), list):
                             state_map = StateMap(data)
-                            state_planner_instance = StatePlanner(state_map)
+                            # 【核心修复】在创建 StatePlanner 时，传入刚刚创建的 orchestrator
+                            state_planner_instance = StatePlanner(state_map, orchestrator)
+
+                            # 【修复】步骤 3: 将创建好的 planner 回填到 orchestrator 实例中
+                            orchestrator.state_planner = state_planner_instance
                         else:
                             logger.warning(f"  -> 状态地图 '{state_map_path}' 为空或格式不正确，已跳过。")
                     except Exception as e:
                         logger.error(f"  -> 加载方案 '{plan_name}' 的状态地图失败: {e}", exc_info=True)
-                # --- 逻辑结束 ---
 
-                if plan_name not in self.plans:
-                    logger.info(f"  -> 创建 Orchestrator for plan: '{plan_name}'")
-                    self.plans[plan_name] = Orchestrator(
-                        base_dir=str(self.base_path),
-                        plan_name=plan_name,
-                        pause_event=self.pause_event,
-                        # 【架构修正】将创建好的规划器实例（或None）传递给 Orchestrator
-                        state_planner=state_planner_instance
-                    )
         logger.info(f"======= PlanManager: 初始化完成，{len(self.plans)} 个方案已准备就绪 =======")
 
     def get_plan(self, plan_name: str) -> Optional[Orchestrator]:
@@ -72,3 +74,4 @@ class PlanManager:
 
     def list_plans(self) -> List[str]:
         return list(self.plans.keys())
+

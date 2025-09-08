@@ -117,89 +117,87 @@ class ExecutionManager:
             logger.info(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")
 
     async def _handle_state_planning(self, tasklet: Tasklet) -> bool:
-        """【修改】处理状态规划，现在使用 Plan 专属的规划器。"""
+        """
+        【全新重构】处理状态规划，实现动态重规划（Replanning）逻辑。
+        """
         task_def = self.scheduler.all_tasks_definitions.get(tasklet.task_name)
         if not task_def: return True
 
-        target_state = task_def.get('required_initial_state')
-        if not target_state: return True
+        # 检查任务元数据中是否有 'requires_initial_state' 字段
+        target_state = task_def.get('meta', {}).get('requires_initial_state')
+        if not target_state:
+            return True  # 无需规划
 
-        # --- 【架构修正】从任务所属的 Plan 获取其专属规划器 ---
         plan_name = tasklet.task_name.split('/')[0]
         orchestrator = self.scheduler.plans.get(plan_name)
-
-        if not orchestrator:
-            logger.error(f"规划失败: 找不到任务 '{tasklet.task_name}' 所属的方案 '{plan_name}'。")
+        if not orchestrator or not orchestrator.state_planner:
+            logger.error(f"规划失败: 任务 '{tasklet.task_name}' 需要状态规划，但方案 '{plan_name}' 没有配置状态规划器。")
             return False
 
-        planner = orchestrator.state_planner
-        state_map = planner.state_map if planner else None
-        # --- 逻辑结束 ---
+        state_planner = orchestrator.state_planner
 
-        if not planner or not state_map:
-            logger.warning(f"任务 '{tasklet.task_name}' 需要状态规划，但其所属方案 '{plan_name}' 没有可用的状态规划器。")
-            return False
+        # --- 开始动态重规划循环 ---
+        replan_attempts = 0
+        max_replans = 10  # 保险丝
 
-        logger.info(f"任务 '{tasklet.task_name}' 需要初始状态: '{target_state}'。使用方案 '{plan_name}' 的规划器。")
+        while replan_attempts < max_replans:
+            replan_attempts += 1
 
-        target_state_def = state_map.states.get(target_state)
-        if not target_state_def:
-            logger.error(f"规划失败: 目标状态 '{target_state}' 未在方案 '{plan_name}' 的 states_map.yaml 中定义。")
-            return False
+            # 1. 感知 (Perceive)
+            logger.info(f"【规划循环 {replan_attempts}/{max_replans}】正在确定当前状态 (目标: '{target_state}')...")
+            current_state = await state_planner.determine_current_state(target_state)
 
-        is_satisfied = await self._run_internal_task(target_state_def['check_task'])
-        if is_satisfied:
-            logger.info(f"初始状态 '{target_state}' 已满足，跳过状态转移。")
-            return True
-
-        current_state = await self._find_current_state(state_map)
-        if not current_state:
-            logger.error("规划失败: 无法确定当前系统状态，所有状态检查任务均失败。")
-            return False
-
-        logger.info(f"当前状态被确定为: '{current_state}'。")
-
-        transition_tasks = planner.find_path(current_state, target_state)
-        if transition_tasks is None:
-            return False
-
-        logger.info(f"开始执行状态转移计划: {transition_tasks}")
-        for i, transition_task_id in enumerate(transition_tasks):
-            logger.info(f"转移步骤 {i + 1}/{len(transition_tasks)}: 执行任务 '{transition_task_id}'...")
-            success = await self._run_internal_task(transition_task_id)
-            if not success:
-                logger.error(f"状态转移失败于步骤 {i + 1}，任务 '{transition_task_id}' 执行失败。")
+            if not current_state:
+                logger.error("无法确定当前系统状态，规划中止。")
                 return False
 
-        logger.info("状态转移计划执行完毕。正在最后一次验证目标状态...")
-        final_check_success = await self._run_internal_task(target_state_def['check_task'])
-        if not final_check_success:
-            logger.error(f"规划失败: 完成所有转移任务后，系统仍未达到目标状态 '{target_state}'。")
-            return False
+            logger.info(f"当前状态已确认为: '{current_state}'")
 
-        logger.info(f"状态规划成功，系统已达到目标状态 '{target_state}'。")
-        return True
+            if current_state == target_state:
+                logger.info("状态规划成功，系统已达到目标状态。")
+                return True
 
-    async def _find_current_state(self, state_map: 'StateMap') -> Optional[str]:
-        check_coroutines = []
-        state_names = []
-        for name, definition in state_map.states.items():
-            check_coroutines.append(self._run_internal_task(definition['check_task']))
-            state_names.append(name)
+            # 2. 规划 (Plan)
+            logger.info(f"正在从 '{current_state}' 规划到 '{target_state}' 的路径...")
+            transition_tasks = state_planner.find_path(current_state, target_state)
 
-        results = await asyncio.gather(*check_coroutines, return_exceptions=True)
+            if transition_tasks is None:
+                logger.error(f"找不到从 '{current_state}' 到 '{target_state}' 的路径，规划中止。")
+                return False
 
-        for i, result in enumerate(results):
-            if result is True:
-                return state_names[i]
+            if not transition_tasks:
+                logger.warning(f"'{current_state}' 和 '{target_state}' 之间无需转移，但状态不匹配。将重试状态检查。")
+                await asyncio.sleep(2)
+                continue
 
-        return None
+            # 3. 行动 (Act) - 只执行第一步
+            next_task_name = transition_tasks[0]
+            full_task_id = f"{plan_name}/{next_task_name}"
+            expected_state = state_planner.get_expected_state_after_transition(current_state, next_task_name)
 
-    async def _run_internal_task(self, task_id: str) -> bool:
-        """【修改】一个内部辅助方法，现在能正确处理任务的显式返回值。"""
+            logger.info(f"执行转移任务: '{full_task_id}' (期望到达: '{expected_state}')...")
+
+            # 使用内部任务执行器来运行转移任务
+            result = await self._run_internal_task(full_task_id)
+
+            if result.get('status') != 'success':
+                logger.warning(f"转移任务 '{full_task_id}' 执行失败。将重新规划。")
+                # 无需做任何事，循环会自动从顶部重新开始“感知”
+            else:
+                logger.info(f"转移任务 '{full_task_id}' 执行成功。将重新验证状态。")
+
+        # 如果循环结束仍未到达目标
+        logger.critical(f"重规划次数达到上限 ({max_replans})，但仍未到达目标状态 '{target_state}'。")
+        return False
+
+
+    async def _run_internal_task(self, task_id: str) -> Dict[str, Any]:
+        """
+        【升级版】一个内部辅助方法，执行任务并返回统一的字典结果。
+        """
         if task_id not in self.scheduler.all_tasks_definitions:
             logger.error(f"内部任务执行失败: 任务 '{task_id}' 未定义。")
-            return False
+            return {'status': 'error', 'reason': 'Task not defined'}
 
         tasklet = Tasklet(task_name=task_id, is_ad_hoc=True, execution_mode='sync')
 
@@ -207,31 +205,13 @@ class ExecutionManager:
             # 直接调用 _run_execution_chain 并捕获其返回值
             result = await self._run_execution_chain(tasklet)
 
-            # --- 【新】更健壮的返回值解析逻辑 ---
-            if isinstance(result, bool):
-                return result
-
-            if isinstance(result, str):
-                # 处理Jinja2可能返回字符串 "True" 或 "False" 的情况
-                if result.lower() == 'true':
-                    return True
-                if result.lower() == 'false':
-                    return False
-
-            # 如果返回的是字典，检查 'status' 字段。
-            # 这是为了兼容没有 'returns' 字段的老任务，它们成功时会返回 {'status': 'success'}
-            if isinstance(result, dict):
-                return result.get('status') == 'success'
-
-            # 对于其他类型 (int, NoneType等)，bool() 的行为是正确的
-            # 0 -> False, 1 -> True, None -> False
-            return bool(result)
-            # --- 逻辑结束 ---
+            # _run_execution_chain -> orchestrator.execute_task 已经返回了统一的字典格式
+            # 我们只需要确保如果发生异常，也返回一个标准的错误字典
+            return result if isinstance(result, dict) else {'status': 'error', 'reason': 'Invalid return type'}
 
         except Exception as e:
-            # 任何未捕获的异常都意味着任务失败
             logger.debug(f"内部任务 '{task_id}' 执行时发生异常，视为失败: {e}")
-            return False
+            return {'status': 'error', 'reason': str(e)}
 
     async def _run_execution_chain(self, tasklet: Tasklet) -> Any:
         payload = tasklet.payload or {}

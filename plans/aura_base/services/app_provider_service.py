@@ -1,7 +1,9 @@
-# plans/aura_base/services/app_provider_service.py (最终修正版)
+# plans/aura_base/services/app_provider_service.py (异步升级版)
 
-from contextlib import contextmanager
-from typing import Optional, Tuple
+import asyncio
+import threading
+from contextlib import contextmanager, asynccontextmanager
+from typing import Optional, Tuple, Any
 
 from packages.aura_core.api import register_service
 from packages.aura_core.logger import logger
@@ -13,23 +15,15 @@ from .screen_service import ScreenService, CaptureResult
 @register_service(alias="app", public=True)
 class AppProviderService:
     """
-    一个高级的应用交互器 (Interactor)。
-    它封装了针对单个目标窗口的 ScreenService 和 ControllerService 操作，
-    并自动处理窗口相对坐标到屏幕全局坐标的转换。
+    【异步升级版】一个高级的应用交互器 (Interactor)。
+    - 对外保持100%兼容的同步接口。
+    - 内部调用底层服务的异步核心，实现完全的非阻塞操作。
     """
 
-    # 【【【核心修正 1/2：简化构造函数】】】
     def __init__(self, config: ConfigService, screen: ScreenService, controller: ControllerService):
-        """
-        初始化一个与特定窗口绑定的交互器。
-        它不再负责配置ScreenService，因为ScreenService在被注入时已经通过依赖注入自行配置完毕。
-        """
         self.config = config
         self.screen = screen
         self.controller = controller
-
-        # 【关键】AppProviderService 也从统一的配置路径获取窗口标题，用于日志和错误信息。
-        # 它不再需要手动设置 ScreenService 的目标。
         self.window_title = self.config.get('app.target_window_title', None)
 
         if self.window_title:
@@ -37,108 +31,159 @@ class AppProviderService:
         else:
             logger.info("AppProviderService 服务已在无目标（全屏）模式下准备就绪。")
 
-    def _to_global_coords(self, relative_x: int, relative_y: int) -> tuple[int, int] | None:
-        client_rect = self.screen.get_client_rect()
+        # --- 桥接器组件 ---
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_lock = threading.Lock()
+
+    # =========================================================================
+    # Section 1: 公共同步接口
+    # =========================================================================
+
+    def capture(self, rect: Optional[Tuple[int, int, int, int]] = None) -> CaptureResult:
+        # ScreenService 已经有桥接器，直接调用即可
+        return self.screen.capture(rect)
+
+    def get_window_size(self) -> Optional[Tuple[int, int]]:
+        # 快速同步调用
+        rect = self.screen.get_client_rect()
+        return (rect[2], rect[3]) if rect else None
+
+    def move_to(self, x: int, y: int, duration: float = 0.25):
+        return self._submit_to_loop_and_wait(self.move_to_async(x, y, duration))
+
+    def click(self, x: int, y: int, button: str = 'left', clicks: int = 1, interval: float = 0.1):
+        return self._submit_to_loop_and_wait(self.click_async(x, y, button, clicks, interval))
+
+    def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, button: str = 'left', duration: float = 0.5):
+        return self._submit_to_loop_and_wait(self.drag_async(start_x, start_y, end_x, end_y, button, duration))
+
+    def scroll(self, amount: int, direction: str = 'down'):
+        # ControllerService 已经有桥接器
+        return self.controller.scroll(amount, direction)
+
+    def press_key(self, key: str, presses: int = 1, interval: float = 0.1):
+        # ControllerService 已经有桥接器
+        return self.controller.press_key(key, presses, interval)
+
+    def move_relative(self, dx: int, dy: int, duration: float = 0.2):
+        # ControllerService 已经有桥接器
+        return self.controller.move_relative(dx, dy, duration)
+
+    def key_down(self, key: str):
+        return self._submit_to_loop_and_wait(self.key_down_async(key))
+
+    def key_up(self, key: str):
+        return self._submit_to_loop_and_wait(self.key_up_async(key))
+
+    @contextmanager
+    def hold_key(self, key: str):
+        # 同步上下文管理器需要特殊处理
+        try:
+            self.key_down(key)
+            yield
+        finally:
+            self.key_up(key)
+
+    def release_all_keys(self):
+        return self.controller.release_all()
+
+    def get_pixel_color(self, x: int, y: int) -> tuple[int, int, int]:
+        return self._submit_to_loop_and_wait(self.get_pixel_color_async(x, y))
+
+    def type_text(self, text: str, interval: float = 0.01):
+        return self._submit_to_loop_and_wait(self.type_text_async(text, interval))
+
+    # =========================================================================
+    # Section 2: 内部异步核心实现
+    # =========================================================================
+
+    async def _to_global_coords_async(self, relative_x: int, relative_y: int) -> tuple[int, int] | None:
+        client_rect = await asyncio.to_thread(self.screen.get_client_rect)
         if client_rect:
             client_x, client_y, _, _ = client_rect
             return client_x + relative_x, client_y + relative_y
         logger.warning("无法转换到全局坐标，因为找不到窗口客户区。")
         return None
 
-    # --- 封装后的高级API ---
-    # 【【【核心修正 2/2：所有方法中的错误信息都使用 self.window_title】】】
-
-    def capture(self, rect: Optional[Tuple[int, int, int, int]] = None) -> CaptureResult:
-        """
-        【升级版】窗口截图方法
-        现在支持三种模式：
-        1. 无窗口+无rect：截取全屏
-        2. 有窗口+无rect：截取整个窗口
-        3. 有窗口+有rect：直接截取窗口内的指定区域
-        """
-        # 直接调用screen服务的capture方法
-        result = self.screen.capture(rect)
-
-        # 如果窗口存在但截图失败，尝试重新查找窗口
-        if not result.success and self.window_title:
-            logger.info(f"窗口 '{self.window_title}' 可能已关闭，尝试重新查找...")
-            self.screen._update_hwnd()
-            result = self.screen.capture(rect)
-
-        return result
-
-    def get_window_size(self) -> Optional[Tuple[int, int]]:
-        """新增方法：获取窗口当前尺寸"""
-        rect = self.screen.get_client_rect()
-        if rect:
-            _, _, w, h = rect
-            return w, h
-        return None
-
-
-    def move_to(self, x: int, y: int, duration: float = 0.25):
-        global_coords = self._to_global_coords(x, y)
+    async def move_to_async(self, x: int, y: int, duration: float = 0.25):
+        global_coords = await self._to_global_coords_async(x, y)
         if global_coords:
-            self.controller.move_to(global_coords[0], global_coords[1], duration)
+            await self.controller.move_to_async(global_coords[0], global_coords[1], duration)
         else:
             raise RuntimeError(f"无法定位窗口 '{self.window_title or '未指定'}'，移动失败。")
 
-    def click(self, x: int, y: int, button: str = 'left', clicks: int = 1, interval: float = 0.1):
-        global_coords = self._to_global_coords(x, y)
+    async def click_async(self, x: int, y: int, button: str = 'left', clicks: int = 1, interval: float = 0.1):
+        global_coords = await self._to_global_coords_async(x, y)
         if global_coords:
-            self.controller.click(global_coords[0], global_coords[1], button, clicks, interval)
+            await self.controller.click_async(global_coords[0], global_coords[1], button, clicks, interval)
         else:
             raise RuntimeError(f"无法定位窗口 '{self.window_title or '未指定'}'，点击失败。")
 
-    def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, button: str = 'left', duration: float = 0.5):
-        global_start = self._to_global_coords(start_x, start_y)
-        global_end = self._to_global_coords(end_x, end_y)
+    async def drag_async(self, start_x: int, start_y: int, end_x: int, end_y: int, button: str = 'left',
+                         duration: float = 0.5):
+        global_start, global_end = await asyncio.gather(
+            self._to_global_coords_async(start_x, start_y),
+            self._to_global_coords_async(end_x, end_y)
+        )
         if global_start and global_end:
-            self.controller.move_to(global_start[0], global_start[1], duration=0.1)
-            self.controller.drag_to(global_end[0], global_end[1], button, duration)
+            await self.controller.move_to_async(global_start[0], global_start[1], duration=0.1)
+            await self.controller.drag_to_async(global_end[0], global_end[1], button, duration)
         else:
             raise RuntimeError(f"无法定位窗口 '{self.window_title or '未指定'}'，拖拽失败。")
 
-    def scroll(self, amount: int, direction: str = 'down'):
-        self.controller.scroll(amount, direction)
-
-    def press_key(self, key: str, presses: int = 1, interval: float = 0.1):
-        self.controller.press_key(key, presses, interval)
-
-    def move_relative(self, dx: int, dy: int, duration: float = 0.2):
-        self.controller.move_relative(dx, dy, duration)
-
-    def key_down(self, key: str):
-        if not self.screen.focus():
+    async def key_down_async(self, key: str):
+        focused = await self.screen.focus_async()
+        if not focused:
             logger.warning(f"无法自动激活窗口 '{self.window_title or '未指定'}'。将尝试直接按下按键。")
-        self.controller.key_down(key)
+        await self.controller.key_down_async(key)
 
-    def key_up(self, key: str):
-        if not self.screen.focus():
+    async def key_up_async(self, key: str):
+        focused = await self.screen.focus_async()
+        if not focused:
             logger.warning(f"无法自动激活窗口 '{self.window_title or '未指定'}'。将尝试直接松开按键。")
-        self.controller.key_up(key)
+        await self.controller.key_up_async(key)
 
-    @contextmanager
-    def hold_key(self, key: str):
+    @asynccontextmanager
+    async def hold_key_async(self, key: str):
         try:
-            self.controller.key_down(key)
+            await self.key_down_async(key)
             yield
         finally:
-            self.controller.key_up(key)
+            await self.key_up_async(key)
 
-    def release_all_keys(self):
-        self.controller.release_all()
-
-    def get_pixel_color(self, x: int, y: int) -> tuple[int, int, int]:
-        global_coords = self._to_global_coords(x, y)
+    async def get_pixel_color_async(self, x: int, y: int) -> tuple[int, int, int]:
+        global_coords = await self._to_global_coords_async(x, y)
         if global_coords:
-            return self.screen.get_pixel_color_at(global_coords[0], global_coords[1])
+            return await asyncio.to_thread(self.screen.get_pixel_color_at, global_coords[0], global_coords[1])
         else:
             raise RuntimeError(f"无法定位窗口 '{self.window_title or '未指定'}'，获取像素颜色失败。")
 
-    def type_text(self, text: str, interval: float = 0.01):
-        logger.info(f"准备向窗口 '{self.window_title or '未知'}' 输入文本...")
-        if not self.screen.focus():
+    async def type_text_async(self, text: str, interval: float = 0.01):
+        logger.info(f"准备向窗口 '{self.window_title or '未知'}' 异步输入文本...")
+        focused = await self.screen.focus_async()
+        if not focused:
             logger.warning(f"无法自动激活窗口 '{self.window_title or '未指定'}'。将尝试直接输入。")
-        self.controller.type_text(text, interval)
-        logger.info(f"文本输入完成: '{text[:30]}...'")
+        await self.controller.type_text_async(text, interval)
+        logger.info(f"异步文本输入完成: '{text[:30]}...'")
+
+    # =========================================================================
+    # Section 3: 同步/异步桥接器
+    # =========================================================================
+
+    def _get_running_loop(self) -> asyncio.AbstractEventLoop:
+        """线程安全地获取正在运行的事件循环。"""
+        with self._loop_lock:
+            if self._loop is None or self._loop.is_closed():
+                from packages.aura_core.api import service_registry
+                scheduler = service_registry.get_service_instance('scheduler')
+                if scheduler and scheduler._loop and scheduler._loop.is_running():
+                    self._loop = scheduler._loop
+                else:
+                    raise RuntimeError("AppProviderService无法找到正在运行的asyncio事件循环。")
+            return self._loop
+
+    def _submit_to_loop_and_wait(self, coro: asyncio.Future) -> Any:
+        """将一个协程从同步代码提交到事件循环，并阻塞等待其结果。"""
+        loop = self._get_running_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()

@@ -1,7 +1,9 @@
-# src/hardware/controller_service.py
+# src/hardware/controller_service.py (异步升级版)
 
-import time
-from contextlib import contextmanager
+import asyncio
+import threading
+from contextlib import contextmanager, asynccontextmanager
+from typing import Any
 
 import win32api
 import win32con
@@ -29,78 +31,42 @@ KEY_MAP = {
 @register_service(alias="controller", public=True)
 class ControllerService:
     """
-    一个统一的、高级的键鼠控制器。
-    【精简版】现在只使用标准的 Windows API，移除了罗技驱动的依赖。
+    【异步升级版】一个统一的、高级的键鼠控制器。
+    - 对外保持100%兼容的同步接口。
+    - 内部使用异步核心，用 asyncio.sleep 替代 time.sleep，实现非阻塞延迟。
     """
 
     def __init__(self):
         self._held_keys = set()
         self._held_mouse_buttons = set()
+        # --- 桥接器组件 ---
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_lock = threading.Lock()
 
     def __del__(self):
-        # 确保在对象销毁时释放所有按键
         self.release_all()
 
+    # =========================================================================
+    # Section 1: 公共同步接口 (保持100%向后兼容)
+    # =========================================================================
+
     def release_all(self):
-        """在脚本结束或异常时，释放所有被按下的按键和鼠标按钮，防止卡键。"""
-        for key in list(self._held_keys):
-            self.key_up(key)
-        for button in list(self._held_mouse_buttons):
-            self.mouse_up(button)
-        # 只有在确实有按键被释放时才打印日志
-        if self._held_keys or self._held_mouse_buttons:
-            logger.info("所有按下的键鼠已被释放。")
+        return self._submit_to_loop_and_wait(self.release_all_async())
 
     def release_key(self):
-        for key in list(self._held_keys):
-            self.key_up(key)
-        if self._held_keys:
-            logger.info("所有按下的按键已被释放。")
-    def release_mouse(self):
-        for button in list(self._held_mouse_buttons):
-            self.mouse_up(button)
-        if self._held_mouse_buttons:
-            logger.info("所有按下的鼠标已被释放。")
+        return self._submit_to_loop_and_wait(self.release_key_async())
 
-    # --- 鼠标方法 ---
+    def release_mouse(self):
+        return self._submit_to_loop_and_wait(self.release_mouse_async())
 
     def move_to(self, x: int, y: int, duration: float = 0.25):
-        """
-        平滑地将鼠标移动到屏幕上的绝对坐标。
-        """
-        start_x, start_y = win32api.GetCursorPos()
-        steps = max(int(duration / 0.01), 1)  # 每10毫秒移动一次
-
-        for i in range(1, steps + 1):
-            progress = i / steps
-            inter_x = int(start_x + (x - start_x) * progress)
-            inter_y = int(start_y + (y - start_y) * progress)
-            win32api.SetCursorPos((inter_x, inter_y))
-            time.sleep(duration / steps)
+        return self._submit_to_loop_and_wait(self.move_to_async(x, y, duration))
 
     def move_relative(self, dx: int, dy: int, duration: float = 0.2):
-        """
-        【新增】平滑地从当前位置相对移动鼠标。
-        """
-        # 1. 获取鼠标当前位置作为起点
-        start_x, start_y = win32api.GetCursorPos()
-
-        # 2. 计算目标位置
-        target_x = start_x + dx
-        target_y = start_y + dy
-
-        # 3. 复用 move_to 的平滑移动逻辑
-        steps = max(int(duration / 0.01), 1)  # 每10毫秒移动一次
-        for i in range(1, steps + 1):
-            progress = i / steps
-            # 从起点到目标点进行插值
-            inter_x = int(start_x + (target_x - start_x) * progress)
-            inter_y = int(start_y + (target_y - start_y) * progress)
-            win32api.SetCursorPos((inter_x, inter_y))
-            time.sleep(duration / steps)
+        return self._submit_to_loop_and_wait(self.move_relative_async(dx, dy, duration))
 
     def mouse_down(self, button: str = 'left'):
-        """按下指定的鼠标按钮。"""
+        # 状态变更和API调用是瞬间的，可以不走异步路径以减少开销
         button = button.lower()
         if button == 'left':
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
@@ -113,7 +79,7 @@ class ControllerService:
         self._held_mouse_buttons.add(button)
 
     def mouse_up(self, button: str = 'left'):
-        """释放指定的鼠标按钮。"""
+        # 状态变更和API调用是瞬间的
         button = button.lower()
         if button == 'left':
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
@@ -125,86 +91,182 @@ class ControllerService:
             raise ValueError(f"不支持的鼠标按钮: {button}")
         self._held_mouse_buttons.discard(button)
 
-    def click(self, x: int = None, y: int = None, button: str = 'left', clicks: int = 1, interval: float = 0.1):
-        if x is not None and y is not None:
-            self.move_to(x, y)
-        for _ in range(clicks):
-            self.mouse_down(button)
-            time.sleep(0.02 + (interval - 0.02) * 0.5)
-            self.mouse_up(button)
-            if clicks > 1:
-                time.sleep(interval * 0.5)
+    def click(self, x: int | None = None, y: int | None = None, button: str = 'left', clicks: int = 1,
+              interval: float = 0.1):
+        return self._submit_to_loop_and_wait(self.click_async(x, y, button, clicks, interval))
 
     def drag_to(self, x: int, y: int, button: str = 'left', duration: float = 0.5):
-        self.mouse_down(button)
-        self.move_to(x, y, duration)
-        self.mouse_up(button)
+        return self._submit_to_loop_and_wait(self.drag_to_async(x, y, button, duration))
 
     def scroll(self, amount: int, direction: str = 'down'):
-        scroll_amount = -120 if direction == 'down' else 120
-        for _ in range(abs(amount)):
-            win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
-            time.sleep(0.05)
-
-    # --- 键盘方法 ---
-
-    def _get_vk(self, key: str) -> int:
-        """内部方法，将字符串键转换为虚拟键码。"""
-        key = key.lower()
-        if key not in KEY_MAP:
-            if len(key) == 1:
-                return win32api.VkKeyScan(key) & 0xff
-            raise ValueError(f"未知的按键: '{key}'")
-        return KEY_MAP[key]
+        return self._submit_to_loop_and_wait(self.scroll_async(amount, direction))
 
     def key_down(self, key: str):
-        """按下指定的键盘按键。"""
+        # 状态变更和API调用是瞬间的
         vk = self._get_vk(key)
         scan_code = win32api.MapVirtualKey(vk, 0)
         win32api.keybd_event(vk, scan_code, 0, 0)
         self._held_keys.add(key.lower())
 
     def key_up(self, key: str):
-        """释放指定的键盘按键。"""
+        # 状态变更和API调用是瞬间的
         vk = self._get_vk(key)
         scan_code = win32api.MapVirtualKey(vk, 0)
         win32api.keybd_event(vk, scan_code, win32con.KEYEVENTF_KEYUP, 0)
         self._held_keys.discard(key.lower())
 
     def press_key(self, key: str, presses: int = 1, interval: float = 0.1):
-        """模拟一次完整的按键（按下并释放）。"""
-        for _ in range(presses):
-            self.key_down(key)
-            time.sleep(0.02 + (interval - 0.02) * 0.5)
-            self.key_up(key)
-            if presses > 1:
-                time.sleep(interval * 0.5)
+        return self._submit_to_loop_and_wait(self.press_key_async(key, presses, interval))
 
     def type_text(self, text: str, interval: float = 0.01):
-        """模拟键盘输入一段字符串，并能自动处理Shift键。"""
-        for char in text:
-            vk_scan_result = win32api.VkKeyScan(char)
-            is_shift_needed = (vk_scan_result >> 8) & 1
-            if is_shift_needed:
-                with self.hold_key('shift'):
-                    self.press_key(char)
-            else:
-                self.press_key(char)
-            time.sleep(interval)
+        return self._submit_to_loop_and_wait(self.type_text_async(text, interval))
 
     @contextmanager
     def hold_key(self, key: str):
-        """一个上下文管理器，用于在代码块执行期间按住一个键。"""
         try:
             self.key_down(key)
             yield
         finally:
             self.key_up(key)
 
+    # =========================================================================
+    # Section 2: 内部异步核心实现
+    # =========================================================================
 
-if __name__ == '__main__':
-    controller = ControllerService()
-    time.sleep(10)
-    while True:
-        controller.press_key(key="f")
-        time.sleep(10)
+    async def release_all_async(self):
+        if self._held_keys or self._held_mouse_buttons:
+            logger.info("正在异步释放所有按下的键鼠...")
+        tasks = [self.key_up_async(key) for key in list(self._held_keys)]
+        tasks.extend([self.mouse_up_async(button) for button in list(self._held_mouse_buttons)])
+        await asyncio.gather(*tasks)
+
+    async def release_key_async(self):
+        if self._held_keys:
+            logger.info("正在异步释放所有按下的按键...")
+        tasks = [self.key_up_async(key) for key in list(self._held_keys)]
+        await asyncio.gather(*tasks)
+
+    async def release_mouse_async(self):
+        if self._held_mouse_buttons:
+            logger.info("正在异步释放所有按下的鼠标...")
+        tasks = [self.mouse_up_async(button) for button in list(self._held_mouse_buttons)]
+        await asyncio.gather(*tasks)
+
+    async def move_to_async(self, x: int, y: int, duration: float = 0.25):
+        start_x, start_y = await asyncio.to_thread(win32api.GetCursorPos)
+        steps = max(int(duration / 0.01), 1)
+        if steps <= 0: return
+
+        for i in range(1, steps + 1):
+            progress = i / steps
+            inter_x = int(start_x + (x - start_x) * progress)
+            inter_y = int(start_y + (y - start_y) * progress)
+            await asyncio.to_thread(win32api.SetCursorPos, (inter_x, inter_y))
+            await asyncio.sleep(duration / steps)
+
+    async def move_relative_async(self, dx: int, dy: int, duration: float = 0.2):
+        start_x, start_y = await asyncio.to_thread(win32api.GetCursorPos)
+        target_x, target_y = start_x + dx, start_y + dy
+        await self.move_to_async(target_x, target_y, duration)
+
+    async def mouse_down_async(self, button: str = 'left'):
+        await asyncio.to_thread(self.mouse_down, button)
+
+    async def mouse_up_async(self, button: str = 'left'):
+        await asyncio.to_thread(self.mouse_up, button)
+
+    async def click_async(self, x: int | None = None, y: int | None = None, button: str = 'left', clicks: int = 1,
+                          interval: float = 0.1):
+        if x is not None and y is not None:
+            await self.move_to_async(x, y)
+        for i in range(clicks):
+            await self.mouse_down_async(button)
+            await asyncio.sleep(0.02 + (interval - 0.02) * 0.5)
+            await self.mouse_up_async(button)
+            if i < clicks - 1:
+                await asyncio.sleep(interval * 0.5)
+
+    async def drag_to_async(self, x: int, y: int, button: str = 'left', duration: float = 0.5):
+        await self.mouse_down_async(button)
+        await self.move_to_async(x, y, duration)
+        await self.mouse_up_async(button)
+
+    async def scroll_async(self, amount: int, direction: str = 'down'):
+        scroll_amount = -120 if direction == 'down' else 120
+        for _ in range(abs(amount)):
+            await asyncio.to_thread(win32api.mouse_event, win32con.MOUSEEVENTF_WHEEL, 0, 0, scroll_amount, 0)
+            await asyncio.sleep(0.05)
+
+    async def key_down_async(self, key: str):
+        await asyncio.to_thread(self.key_down, key)
+
+    async def key_up_async(self, key: str):
+        await asyncio.to_thread(self.key_up, key)
+
+    async def press_key_async(self, key: str, presses: int = 1, interval: float = 0.1):
+        for i in range(presses):
+            await self.key_down_async(key)
+            await asyncio.sleep(0.02 + (interval - 0.02) * 0.5)
+            await self.key_up_async(key)
+            if i < presses - 1:
+                await asyncio.sleep(interval * 0.5)
+
+    async def type_text_async(self, text: str, interval: float = 0.01):
+        for char in text:
+            vk_scan_result = await asyncio.to_thread(win32api.VkKeyScan, char)
+            is_shift_needed = (vk_scan_result >> 8) & 1
+            if is_shift_needed:
+                async with self.hold_key_async('shift'):
+                    await self.press_key_async(char)
+            else:
+                await self.press_key_async(char)
+            await asyncio.sleep(interval)
+
+    @asynccontextmanager
+    async def hold_key_async(self, key: str):
+        """异步上下文管理器，用于在异步代码块执行期间按住一个键。"""
+        try:
+            await self.key_down_async(key)
+            yield
+        finally:
+            await self.key_up_async(key)
+
+    # =========================================================================
+    # Section 3: 内部辅助工具
+    # =========================================================================
+
+    def _get_vk(self, key: str) -> int:
+        """内部同步方法，将字符串键转换为虚拟键码。"""
+        key = key.lower()
+        if key not in KEY_MAP:
+            if len(key) == 1:
+                # VkKeyScan 的低位字节是键码
+                return win32api.VkKeyScan(key) & 0xff
+            raise ValueError(f"未知的按键: '{key}'")
+        return KEY_MAP[key]
+
+    # =========================================================================
+    # Section 4: 同步/异步桥接器
+    # =========================================================================
+
+    def _get_running_loop(self) -> asyncio.AbstractEventLoop:
+        """线程安全地获取正在运行的事件循环。"""
+        with self._loop_lock:
+            if self._loop is None or self._loop.is_closed():
+                from packages.aura_core.api import service_registry
+                scheduler = service_registry.get_service_instance('scheduler')
+                if scheduler and scheduler._loop and scheduler._loop.is_running():
+                    self._loop = scheduler._loop
+                else:
+                    raise RuntimeError("ControllerService无法找到正在运行的asyncio事件循环。")
+            return self._loop
+
+    def _submit_to_loop_and_wait(self, coro: asyncio.Future) -> Any:
+        """将一个协程从同步代码提交到事件循环，并阻塞等待其结果。"""
+        loop = self._get_running_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
+
+
+

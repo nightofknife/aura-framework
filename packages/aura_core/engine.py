@@ -517,18 +517,23 @@ class ExecutionEngine:
                 last_result = step_result
             except Exception as e:
                 logger.error(f"    -> Sub-step '{step_name}' failed. Aborting linear script node.")
+                self.context.merge(sub_context)
                 raise e
+        self.context.merge(sub_context)
         return last_result
 
     async def _execute_single_action_step(self, step_data: Dict[str, Any],
                                           injector: Optional[ActionInjector] = None) -> Any:
-        """Executes a single action with retry logic. Can use a provided injector."""
+        """
+        【最终确认版 for new ActionInjector】
+        执行单个动作，包含重试逻辑。现在完全委托给 ActionInjector 执行。
+        """
         active_injector = injector or self.injector
 
-        if 'next' in step_data: self.next_task_target = await active_injector._render_value(step_data['next'],
-                                                                                            active_injector.context._data)
-
-        # go_task is now a proper action, handled by the injector raising JumpSignal
+        # --- 预处理部分 (保持不变) ---
+        if 'next' in step_data:
+            self.next_task_target = await active_injector._render_value(step_data['next'],
+                                                                        active_injector.context._data)
 
         wait_before = step_data.get('wait_before')
         if wait_before:
@@ -548,24 +553,30 @@ class ExecutionEngine:
 
             try:
                 action_name = step_data.get('action')
-                if action_name and action_name.lower() == 'run_task':
-                    result = await self._run_sub_task(step_data, injector=active_injector)
-                elif action_name:
-                    result = await active_injector.execute(action_name, step_data.get('params', {}))
-                else:
-                    result = True
+                if not action_name:
+                    return True  # 无操作步骤，直接成功
 
+                # --- 【核心确认】直接调用注入器的 execute 方法 ---
+                # 你的新版 injector.execute 已经包含了所有智能调度逻辑
+                if action_name.lower() == 'run_task':
+                    result = await self._run_sub_task(step_data, injector=active_injector)
+                else:
+                    result = await active_injector.execute(action_name, step_data.get('params', {}))
+
+                # --- 结果处理部分 (保持不变) ---
                 is_logical_failure = (result is False or (hasattr(result, 'found') and result.found is False))
                 if not is_logical_failure:
                     return result
                 else:
                     last_exception = StopTaskException(f"Action '{action_name}' returned a failure status.",
                                                        success=False)
+
             except JumpSignal:
-                raise  # Propagate jump signals immediately
+                raise
             except Exception as e:
                 last_exception = e
 
+        # --- 失败处理部分 (保持不变) ---
         step_name = step_data.get('name', step_data.get('action', 'unnamed_step'))
         logger.error(f"  -> Step '{step_name}' failed after {max_attempts} attempts.")
         await self._capture_debug_screenshot(step_name)

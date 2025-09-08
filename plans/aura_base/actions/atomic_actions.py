@@ -101,7 +101,6 @@ def find_image_in_scrolling_area(app: AppProviderService, vision: VisionService,
 @register_action(name="find_text", read_only=True, public=True)
 @requires_services(ocr='Aura-Project/base/ocr', app='Aura-Project/base/app')
 def find_text(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine, text_to_find: str, region: Optional[tuple[int, int, int, int]] = None, match_mode: str = "exact") -> OcrResult:
-    # ... (代码不变)
     is_inspect_mode = engine.context.get("__is_inspect_mode__", False)
     capture = app.capture(rect=region)
     if not capture.success:

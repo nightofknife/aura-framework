@@ -119,6 +119,17 @@ class Context:
 
         return Context(forked_model)
 
+    def merge(self, other_context: 'Context'):
+        """
+        将另一个上下文的动态数据合并到当前上下文中。
+        这对于从子上下文中取回结果非常有用。
+        """
+        if not isinstance(other_context, Context):
+            return
+
+        # 只合并 dynamic_data，因为核心服务是共享的
+        self._model.dynamic_data.update(other_context._model.dynamic_data)
+
     def __str__(self):
         trigger_id = self._model.event.id if self._model.event else None
         return (f"Context(dynamic_keys={list(self._model.dynamic_data.keys())}, "

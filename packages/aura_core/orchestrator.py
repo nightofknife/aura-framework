@@ -82,23 +82,23 @@ class Orchestrator:
 
                 if result_from_engine.get('status') == 'success':
                     returns_template = task_data.get('returns')
-                    if returns_template:
+                    final_return_value = None
+                    if returns_template is not None:  # 修正：检查 not None
                         try:
-                            # 使用任务结束时的最终上下文来渲染返回值
-                            final_return_value = context.render(returns_template)
+                            injector = ActionInjector(context, engine)
+                            final_return_value = await injector.render_return_value(returns_template)
                             logger.debug(
-                                f"任务 '{full_task_id}' 显式返回值: '{final_return_value}' (来自模板: '{returns_template}')")
-                            # 将这个显式返回值作为当前任务的最终结果
-                            last_result = final_return_value
+                                f"任务 '{full_task_id}' 显式返回值: {repr(final_return_value)} (来自模板: '{returns_template}')")
                         except Exception as e:
                             logger.error(f"渲染任务 '{full_task_id}' 的返回值失败: {e}")
-                            # 渲染失败应视为任务失败
                             raise ValueError(f"无法渲染返回值: {returns_template}") from e
-                    else:
-                        # 如果没有 'returns' 字段，任务成功执行完所有步骤就默认返回 True
-                        last_result = True
+
+                    # 【核心修改】统一成功返回值的格式
+                    last_result = {
+                        'status': 'success',
+                        'returns': final_return_value if returns_template is not None else True
+                    }
                 else:
-                    # 如果 engine 执行失败或跳转，直接使用 engine 的结果
                     last_result = result_from_engine
                 # --- 逻辑结束 ---
 
