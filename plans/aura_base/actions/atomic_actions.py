@@ -580,9 +580,10 @@ def delete_state(state_store: StateStore, key: str) -> bool:
 
 @register_action(name="publish_event", public=True)
 @requires_services(event_bus='event_bus')
-def publish_event(event_bus: EventBus, context: Context, name: str, payload: Dict[str, Any] = None,
-                  source: Optional[str] = None) -> bool:
-    # ... (代码不变)
+async def publish_event(event_bus: EventBus, context: Context, name: str, payload: Dict[str, Any] = None,
+                        source: Optional[str] = None,
+                        channel: str = "global") -> bool:  # 【1. 改为 async def, 新增 channel 参数】
+    """【异步升级版】发布一个事件到事件总线。"""
     try:
         causation_chain = []
         depth = 0
@@ -590,15 +591,17 @@ def publish_event(event_bus: EventBus, context: Context, name: str, payload: Dic
         if triggering_event:
             causation_chain.extend(triggering_event.causation_chain)
             depth = triggering_event.depth + 1
+
         event_source = source or context.get('__task_name__', 'unknown_task')
-        new_event = Event(name=name, payload=payload or {}, source=event_source, causation_chain=causation_chain,
-                          depth=depth)
-        event_bus.publish(new_event)
+
+        new_event = Event(name=name, channel=channel, payload=payload or {}, source=event_source,
+                          causation_chain=causation_chain, depth=depth)
+
+        await event_bus.publish(new_event)  # 【2. 使用 await 调用】
         return True
     except Exception as e:
         logger.error(f"发布事件 '{name}' 时失败: {e}", exc_info=True)
         return False
-
 
 @register_action(name="get_window_size", read_only=True, public=True)
 @requires_services(app='Aura-Project/base/app')

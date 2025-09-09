@@ -172,26 +172,38 @@ class Orchestrator:
         return None
 
     async def perform_condition_check(self, condition_data: dict) -> bool:
-        """异步执行一个只读的条件检查 Action，用于方案的触发条件等。"""
+        """
+        【简化版】异步执行一个只读的条件检查 Action。
+        复用 ExecutionEngine 来处理 Action 的执行，保持逻辑一致。
+        """
         action_name = condition_data.get('action')
-        if not action_name: return False
+        if not action_name:
+            return False
 
+        # 提前检查 Action 是否存在且为只读
         action_def = ACTION_REGISTRY.get(action_name.lower())
         if not action_def or not action_def.read_only:
-            logger.warning(f"Condition check '{action_name}' does not exist or is not read-only. Skipped.")
+            logger.warning(f"条件检查 '{action_name}' 不存在或非只读，已跳过。")
             return False
 
         try:
-            # 使用一个临时的、隔离的上下文进行检查
+            # 1. 创建一个临时的、隔离的上下文
             context = await self.context_manager.create_context(f"condition_check/{action_name}")
-            injector = ActionInjector(context, engine=None)  # 条件检查不需要完整的引擎
-            result = await injector.execute(action_name, condition_data.get('params', {}))
+
+            # 2. 创建一个临时的引擎实例
+            #    注意：这里的 orchestrator=self 很重要，它让引擎可以访问方案包资源
+            engine = ExecutionEngine(context=context, orchestrator=self, pause_event=self.pause_event)
+
+            # 3. 直接让引擎执行这个单一步骤
+            #    引擎内部会处理注入、同步/异步调用等所有复杂性
+            result = await engine._execute_single_action_step(condition_data)
+
+            # 4. 将结果转换为布尔值
             return bool(result)
         except Exception as e:
-            logger.error(f"Condition check '{action_name}' failed: {e}", exc_info=True)
+            logger.error(f"条件检查 '{action_name}' 失败: {e}", exc_info=False)  # exc_info=False 避免日志刷屏
             return False
 
-    # 【移除】移除了过时的 inspect_step 方法
 
     # --- File and Context Proxy Methods ---
 

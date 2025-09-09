@@ -47,14 +47,9 @@ class Scheduler:
         self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
         self.api_log_queue: Optional[asyncio.Queue] = None
 
-        # --- 【架构修正】移除全局的状态规划器属性 ---
-        # self.state_map: Optional[StateMap] = None
-        # self.state_planner: Optional[StatePlanner] = None
-
         # --- 核心服务实例 (只创建一次) ---
         self.state_store = StateStore()
         self.event_bus = EventBus()
-        # 【架构修正】PlanManager 将负责加载 Plan 专属的规划器
         self.plan_manager = PlanManager(str(self.base_path), None)
         self.execution_manager = ExecutionManager(self)
         self.scheduling_service = SchedulingService(self)
@@ -107,9 +102,12 @@ class Scheduler:
         service_registry.register_instance('event_bus', self.event_bus, public=True, fqid='core/event_bus')
         service_registry.register_instance('scheduler', self, public=True, fqid='core/scheduler')
         service_registry.register_instance('plan_manager', self.plan_manager, public=False, fqid='core/plan_manager')
-        service_registry.register_instance('execution_manager', self.execution_manager, public=False, fqid='core/execution_manager')
-        service_registry.register_instance('scheduling_service', self.scheduling_service, public=False, fqid='core/scheduling_service')
-        service_registry.register_instance('interrupt_service', self.interrupt_service, public=False, fqid='core/interrupt_service')
+        service_registry.register_instance('execution_manager', self.execution_manager, public=False,
+                                           fqid='core/execution_manager')
+        service_registry.register_instance('scheduling_service', self.scheduling_service, public=False,
+                                           fqid='core/scheduling_service')
+        service_registry.register_instance('interrupt_service', self.interrupt_service, public=False,
+                                           fqid='core/interrupt_service')
 
     def reload_plans(self):
         logger.info("======= Scheduler: 开始加载所有框架资源 =======")
@@ -153,7 +151,8 @@ class Scheduler:
         self.startup_complete_event.clear()
         logger.info("用户请求启动调度器及所有后台服务...")
         self.execution_manager.startup()
-        self._scheduler_thread = threading.Thread(target=self._run_scheduler_in_thread, name="SchedulerThread", daemon=True)
+        self._scheduler_thread = threading.Thread(target=self._run_scheduler_in_thread, name="SchedulerThread",
+                                                  daemon=True)
         self._scheduler_thread.start()
         self._push_ui_update('master_status_update', {"is_running": True})
 
@@ -216,8 +215,6 @@ class Scheduler:
             self._main_task = None
             logger.info("调度器主循环 (Commander) 已安全退出。")
             self.startup_complete_event.set()
-
-
 
     async def _consume_main_task_queue(self):
         while True:
@@ -293,7 +290,8 @@ class Scheduler:
                     if not isinstance(data, dict): continue
                     relative_path_str = task_file_path.relative_to(tasks_dir).with_suffix('').as_posix()
                     for task_key, task_definition in data.items():
-                        if isinstance(task_definition, dict) and ('steps' in task_definition or 'graph' in task_definition):
+                        if isinstance(task_definition, dict) and (
+                                'steps' in task_definition or 'graph' in task_definition):
                             task_definition.setdefault('execution_mode', 'sync')
                             full_task_id = f"{plan_name}/{relative_path_str}/{task_key}"
                             self.all_tasks_definitions[full_task_id] = task_definition
@@ -317,6 +315,7 @@ class Scheduler:
                 from functools import partial
                 async def handler(event, task_id_to_run):
                     await self._handle_event_triggered_task(event, task_id_to_run)
+
                 callback = partial(handler, task_id_to_run=task_id)
                 callback.__name__ = f"event_trigger_for_{task_id.replace('/', '_')}"
                 await self.event_bus.subscribe(event_pattern, callback, channel=channel)
@@ -326,7 +325,8 @@ class Scheduler:
     async def _handle_event_triggered_task(self, event: Event, task_id: str):
         logger.info(f"事件 '{event.name}' (频道: {event.channel}) 触发了任务 '{task_id}'")
         task_def = self.all_tasks_definitions.get(task_id, {})
-        tasklet = Tasklet(task_name=task_id, triggering_event=event, execution_mode=task_def.get('execution_mode', 'sync'))
+        tasklet = Tasklet(task_name=task_id, triggering_event=event,
+                          execution_mode=task_def.get('execution_mode', 'sync'))
         await self.event_task_queue.put(tasklet)
 
     def _load_schedule_file(self, plan_dir: Path, plan_name: str):
@@ -370,7 +370,8 @@ class Scheduler:
             logger.info(f"手动触发任务 '{item_to_run.get('name', task_id)}'...")
             full_task_id = f"{item_to_run['plan_name']}/{item_to_run['task']}"
             task_def = self.all_tasks_definitions.get(full_task_id, {})
-            tasklet = Tasklet(task_name=full_task_id, payload=item_to_run, execution_mode=task_def.get('execution_mode', 'sync'))
+            tasklet = Tasklet(task_name=full_task_id, payload=item_to_run,
+                              execution_mode=task_def.get('execution_mode', 'sync'))
             if self.is_running and self.is_running.is_set() and self._loop:
                 future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet, high_priority=True), self._loop)
                 try:
@@ -388,7 +389,9 @@ class Scheduler:
             if full_task_id not in self.all_tasks_definitions:
                 return {"status": "error", "message": f"Task definition '{full_task_id}' not found."}
             task_def = self.all_tasks_definitions[full_task_id]
-            tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True, payload={'plan_name': plan_name, 'task_name': task_name}, execution_mode=task_def.get('execution_mode', 'sync'), initial_context=params or {})
+            tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True,
+                              payload={'plan_name': plan_name, 'task_name': task_name},
+                              execution_mode=task_def.get('execution_mode', 'sync'), initial_context=params or {})
             if self.is_running and self.is_running.is_set() and self._loop:
                 logger.info(f"临时任务 '{full_task_id}' 已通过线程安全方式加入正在运行的队列...")
                 future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet), self._loop)
@@ -491,8 +494,11 @@ class Scheduler:
                 class_info['name'] = service_def.service_class.__name__
             plugin_info = None
             if service_def.plugin:
-                plugin_info = {'name': service_def.plugin.name, 'canonical_id': service_def.plugin.canonical_id, 'version': service_def.plugin.version, 'plugin_type': service_def.plugin.plugin_type}
-            api_safe_services.append({"alias": service_def.alias, "fqid": service_def.fqid, "status": service_def.status, "public": service_def.public, "service_class_info": class_info, "plugin": plugin_info})
+                plugin_info = {'name': service_def.plugin.name, 'canonical_id': service_def.plugin.canonical_id,
+                               'version': service_def.plugin.version, 'plugin_type': service_def.plugin.plugin_type}
+            api_safe_services.append(
+                {"alias": service_def.alias, "fqid": service_def.fqid, "status": service_def.status,
+                 "public": service_def.public, "service_class_info": class_info, "plugin": plugin_info})
         return api_safe_services
 
     async def get_file_content(self, plan_name: str, relative_path: str) -> str:
