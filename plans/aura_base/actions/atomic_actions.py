@@ -30,7 +30,6 @@ from ..services.vision_service import VisionService, MatchResult, MultiMatchResu
 @register_action(name="find_image", read_only=True, public=True)
 @requires_services(vision='Aura-Project/base/vision', app='Aura-Project/base/app')
 def find_image(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str, region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8) -> MatchResult:
-    # ... (代码不变)
     is_inspect_mode = engine.context.get("__is_inspect_mode__", False)
     capture = app.capture(rect=region)
     if not capture.success:

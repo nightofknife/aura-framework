@@ -130,6 +130,28 @@ class Context:
         # 只合并 dynamic_data，因为核心服务是共享的
         self._model.dynamic_data.update(other_context._model.dynamic_data)
 
+    def to_serializable_dict(self) -> Dict[str, Any]:
+        """
+        [NEW] Exports the context to a dictionary containing only
+        JSON-serializable data, suitable for events and logging.
+        """
+        # Start with a copy of the flattened data
+        data = self._data.copy()
+
+        # Explicitly remove non-serializable core objects
+        data.pop('log', None)
+        data.pop('persistent_context', None)
+
+        # The 'event' object might also be complex, let's handle it safely
+        event_obj = data.get('event')
+        if event_obj and hasattr(event_obj, 'to_dict'):
+            data['event'] = event_obj.to_dict()
+        elif event_obj:
+            # Fallback for unexpected event types
+            data['event'] = str(event_obj)
+
+        return data
+
     def __str__(self):
         trigger_id = self._model.event.id if self._model.event else None
         return (f"Context(dynamic_keys={list(self._model.dynamic_data.keys())}, "
