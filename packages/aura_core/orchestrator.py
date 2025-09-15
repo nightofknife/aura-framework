@@ -258,3 +258,76 @@ class Orchestrator:
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, write_file)
+
+    async def create_directory(self, relative_path: str):
+        """【新增】在方案包内异步创建一个新目录。"""
+        # 复用您已有的路径验证方法，但需要调整以处理不存在的路径
+        # 我们在这里直接使用 _validate_path 的逻辑，但允许目标路径不存在
+        target_path = (self.current_plan_path / relative_path).resolve()
+        if self.current_plan_path.resolve() not in target_path.parents:
+            raise PermissionError(f"创建目录操作被禁止，路径越界: {relative_path}")
+
+        loop = asyncio.get_running_loop()
+
+        def do_create():
+            if target_path.exists():
+                raise FileExistsError(f"目录 '{relative_path}' 已存在。")
+            target_path.mkdir(parents=True)
+
+        await loop.run_in_executor(None, do_create)
+        return str(target_path)
+
+    async def create_file(self, relative_path: str, content: str = ""):
+        """【新增】在方案包内异步创建一个新文件。"""
+        # 复用您已有的路径验证方法，但需要调整以处理不存在的路径
+        target_path = (self.current_plan_path / relative_path).resolve()
+        if self.current_plan_path.resolve() not in target_path.parents:
+            raise PermissionError(f"创建文件操作被禁止，路径越界: {relative_path}")
+
+        loop = asyncio.get_running_loop()
+
+        def do_create():
+            if target_path.exists():
+                raise FileExistsError(f"文件 '{relative_path}' 已存在。")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(content, encoding='utf-8')
+
+        await loop.run_in_executor(None, do_create)
+        return str(target_path)
+
+    async def rename_path(self, old_relative_path: str, new_relative_path: str):
+        """【新增】在方案包内异步重命名文件或目录。"""
+        old_path = self._validate_path(old_relative_path)
+
+        # 对新路径进行安全验证
+        new_path = (self.current_plan_path / new_relative_path).resolve()
+        if self.current_plan_path.resolve() not in new_path.parents:
+            raise PermissionError(f"重命名操作被禁止，目标路径越界: {new_relative_path}")
+
+        loop = asyncio.get_running_loop()
+
+        def do_rename():
+            if not old_path.exists():
+                raise FileNotFoundError(f"源路径 '{old_relative_path}' 不存在。")
+            if new_path.exists():
+                raise FileExistsError(f"目标路径 '{new_relative_path}' 已存在。")
+            old_path.rename(new_path)
+
+        await loop.run_in_executor(None, do_rename)
+        return str(new_path)
+
+    async def delete_path(self, relative_path: str):
+        """【新增】在方案包内异步删除文件或目录。"""
+        target_path = self._validate_path(relative_path)
+
+        loop = asyncio.get_running_loop()
+
+        def do_delete():
+            if not target_path.exists():
+                # 如果文件不存在，静默处理，避免UI报错
+                logger.warning(f"尝试删除一个不存在的路径: {relative_path}")
+                return
+            if target_path.is_dir():
+                shutil.rmtree(target_path)
+            else:
+                target_path.unlink()

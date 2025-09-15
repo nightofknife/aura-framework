@@ -3,10 +3,11 @@
 from __future__ import annotations
 import asyncio
 import queue
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+from pathlib import Path, PurePath
+from typing import List, Dict, Any, Optional, Union
 
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, Signal, QTimer, Qt
+from PySide6.QtWidgets import QStyle, QTreeWidgetItem
 
 # 假设你这边有全局的 Scheduler 单例或通过 DI 注入
 from packages.aura_core.scheduler import Scheduler
@@ -164,3 +165,83 @@ class QtBridge(QObject):
             return self.scheduler.actions.get_all_action_definitions()
         except Exception:
             return []
+
+    def get_plan_files(self, plan_name: str) -> Dict[str, Any]:
+        """
+        【新增】获取指定方案包的文件目录树。
+        """
+        try:
+            # 直接调用scheduler的同名方法
+            return self.scheduler.get_plan_files(plan_name)
+        except Exception as e:
+            print(f"Error getting plan files for '{plan_name}': {e}")
+            return {}
+
+    def read_file_bytes(self, plan: str, relative_path: str) -> bytes:
+        """
+        【新增】读取方案包内文件的二进制内容（用于图片等）。
+        """
+        try:
+            loop = getattr(self.scheduler, "_loop", None)
+            if loop and loop.is_running():
+                fut = asyncio.run_coroutine_threadsafe(
+                    self.scheduler.get_file_content_bytes(plan, relative_path), loop
+                )
+                return fut.result(timeout=5)
+            # 兜底逻辑
+            p = Path(self.scheduler.base_path) / "plans" / plan / relative_path
+            return p.read_bytes()
+        except Exception as e:
+            raise
+
+    def save_task_file(self, plan: str, relative_path: str, content: Union[str, bytes]):
+        """
+        【新增】保存文件内容到方案包。
+        """
+        print(f"DEBUG: QtBridge received save request for {plan}/{relative_path}")
+
+        try:
+            loop = getattr(self.scheduler, "_loop", None)
+            if loop and loop.is_running():
+                fut = asyncio.run_coroutine_threadsafe(
+                    self.scheduler.save_file_content(plan, relative_path, content), loop
+                )
+                fut.result(timeout=5)  # 等待保存完成
+            else:
+                # 兜底逻辑
+                p = Path(self.scheduler.base_path) / "plans" / plan / relative_path
+                p.parent.mkdir(parents=True, exist_ok=True)
+                mode = 'wb' if isinstance(content, bytes) else 'w'
+                encoding = None if isinstance(content, bytes) else 'utf-8'
+                with open(p, mode, encoding=encoding) as f:
+                    f.write(content)
+        except Exception as e:
+            raise
+
+    def _populate_workspace_tree(self, parent_item, dir_dict):
+        """【微调】递归填充文件树的辅助函数，以匹配您的Scheduler实现"""
+        style = self.style()
+        dir_icon = style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        file_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+
+        for name, content in sorted(dir_dict.items()):
+            # 【修改】根据您的 get_plan_files 逻辑，None表示文件，dict表示目录
+            is_dir = isinstance(content, dict)
+            child_item = QTreeWidgetItem([name])
+            child_item.setIcon(0, dir_icon if is_dir else file_icon)
+
+            parent_path_data = parent_item.data(0, Qt.ItemDataRole.UserRole)
+            parent_path = ""
+            if isinstance(parent_path_data, str):  # 确保父路径是字符串
+                parent_path = parent_path_data
+
+            # 使用 PurePath 来安全地拼接路径
+            relative_path = str(PurePath(parent_path) / name)
+            child_item.setData(0, Qt.ItemDataRole.UserRole, relative_path)
+
+            parent_item.addChild(child_item)
+            if is_dir:
+                self._populate_workspace_tree(child_item, content)
+
+
+

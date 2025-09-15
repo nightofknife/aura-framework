@@ -23,14 +23,14 @@ if __name__ == "__main__":
     #    Path(__file__) -> 当前文件的路径 (run_ide.py)
     #    .parent -> 获取其所在的目录
     #    / "resources/solarized_dark.qss" -> 拼接目标文件
-    qss_path = Path(__file__).parent / "resources/solarized_dark.qss"
+    # qss_path = Path(__file__).parent / "resources/solarized_dark.qss"
 
-    try:
-        with open(qss_path, "r", encoding="utf-8") as f:  # 建议加上 encoding
-            app.setStyleSheet(f.read())
-    except FileNotFoundError:
-        print(f"Stylesheet not found at: {qss_path}")
-    # --- 结束 ---
+    # try:
+    #     with open(qss_path, "r", encoding="utf-8") as f:  # 建议加上 encoding
+    #         app.setStyleSheet(f.read())
+    # except FileNotFoundError:
+    #     print(f"Stylesheet not found at: {qss_path}")
+    # # --- 结束 ---
 
     window = MainWindow()
     window.show()

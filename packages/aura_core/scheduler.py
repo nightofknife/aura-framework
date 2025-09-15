@@ -554,3 +554,31 @@ class Scheduler:
             except Exception as e:
                 print(f"CRITICAL: 日志消费者循环出现严重错误: {e}")
                 await asyncio.sleep(1)
+
+    async def create_directory(self, plan_name: str, relative_path: str):
+        """【新增】委托给Orchestrator创建目录。"""
+        orchestrator = self.plan_manager.get_plan(plan_name)
+        if not orchestrator:
+            raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
+        return await orchestrator.create_directory(relative_path)
+
+    async def create_file(self, plan_name: str, relative_path: str, content: str = ""):
+        """【新增】委托给Orchestrator创建文件。"""
+        orchestrator = self.plan_manager.get_plan(plan_name)
+        if not orchestrator:
+            raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
+        return await orchestrator.create_file(relative_path, content)
+
+    async def rename_path(self, plan_name: str, old_relative_path: str, new_relative_path: str):
+        """【新增】委托给Orchestrator重命名路径。"""
+        orchestrator = self.plan_manager.get_plan(plan_name)
+        if not orchestrator:
+            raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
+        return await orchestrator.rename_path(old_relative_path, new_relative_path)
+
+    async def delete_path(self, plan_name: str, relative_path: str):
+        """【新增】委托给Orchestrator删除路径。"""
+        orchestrator = self.plan_manager.get_plan(plan_name)
+        if not orchestrator:
+            raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
+        return await orchestrator.delete_path(relative_path)

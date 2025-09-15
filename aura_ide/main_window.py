@@ -1,13 +1,13 @@
 # src/aura_ide/main_window.py
 
 from PySide6.QtWidgets import QMainWindow, QTabWidget, QApplication
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QCloseEvent
 
 from .core_integration.qt_bridge import QtBridge
 
 # 动态导入所有顶级面板
-from .panels import ide_panel, runner_panel
-
+from .panels import runner_panel
+from .panels import ide_panel
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -43,7 +43,7 @@ class MainWindow(QMainWindow):
         未来增加新功能，只需在这里添加即可。
         """
         panel_classes = [
-            # ide_panel.IDEPanel,
+            ide_panel.IDEPanel,
             runner_panel.RunnerPanel,
         ]
 
@@ -63,10 +63,25 @@ class MainWindow(QMainWindow):
             else:
                 panel.on_deactivate()
 
-    def closeEvent(self, event):
-        # 确保应用退出时，核心服务被正确关闭
+    def closeEvent(self, event: QCloseEvent):
+        """
+        【修改】重写窗口关闭事件，检查未保存的更改。
+        """
+        # 获取当前活动的面板 widget
+        current_widget = self.tab_widget.currentWidget()
+
+        # 检查 widget 是否实现了 can_close 方法 (我们的 IDEPage 会实现)
+        if hasattr(current_widget, 'can_close') and callable(getattr(current_widget, 'can_close')):
+            if not current_widget.can_close():
+                event.ignore()  # 如果 can_close 返回 False，则取消关闭
+                return
+
+        # 如果检查通过，则正常关闭
         try:
+            print("Stopping core services...")
             self.bridge.stop_core()
+            print("Core services stopped.")
         except Exception as e:
             print(f"Error stopping core on close: {e}")
-        super().closeEvent(event)
+
+        event.accept()  # 接受关闭事件
