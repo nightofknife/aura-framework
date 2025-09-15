@@ -92,10 +92,10 @@ class IDEPage(QWidget):
 
     def _create_assistant_panel(self) -> QWidget:
         self.assistant_tabs = QTabWidget()
-        self.action_doc_view = QPlainTextEdit();
+        self.action_doc_view = QPlainTextEdit()
         self.action_doc_view.setReadOnly(True)
         self.assistant_tabs.addTab(self.action_doc_view, "Action文档")
-        self.image_preview_label = QLabel("在工作区选择图片以预览");
+        self.image_preview_label = QLabel("在工作区选择图片以预览")
         self.image_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.assistant_tabs.addTab(self.image_preview_label, "图片预览")
         self.problems_list = QListWidget()
@@ -132,12 +132,12 @@ class IDEPage(QWidget):
         try:
             plans = self.bridge.list_plans()
             for plan_name in plans:
-                plan_node = QTreeWidgetItem([plan_name]);
-                plan_node.setIcon(0, self.icons["plan"]);
+                plan_node = QTreeWidgetItem([plan_name])
+                plan_node.setIcon(0, self.icons["plan"])
                 plan_node.setData(0, Qt.ItemDataRole.UserRole, {"type": "plan", "name": plan_name})
                 self.workspace_tree.addTopLevelItem(plan_node)
                 file_tree = self.bridge.get_plan_files(plan_name)
-                root_item = QTreeWidgetItem();
+                root_item = QTreeWidgetItem()
                 root_item.setData(0, Qt.ItemDataRole.UserRole, "")
                 self._populate_workspace_tree(root_item, file_tree)
                 for i in range(root_item.childCount()): plan_node.addChild(root_item.takeChild(0))
@@ -172,12 +172,12 @@ class IDEPage(QWidget):
 
     def can_close(self) -> bool:
         if not self._is_dirty: return True
-        msg_box = QMessageBox(self);
-        msg_box.setWindowTitle("未保存的更改");
-        msg_box.setText(f"文件 '{self._current_file_path[1]}' 有未保存的更改。");
-        msg_box.setInformativeText("您想在关闭前保存更改吗？");
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("未保存的更改")
+        msg_box.setText(f"文件 '{self._current_file_path[1]}' 有未保存的更改。")
+        msg_box.setInformativeText("您想在关闭前保存更改吗？")
         msg_box.setStandardButtons(
-            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel);
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
         msg_box.setDefaultButton(QMessageBox.StandardButton.Save)
         ret = msg_box.exec()
         if ret == QMessageBox.StandardButton.Save: self.save_current_file(); return not self._is_dirty
@@ -206,12 +206,12 @@ class IDEPage(QWidget):
         info = self._get_item_plan_and_path(current)
         if not info: return
         plan_name, relative_path, item_type = info
-        self.image_preview_label.setText("在工作区选择图片以预览");
+        self.image_preview_label.setText("在工作区选择图片以预览")
         self.image_preview_label.setPixmap(QPixmap())
         if item_type == 'file' and relative_path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
             try:
                 image_bytes = self.bridge.read_file_bytes(plan_name, relative_path)
-                pixmap = QPixmap();
+                pixmap = QPixmap()
                 pixmap.loadFromData(image_bytes)
                 self.image_preview_label.setPixmap(
                     pixmap.scaled(self.image_preview_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
@@ -243,9 +243,9 @@ class IDEPage(QWidget):
 
     @Slot()
     def _show_workspace_context_menu(self, position):
-        item = self.workspace_tree.itemAt(position);
+        item = self.workspace_tree.itemAt(position)
         if not item: return
-        info = self._get_item_plan_and_path(item);
+        info = self._get_item_plan_and_path(item)
         if not info: return
         plan_name, relative_path, item_type = info
         menu = QMenu()
@@ -283,7 +283,7 @@ class IDEPage(QWidget):
         old_name = PurePath(old_path).name
         new_name, ok = QInputDialog.getText(self, "重命名", "新名称:", text=old_name)
         if ok and new_name and new_name != old_name:
-            parent_path = str(PurePath(old_path).parent);
+            parent_path = str(PurePath(old_path).parent)
             new_path = str(PurePath(parent_path) / new_name)
             try:
                 self.bridge.rename_path(plan_name, old_path, new_path); self.reload_workspace()
@@ -311,9 +311,9 @@ class IDEPage(QWidget):
     def _update_problems_panel(self, errors: List[LintingError]):
         self.problems_list.clear()
         for error in errors:
-            item = QListWidgetItem(f"[{error.line_number}] {error.message}");
-            item.setIcon(self.icons["error"]);
-            item.setData(Qt.ItemDataRole.UserRole, error);
+            item = QListWidgetItem(f"[{error.line_number}] {error.message}")
+            item.setIcon(self.icons["error"])
+            item.setData(Qt.ItemDataRole.UserRole, error)
             self.problems_list.addItem(item)
         self.assistant_tabs.setTabText(2, f"问题 ({len(errors)})")
 

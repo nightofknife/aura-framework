@@ -43,7 +43,7 @@ class MainWindow(QMainWindow):
         未来增加新功能，只需在这里添加即可。
         """
         panel_classes = [
-            ide_panel.IDEPanel,
+            # ide_panel.IDEPanel,
             runner_panel.RunnerPanel,
         ]
 
