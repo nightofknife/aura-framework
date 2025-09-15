@@ -1,7 +1,0 @@
-display_name: "Aura IDE"
-identity:
-  name: "ui"
-  author: "aura_team"
-version: "1.0.0"
-description: "Aura框架的官方图形用户界面。"
-dependencies: { }
