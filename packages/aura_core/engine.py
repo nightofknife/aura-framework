@@ -103,11 +103,6 @@ class ExecutionEngine:
             self.step_states[node_id] = StepState.PENDING
             self.reverse_dependencies.setdefault(node_id, set())
 
-            # --- [CORRECTED LOGIC] ---
-            # The main graph builder should ONLY care about the dependencies of its direct, top-level nodes.
-            # It should NOT try to inspect the internal logic of control-flow nodes like 'while' or 'for_each'.
-            # The sub-engines created by those nodes are responsible for their own internal validation.
-
             # 1. Get the explicit 'depends_on' structure for the top-level node.
             deps_struct = node_data.get('depends_on', [])
             self.dependencies[node_id] = deps_struct
@@ -117,17 +112,6 @@ class ExecutionEngine:
             if 'switch' in node_data:
                 all_deps.update(self._get_deps_from_switch(node_data['switch']))
 
-            # --- [REMOVED] ---
-            # The following blocks were the source of the error. They incorrectly tried to parse
-            # dependencies from within sub-scopes that are managed by sub-engines.
-            #
-            # elif 'for_each' in node_data:
-            #     all_deps.update(self._get_all_deps_from_struct(node_data['for_each'].get('do', {})))
-            # elif 'while' in node_data:
-            #     all_deps.update(self._get_all_deps_from_struct(node_data['while'].get('do', {})))
-            # elif 'try' in node_data:
-            #     all_deps.update(self._get_deps_from_try_catch(node_data))
-            # --- [END REMOVED] ---
 
             # 3. Validate the collected dependencies against top-level node IDs.
             for dep_id in all_deps:
