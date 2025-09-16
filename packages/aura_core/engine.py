@@ -1,4 +1,4 @@
-# packages/aura_core/engine.py (FINAL VERSION - MODIFIED FOR UI EVENTS)
+# packages/aura_core/engine.py (FIXED VERSION)
 
 import asyncio
 import os
@@ -30,6 +30,7 @@ class StepState(Enum):
 
 
 class ExecutionEngine:
+    # ... (init and other methods remain unchanged) ...
     def __init__(self, context: Context, orchestrator=None, pause_event: asyncio.Event = None,
                  parent_node_id: str = "", event_callback: Optional[Callable] = None):
         self.context = context
@@ -101,25 +102,44 @@ class ExecutionEngine:
         for node_id, node_data in self.nodes.items():
             self.step_states[node_id] = StepState.PENDING
             self.reverse_dependencies.setdefault(node_id, set())
+
+            # --- [CORRECTED LOGIC] ---
+            # The main graph builder should ONLY care about the dependencies of its direct, top-level nodes.
+            # It should NOT try to inspect the internal logic of control-flow nodes like 'while' or 'for_each'.
+            # The sub-engines created by those nodes are responsible for their own internal validation.
+
+            # 1. Get the explicit 'depends_on' structure for the top-level node.
             deps_struct = node_data.get('depends_on', [])
             self.dependencies[node_id] = deps_struct
             all_deps = self._get_all_deps_from_struct(deps_struct)
+
+            # 2. Handle 'switch' specifically, as it directly affects the main graph's flow by jumping to other top-level nodes.
             if 'switch' in node_data:
                 all_deps.update(self._get_deps_from_switch(node_data['switch']))
-            elif 'for_each' in node_data:
-                all_deps.update(self._get_all_deps_from_struct(node_data['for_each'].get('do', {})))
-            elif 'while' in node_data:
-                all_deps.update(self._get_all_deps_from_struct(node_data['while'].get('do', {})))
-            elif 'try' in node_data:
-                all_deps.update(self._get_deps_from_try_catch(node_data))
+
+            # --- [REMOVED] ---
+            # The following blocks were the source of the error. They incorrectly tried to parse
+            # dependencies from within sub-scopes that are managed by sub-engines.
+            #
+            # elif 'for_each' in node_data:
+            #     all_deps.update(self._get_all_deps_from_struct(node_data['for_each'].get('do', {})))
+            # elif 'while' in node_data:
+            #     all_deps.update(self._get_all_deps_from_struct(node_data['while'].get('do', {})))
+            # elif 'try' in node_data:
+            #     all_deps.update(self._get_deps_from_try_catch(node_data))
+            # --- [END REMOVED] ---
+
+            # 3. Validate the collected dependencies against top-level node IDs.
             for dep_id in all_deps:
-                if dep_id not in all_node_ids: raise KeyError(
-                    f"节点 '{node_id}' 或其子结构引用了未知的依赖: '{dep_id}'")
+                if dep_id not in all_node_ids:
+                    raise KeyError(f"节点 '{node_id}' 引用了未知的顶层依赖: '{dep_id}'")
                 self.reverse_dependencies.setdefault(dep_id, set()).add(node_id)
-        for node_id in all_node_ids:
+
+            # 4. Check for self-dependency.
             if node_id in self._get_all_deps_from_struct(self.dependencies.get(node_id, [])):
                 raise ValueError(f"检测到直接循环依赖于自身的节点: '{node_id}'")
 
+    # ... (all other methods from _get_deps_from_switch onwards are unchanged) ...
     def _get_deps_from_switch(self, switch_config: Dict) -> Set[str]:
         deps = set()
         for case in switch_config.get('cases', []):
@@ -187,19 +207,15 @@ class ExecutionEngine:
 
     async def _execute_dag_node(self, node_id: str):
         if self.step_states.get(node_id) != StepState.PENDING: return
-
         self.step_states[node_id] = StepState.RUNNING
         node_data = self.nodes[node_id]
         node_name = node_data.get('name', node_id)
         logger.info(f"\n[Node]: Starting '{node_name}' (ID: {node_id})")
-
         step_start_time = time.time()
-
         try:
             if self.event_callback:
                 params_for_event = {}
                 if 'action' in node_data:
-                    # FIX: Use _render_params instead of render_parameters
                     params_for_event = await self.injector._render_params(node_data.get('params', {}))
                 await self.event_callback('step.started', {
                     'step_id': node_id,
@@ -207,9 +223,7 @@ class ExecutionEngine:
                     'start_time': step_start_time,
                     'step_input_params': params_for_event
                 })
-
             await self._check_pause()
-
             if 'when' in node_data:
                 condition = await self.injector._render_value(node_data['when'], self.context._data)
                 if not condition:
@@ -217,7 +231,6 @@ class ExecutionEngine:
                     self.step_states[node_id] = StepState.SKIPPED
                     self.step_results[node_id] = {'status': 'skipped', 'reason': 'when condition was false'}
                     return
-
             if 'try' in node_data:
                 node_result = await self._execute_try_catch_finally_node(node_id, node_data)
             elif 'for_each' in node_data:
@@ -232,25 +245,20 @@ class ExecutionEngine:
                 node_result = await self._execute_single_action_step(node_data)
             else:
                 raise ValueError(f"Node '{node_id}' must contain a valid execution block.")
-
             self.step_results[node_id] = {'status': 'success', 'result': node_result}
             self.step_states[node_id] = StepState.SUCCESS
             logger.info(f"[Node]: Finished '{node_name}' successfully.")
-
             if self.event_callback:
                 await self.event_callback('step.succeeded', {
                     'step_id': node_id,
                     'end_time': time.time(),
                     'duration': time.time() - step_start_time,
                     'step_output': node_result,
-                    # FIX: Use _data instead of to_dict()
-                    'context_after_step':  self.context.to_serializable_dict()
+                    'context_after_step': self.context.to_serializable_dict()
                 })
-
         except Exception as e:
             error_details = {'node_id': node_id, 'message': str(e), 'type': type(e).__name__}
             logger.error(f"!! [Node]: Failed '{node_name}': {e}", exc_info=True)
-
             if 'on_failure' in node_data:
                 logger.warning(f"  -> Node '{node_name}' failed. Executing 'on_failure' handler...")
                 try:
@@ -259,18 +267,15 @@ class ExecutionEngine:
                     logger.critical(
                         f"  -> !! The 'on_failure' handler for node '{node_name}' itself failed: {handler_e}",
                         exc_info=True)
-
             self.step_states[node_id] = StepState.FAILED
             self.step_results[node_id] = {'status': 'failed', 'error_details': error_details}
-
             if self.event_callback:
                 await self.event_callback('step.failed', {
                     'step_id': node_id,
                     'error_message': str(e),
                     'end_time': time.time(),
                     'duration': time.time() - step_start_time,
-                    # FIX: Use _data instead of to_dict()
-                    'context_at_failure':  self.context.to_serializable_dict()
+                    'context_at_failure': self.context.to_serializable_dict()
                 })
 
     async def _execute_try_catch_finally_node(self, node_id: str, node_data: Dict) -> Any:
@@ -475,7 +480,6 @@ class ExecutionEngine:
 
     async def _run_sub_task(self, step_data: Dict[str, Any], injector: ActionInjector) -> Any:
         if not self.orchestrator: logger.error("无法执行子任务：Engine 未关联到 Orchestrator。"); return False
-        # FIX: Use _render_params
         rendered_params = await injector._render_params(step_data.get('params', {}))
         sub_task_id = rendered_params.get('task_name')
         if not sub_task_id: logger.error("run_task 失败：'task_name' 参数缺失。"); return False

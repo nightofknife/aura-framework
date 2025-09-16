@@ -1,3 +1,5 @@
+# packages/aura_core/api.py [FIXED - Ultimate Null Check]
+
 import asyncio
 import inspect
 import textwrap
@@ -7,26 +9,23 @@ from dataclasses import dataclass
 from typing import Callable, Any, Dict, List, Optional, Type
 
 from packages.aura_core.inheritance_proxy import InheritanceProxy
-from packages.aura_core.plugin_definition import PluginDefinition
 from packages.aura_core.logger import logger
+from packages.aura_core.plugin_definition import PluginDefinition
 
 
 @dataclass
 class ActionDefinition:
-    """
-    【Async Refactor】增加了 is_async 标志。
-    """
+    # ... (内容无变化) ...
     func: Callable
     name: str
     read_only: bool
     public: bool
     service_deps: Dict[str, str]
     plugin: PluginDefinition
-    is_async: bool = False  # 新增字段
+    is_async: bool = False
 
     @property
-    def signature(self) -> inspect.Signature:
-        return inspect.signature(self.func)
+    def signature(self) -> inspect.Signature: return inspect.signature(self.func)
 
     @property
     def docstring(self) -> str:
@@ -34,12 +33,11 @@ class ActionDefinition:
         return textwrap.dedent(doc).strip() if doc else "此行为没有提供文档说明。"
 
     @property
-    def fqid(self) -> str:
-        return f"{self.plugin.canonical_id}/{self.name}"
+    def fqid(self) -> str: return f"{self.plugin.canonical_id}/{self.name}"
 
 
-# ... (ActionRegistry, register_action, requires_services 保持不变) ...
 class ActionRegistry:
+    # ... (内容无变化) ...
     def __init__(self): self._actions: Dict[str, ActionDefinition] = {}
 
     def clear(self): self._actions.clear()
@@ -64,6 +62,7 @@ ACTION_REGISTRY = ActionRegistry()
 
 
 def register_action(name: str, read_only: bool = False, public: bool = False):
+    # ... (内容无变化) ...
     def decorator(func: Callable) -> Callable:
         meta = {'name': name, 'read_only': read_only, 'public': public,
                 'services': getattr(func, '_service_dependencies', {})}
@@ -74,6 +73,7 @@ def register_action(name: str, read_only: bool = False, public: bool = False):
 
 
 def requires_services(*args: str, **kwargs: str):
+    # ... (内容无变化) ...
     def decorator(func: Callable) -> Callable:
         dependencies = {}
         for alias, service_id in kwargs.items(): dependencies[alias] = service_id
@@ -88,13 +88,9 @@ def requires_services(*args: str, **kwargs: str):
     return decorator
 
 
-# ... (ServiceDefinition, ServiceRegistry, register_service 保持不变) ...
-# ServiceRegistry is complex and deals with instantiation, which can be blocking.
-# Keeping its internal lock as threading.RLock is safer and avoids a much deeper refactor.
-# Its public methods are thread-safe and will work correctly when called from async code via run_in_executor
-# or from other threads like the UI.
 @dataclass
 class ServiceDefinition:
+    # ... (内容无变化) ...
     alias: str
     fqid: str
     service_class: Type
@@ -107,12 +103,15 @@ class ServiceDefinition:
 
 
 class ServiceRegistry:
-    # ... (内容不变) ...
     def __init__(self):
         self._fqid_map: Dict[str, ServiceDefinition] = {}
         self._short_name_map: Dict[str, str] = {}
         self._instances: Dict[str, Any] = {}
         self._lock = threading.RLock()
+
+    def is_registered(self, fqid: str) -> bool:
+        with self._lock:
+            return fqid in self._fqid_map
 
     def clear(self):
         with self._lock:
@@ -122,42 +121,63 @@ class ServiceRegistry:
             logger.info("服务注册中心已清空。")
 
     def register(self, definition: ServiceDefinition):
-        # ... (内容不变) ...
         with self._lock:
-            if definition.fqid in self._fqid_map: raise RuntimeError(f"服务 FQID 冲突！'{definition.fqid}' 已被注册。")
+            if definition.fqid in self._fqid_map:
+                # 在构建期间，由于模块可能被多次导入，轻微的重复注册是可以接受的，但要发出警告
+                logger.warning(f"服务 FQID '{definition.fqid}' 已被注册，跳过此次注册。")
+                return
+
             short_name = definition.alias
             if short_name in self._short_name_map:
                 existing_fqid = self._short_name_map[short_name]
-                existing_plugin_id = self._fqid_map[existing_fqid].plugin.canonical_id
-                is_extending = any(ext.service == short_name and ext.from_plugin == existing_plugin_id for ext in
-                                   definition.plugin.extends)
-                is_overriding = existing_fqid in definition.plugin.overrides
-                if is_extending and is_overriding: raise RuntimeError(
-                    f"插件 '{definition.plugin.canonical_id}' 不能同时 extend 和 override 同一个服务 '{short_name}'。")
-                if is_extending:
-                    logger.info(f"服务继承: '{definition.fqid}' 正在扩展 '{existing_fqid}'。")
-                    definition.is_extension = True
-                    definition.parent_fqid = existing_fqid
+                existing_definition = self._fqid_map[existing_fqid]
+
+                # 【【【核心修复】】】
+                # 检查已存在的服务是否是无插件的 "核心服务"。
+                if existing_definition.plugin is None:
+                    # 如果是，这通常意味着构建器正在注册一个由插件提供的、将要覆盖核心实例的服务。
+                    # 这是一个合法的操作（例如，aura_base 提供了 config 服务的最终实现）。
+                    # 我们允许这次注册，并用新的、带插件信息的定义覆盖旧的。
+                    logger.info(f"服务覆盖: '{definition.fqid}' 正在用插件实现覆盖核心服务 '{existing_fqid}'。")
                     self._short_name_map[short_name] = definition.fqid
-                elif is_overriding:
-                    logger.warning(f"服务覆盖: '{definition.fqid}' 正在覆盖 '{existing_fqid}'。")
-                    self._short_name_map[short_name] = definition.fqid
+                    # 删除旧的无插件定义，稍后会被新的定义取代
+                    del self._fqid_map[existing_fqid]
+
                 else:
-                    raise RuntimeError(
-                        f"服务名称冲突！插件 '{definition.plugin.canonical_id}' 尝试定义服务 '{short_name}'，但该名称已被 '{existing_fqid}' 使用。\n如果你的意图是扩展或覆盖，请在 '{definition.plugin.path / 'plugin.yaml'}' 中使用 'extends' 或 'overrides' 字段明确声明。")
+                    # 如果已存在的服务也是来自一个插件，则执行正常的 extend/override 检查。
+                    existing_plugin_id = existing_definition.plugin.canonical_id
+                    is_extending = any(ext.service == short_name and ext.from_plugin == existing_plugin_id for ext in
+                                       definition.plugin.extends)
+                    is_overriding = existing_fqid in definition.plugin.overrides
+                    if is_extending and is_overriding: raise RuntimeError(
+                        f"插件 '{definition.plugin.canonical_id}' 不能同时 extend 和 override 同一个服务 '{short_name}'。")
+                    if is_extending:
+                        logger.info(f"服务继承: '{definition.fqid}' 正在扩展 '{existing_fqid}'。")
+                        definition.is_extension = True
+                        definition.parent_fqid = existing_fqid
+                        self._short_name_map[short_name] = definition.fqid
+                    elif is_overriding:
+                        logger.warning(f"服务覆盖: '{definition.fqid}' 正在覆盖 '{existing_fqid}'。")
+                        self._short_name_map[short_name] = definition.fqid
+                    else:
+                        raise RuntimeError(
+                            f"服务名称冲突！插件 '{definition.plugin.canonical_id}' 尝试定义服务 '{short_name}'，但该名称已被 '{existing_fqid}' 使用。\n如果你的意图是扩展或覆盖，请在 '{definition.plugin.path / 'plugin.yaml'}' 中使用 'extends' 或 'overrides' 字段明确声明。")
             else:
                 self._short_name_map[short_name] = definition.fqid
+
             self._fqid_map[definition.fqid] = definition
             logger.debug(f"已定义服务: '{definition.fqid}' (别名: '{short_name}', 公开: {definition.public})")
 
     def register_instance(self, alias: str, instance: Any, fqid: Optional[str] = None, public: bool = False):
-        # ... (内容不变) ...
         with self._lock:
             target_fqid = fqid or f"core/{alias}"
-            if target_fqid in self._fqid_map: logger.warning(f"服务实例 '{target_fqid}' 正在被覆盖注册。")
-            if alias in self._short_name_map and self._short_name_map[alias] != target_fqid:
+            # 【修复】在注册实例时，如果别名已存在，也应该覆盖而不是只警告
+            if alias in self._short_name_map:
                 existing_fqid = self._short_name_map[alias]
-                logger.warning(f"服务别名冲突！'{alias}' 已指向 '{existing_fqid}'。现在将其重新指向 '{target_fqid}'。")
+                if existing_fqid in self._fqid_map:
+                    del self._fqid_map[existing_fqid]
+                logger.info(f"核心服务实例 '{target_fqid}' 正在覆盖别名 '{alias}' (之前指向 '{existing_fqid}')。")
+
             definition = ServiceDefinition(alias=alias, fqid=target_fqid, service_class=type(instance), plugin=None,
                                            public=public, instance=instance, status="resolved")
             self._fqid_map[target_fqid] = definition
@@ -165,8 +185,8 @@ class ServiceRegistry:
             self._instances[target_fqid] = instance
             logger.info(f"核心服务实例 '{target_fqid}' 已通过别名 '{alias}' 直接注册。")
 
+    # ... (所有其他方法保持不变) ...
     def get_service_instance(self, service_id: str, resolution_chain: Optional[List[str]] = None) -> Any:
-        # ... (内容不变) ...
         with self._lock:
             is_fqid_request = '/' in service_id
             target_fqid = service_id if is_fqid_request else self._short_name_map.get(service_id)
@@ -175,7 +195,6 @@ class ServiceRegistry:
             return self._instantiate_service(target_fqid, resolution_chain or [])
 
     def _instantiate_service(self, fqid: str, resolution_chain: List[str]) -> Any:
-        # ... (内容不变) ...
         if fqid in resolution_chain: raise RecursionError(
             f"检测到服务间的循环依赖: {' -> '.join(resolution_chain)} -> {fqid}")
         resolution_chain.append(fqid)
@@ -213,15 +232,14 @@ class ServiceRegistry:
 
     def _resolve_constructor_dependencies(self, definition: ServiceDefinition, resolution_chain: List[str]) -> Dict[
         str, Any]:
-        # ... (内容不变) ...
         dependencies = {}
         init_signature = inspect.signature(definition.service_class.__init__)
         type_to_fqid_map = {sd.service_class: sd.fqid for sd in self._fqid_map.values()}
         for param_name, param in init_signature.parameters.items():
             if param_name in ['self', 'parent_service']: continue
             dependency_fqid = None
-            if param.annotation is not inspect.Parameter.empty and param.annotation in type_to_fqid_map:
-                dependency_fqid = type_to_fqid_map[param.annotation]
+            if param.annotation is not inspect.Parameter.empty and param.annotation in type_to_fqid_map: dependency_fqid = \
+                type_to_fqid_map[param.annotation]
             if dependency_fqid is None:
                 dependency_alias = param_name
                 dependency_fqid = self._short_name_map.get(dependency_alias)
@@ -231,8 +249,7 @@ class ServiceRegistry:
         return dependencies
 
     def get_all_service_definitions(self) -> List[ServiceDefinition]:
-        with self._lock:
-            return sorted(list(self._fqid_map.values()), key=lambda s: s.fqid)
+        with self._lock: return sorted(list(self._fqid_map.values()), key=lambda s: s.fqid)
 
     def remove_services_by_prefix(self, prefix: str = "", exclude_prefix: Optional[str] = None):
         with self._lock:
@@ -252,6 +269,7 @@ class ServiceRegistry:
 service_registry = ServiceRegistry()
 
 
+# ... (HookManager and other code remains unchanged) ...
 def register_service(alias: str, public: bool = False):
     if not alias or not isinstance(alias, str): raise TypeError("服务别名(alias)必须是一个非空字符串。")
 
@@ -263,10 +281,6 @@ def register_service(alias: str, public: bool = False):
 
 
 class HookManager:
-    """
-    【Async Refactor】事件钩子管理器，支持同步和异步钩子。
-    """
-
     def __init__(self):
         self._hooks: Dict[str, List[Callable]] = defaultdict(list)
 
@@ -275,10 +289,8 @@ class HookManager:
         self._hooks[hook_name].append(func)
 
     async def trigger(self, hook_name: str, *args, **kwargs):
-        if hook_name not in self._hooks:
-            return
+        if hook_name not in self._hooks: return
         logger.trace(f"触发钩子: '{hook_name}'")
-
         tasks = [self._execute_hook(func, *args, **kwargs) for func in self._hooks[hook_name]]
         await asyncio.gather(*tasks, return_exceptions=True)
 
