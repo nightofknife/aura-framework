@@ -1,4 +1,4 @@
-# src/aura_ide/core_integration/qt_bridge.py
+# aura_ide/core_integration/qt_bridge.py
 
 from __future__ import annotations
 import asyncio

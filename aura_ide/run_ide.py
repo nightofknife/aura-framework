@@ -1,4 +1,4 @@
-# run_ide.py (FINAL RECOMMENDED VERSION)
+# aura_ide/run_ide.py
 
 import sys
 from pathlib import Path  # 1. 导入Path模块

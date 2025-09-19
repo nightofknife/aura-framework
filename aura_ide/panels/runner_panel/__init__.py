@@ -1,4 +1,4 @@
-# src/aura_ide/panels/runner_panel/__init__.py
+# aura_ide/panels/runner_panel/__init__.py
 
 from PySide6.QtWidgets import QStyle, QWidget
 from PySide6.QtGui import QIcon

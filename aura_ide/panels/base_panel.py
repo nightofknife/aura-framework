@@ -1,4 +1,4 @@
-# src/aura_ide/panels/base_panel.py
+# aura_ide/panels/base_panel.py
 
 from abc import ABC, abstractmethod
 from PySide6.QtWidgets import QWidget

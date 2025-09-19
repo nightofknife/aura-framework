@@ -1,4 +1,6 @@
-# src/aura_ide/main_window.py
+# aura_ide/main_window.py
+
+
 
 from PySide6.QtWidgets import QMainWindow, QTabWidget, QApplication
 from PySide6.QtGui import QIcon, QCloseEvent

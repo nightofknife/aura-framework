@@ -1,4 +1,4 @@
-# src/aura_ide/panels/ide_panel/inspector_panel.py
+# aura_ide/panels/ide_panel/inspector_panel.py
 
 from typing import Dict, Any, List
 

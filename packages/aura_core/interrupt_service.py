@@ -77,7 +77,12 @@ class InterruptService:
         for task_id in running_task_ids:
             task_def = all_tasks_defs.get(task_id)
             if task_def:
-                active_set.update(task_def.get('activates_interrupts', []))
+                # 【修复】先获取，再判断，意图更清晰
+                interrupts_to_activate = task_def.get('activates_interrupts')
+                # 【修复】仅当字段存在且为非空列表时才更新
+                if isinstance(interrupts_to_activate, list) and interrupts_to_activate:
+                    active_set.update(interrupts_to_activate)
+                    logger.debug(f"任务 '{task_id}' 激活了中断: {interrupts_to_activate}")
 
         # 过滤掉不存在的规则定义
         return {rule_name for rule_name in active_set if rule_name in interrupt_definitions}

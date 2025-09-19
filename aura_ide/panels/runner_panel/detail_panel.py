@@ -1,4 +1,4 @@
-# src/aura_ide/panels/runner_panel/detail_panel.py (FINAL VERSION with Reliable Progress Bar)
+# aura_ide/panels/runner_panel/detail_panel.py
 
 import json
 import time

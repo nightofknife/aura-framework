@@ -1,6 +1,4 @@
-# -*- coding: utf-8 -*-
-# OdenGraphQt 迁移版（PySide6-ready，API 与 NodeGraphQt 0.6.x 对齐）
-
+# aura_ide/visual_editor/graph.py
 from typing import Dict, Any, List, Optional
 
 # ⬇️ NodeGraphQt -> OdenGraphQt

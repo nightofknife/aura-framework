@@ -113,8 +113,12 @@ class StatePlanner:
                             check_info = async_tasks[task]
                             try:
                                 result = task.result()
-                                # 【核心修复】检查 Orchestrator 返回的字典，而不仅仅是布尔值
-                                if isinstance(result, dict) and result.get('status') == 'success' and result.get('returns') is True:
+                                # 【新增】添加详细日志，便于调试
+                                logger.debug(f"并行状态检查任务 '{check_info['task_name']}' 返回结果: {result}")
+
+                                # 【修复】使用 bool() 放宽检查，将任何 "truthy" 值（如 "True", 1, 非空对象）视为成功
+                                if isinstance(result, dict) and result.get('status') == 'success' and bool(
+                                        result.get('returns', False)):
                                     current_state = check_info['state_name']
                                     logger.info(f"✅ 状态确认: 当前状态是 '{current_state}'。中断其他检查。")
                                     break
@@ -136,8 +140,12 @@ class StatePlanner:
                 logger.info(f"  -> 正在串行检查状态: '{check['state_name']}'...")
                 try:
                     result = await self.orchestrator.execute_task(check['task_name'])
-                    # 【核心修复】同样，检查 Orchestrator 返回的字典
-                    if isinstance(result, dict) and result.get('status') == 'success' and result.get('returns') is True:
+                    # 【新增】添加详细日志
+                    logger.debug(f"串行状态检查任务 '{check['task_name']}' 返回结果: {result}")
+
+                    # 【修复】同样，使用 bool() 放宽检查
+                    if isinstance(result, dict) and result.get('status') == 'success' and bool(
+                            result.get('returns', False)):
                         current_state = check['state_name']
                         logger.info(f"✅ 状态确认: 当前状态是 '{current_state}'。")
                         break  # 找到即停

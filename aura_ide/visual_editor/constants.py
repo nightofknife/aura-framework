@@ -1,4 +1,4 @@
-# src/aura_ide/visual_editor/constants.py
+# aura_ide/visual_editor/constants.py
 
 # Node type identifiers used in NodeGraphQt registration
 NODE_TYPE_ACTION = 'aura.ActionNode'

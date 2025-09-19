@@ -1,6 +1,7 @@
 # packages/aura_core/orchestrator.py (FINAL CORRECTED VERSION)
 
 import asyncio
+import shutil
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional

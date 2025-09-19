@@ -1,4 +1,4 @@
-# src/aura_ide/visual_editor/editor.py
+# aura_ide/visual_editor/editor.py
 
 import yaml
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QMessageBox

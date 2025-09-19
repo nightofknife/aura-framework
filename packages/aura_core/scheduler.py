@@ -1,4 +1,4 @@
-# packages/aura_core/scheduler.py (最终正确版)
+# packages/aura_core/scheduler.py (MODIFIED AND FIXED VERSION)
 
 import asyncio
 import logging
@@ -116,11 +116,8 @@ class Scheduler:
                 config_service = service_registry.get_service_instance('config')
                 config_service.load_environment_configs(self.base_path)
 
-                # 【架构修正】PlanManager.initialize() 现在会负责加载所有 Plan 及其专属资源，
-                # 包括它们各自的 states_map.yaml。这是核心变更点。
                 self.plan_manager.initialize()
 
-                # 加载所有 Plan 共享的 schedule, interrupts, tasks 等
                 self._load_plan_specific_data()
 
                 if self._loop and self._loop.is_running():
@@ -172,8 +169,16 @@ class Scheduler:
             logger.warning("调度器已经处于停止状态。")
             return
         logger.info("用户请求停止调度器及所有后台服务...")
+
+        # 【FIX #3 - Graceful Shutdown】步骤1: 首先发出停止信号
+        if self.is_running:
+            self._loop.call_soon_threadsafe(self.is_running.clear)
+
+        # 【FIX #3 - Graceful Shutdown】步骤2: 然后取消主任务，以中断其等待
         if self._main_task:
             self._loop.call_soon_threadsafe(self._main_task.cancel)
+
+        # 【FIX #3 - Graceful Shutdown】步骤3: 最后等待线程结束
         self._scheduler_thread.join(timeout=10)
         if self._scheduler_thread.is_alive():
             logger.error("调度器线程在超时后未能停止。")
@@ -217,35 +222,60 @@ class Scheduler:
             self.startup_complete_event.set()
 
     async def _consume_main_task_queue(self):
-        while True:
-            tasklet = await self.task_queue.get()
-            logger.debug(f"从主队列获取任务: {tasklet.task_name}")
-            asyncio.create_task(self.execution_manager.submit(tasklet))
-            self.task_queue.task_done()
+        # 【FIX #3 - Graceful Shutdown】循环条件依赖于 is_running 事件
+        while self.is_running.is_set():
+            try:
+                # 【FIX #3 - Graceful Shutdown】使用带超时的 get，避免永久阻塞
+                tasklet = await asyncio.wait_for(self.task_queue.get(), timeout=1.0)
+                logger.debug(f"从主队列获取任务: {tasklet.task_name}")
+                await asyncio.create_task(self.execution_manager.submit(tasklet))
+                self.task_queue.task_done()
+            except asyncio.TimeoutError:
+                # 超时是正常的，继续检查 is_running 标志
+                continue
+            except asyncio.CancelledError:
+                logger.info("主任务队列消费者被取消。")
+                break
 
     async def _consume_interrupt_queue(self):
-        while True:
-            handler_rule = await self.interrupt_queue.get()
-            rule_name = handler_rule.get('name', 'unknown_interrupt')
-            logger.info(f"指挥官: 开始处理中断 '{rule_name}'...")
-            tasks_to_cancel = []
-            with self.shared_data_lock:
-                for task_id, task in self.running_tasks.items():
-                    if not task_id.startswith('interrupt/'):
-                        tasks_to_cancel.append(task)
-            for task in tasks_to_cancel:
-                task.cancel()
-            handler_task_id = f"interrupt/{rule_name}/{uuid.uuid4()}"
-            handler_item = {'plan_name': handler_rule['plan_name'], 'handler_task': handler_rule['handler_task']}
-            tasklet = Tasklet(task_name=handler_task_id, payload=handler_item, is_ad_hoc=True, execution_mode='sync')
-            asyncio.create_task(self.execution_manager.submit(tasklet, is_interrupt_handler=True))
-            self.interrupt_queue.task_done()
+        # 【FIX #3 - Graceful Shutdown】循环条件依赖于 is_running 事件
+        while self.is_running.is_set():
+            try:
+                # 【FIX #3 - Graceful Shutdown】使用带超时的 get
+                handler_rule = await asyncio.wait_for(self.interrupt_queue.get(), timeout=1.0)
+                rule_name = handler_rule.get('name', 'unknown_interrupt')
+                logger.info(f"指挥官: 开始处理中断 '{rule_name}'...")
+                tasks_to_cancel = []
+                with self.shared_data_lock:
+                    for task_id, task in self.running_tasks.items():
+                        if not task_id.startswith('interrupt/'):
+                            tasks_to_cancel.append(task)
+                for task in tasks_to_cancel:
+                    task.cancel()
+                handler_task_id = f"interrupt/{rule_name}/{uuid.uuid4()}"
+                handler_item = {'plan_name': handler_rule['plan_name'], 'handler_task': handler_rule['handler_task']}
+                tasklet = Tasklet(task_name=handler_task_id, payload=handler_item, is_ad_hoc=True, execution_mode='sync')
+                await asyncio.create_task(self.execution_manager.submit(tasklet, is_interrupt_handler=True))
+                self.interrupt_queue.task_done()
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                logger.info("中断队列消费者被取消。")
+                break
 
     async def _event_worker_loop(self, worker_id: int):
-        while True:
-            tasklet = await self.event_task_queue.get()
-            await self.execution_manager.submit(tasklet)
-            self.event_task_queue.task_done()
+        # 【FIX #3 - Graceful Shutdown】循环条件依赖于 is_running 事件
+        while self.is_running.is_set():
+            try:
+                # 【FIX #3 - Graceful Shutdown】使用带超时的 get
+                tasklet = await asyncio.wait_for(self.event_task_queue.get(), timeout=1.0)
+                await self.execution_manager.submit(tasklet)
+                self.event_task_queue.task_done()
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                logger.info(f"事件工作者 #{worker_id} 被取消。")
+                break
 
     @property
     def plans(self) -> Dict[str, 'Orchestrator']:
@@ -288,13 +318,24 @@ class Scheduler:
                     with open(task_file_path, 'r', encoding='utf-8') as f:
                         data = yaml.safe_load(f)
                     if not isinstance(data, dict): continue
-                    relative_path_str = task_file_path.relative_to(tasks_dir).with_suffix('').as_posix()
-                    for task_key, task_definition in data.items():
-                        if isinstance(task_definition, dict) and (
-                                'steps' in task_definition or 'graph' in task_definition):
-                            task_definition.setdefault('execution_mode', 'sync')
-                            full_task_id = f"{plan_name}/{relative_path_str}/{task_key}"
-                            self.all_tasks_definitions[full_task_id] = task_definition
+
+                    # This logic now supports both single-file-single-task (old) and single-file-multiple-tasks (new)
+                    def process_task_definitions(task_data, base_id):
+                        for task_key, task_definition in task_data.items():
+                            if isinstance(task_definition, dict) and 'meta' in task_definition:
+                                task_definition.setdefault('execution_mode', 'sync')
+                                full_task_id = f"{plan_name}/{base_id}/{task_key}".replace("//", "/")
+                                self.all_tasks_definitions[full_task_id] = task_definition
+
+                    if 'steps' in data:  # Old format
+                        task_name_from_file = task_file_path.relative_to(tasks_dir).with_suffix('').as_posix()
+                        data.setdefault('execution_mode', 'sync')
+                        full_task_id = f"{plan_name}/{task_name_from_file}"
+                        self.all_tasks_definitions[full_task_id] = data
+                    else:  # New format
+                        relative_path_str = task_file_path.relative_to(tasks_dir).with_suffix('').as_posix()
+                        process_task_definitions(data, relative_path_str)
+
                 except Exception as e:
                     logger.error(f"加载任务文件 '{task_file_path}' 失败: {e}")
         logger.info(f"任务定义加载完毕，共找到 {len(self.all_tasks_definitions)} 个任务。")
@@ -309,7 +350,9 @@ class Scheduler:
                 if not isinstance(trigger, dict) or 'event' not in trigger: continue
                 event_pattern = trigger['event']
                 plan_name = task_id.split('/')[0]
-                plugin_def = self.plan_manager.plugin_manager.plugin_registry.get(f"plan/{plan_name}")
+                # Assuming plan canonical_id is 'author/plan_name', we extract plan_name
+                plugin_def = next((p for p in self.plan_manager.plugin_manager.plugin_registry.values() if
+                                   p.path.name == plan_name), None)
                 if not plugin_def: continue
                 channel = trigger.get('channel', plugin_def.canonical_id)
                 from functools import partial
@@ -373,7 +416,8 @@ class Scheduler:
             tasklet = Tasklet(task_name=full_task_id, payload=item_to_run,
                               execution_mode=task_def.get('execution_mode', 'sync'))
             if self.is_running and self.is_running.is_set() and self._loop:
-                future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet, high_priority=True), self._loop)
+                future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet, high_priority=True),
+                                                          self._loop)
                 try:
                     future.result(timeout=2)
                 except (asyncio.TimeoutError, queue.Full):
@@ -385,20 +429,34 @@ class Scheduler:
 
     def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None):
         with self.shared_data_lock:
+            # 【FIX #5 - Task ID Validation】步骤1: 获取对应方案的Orchestrator
+            orchestrator = self.plan_manager.get_plan(plan_name)
+            if not orchestrator:
+                return {"status": "error", "message": f"Plan '{plan_name}' not found or not loaded."}
+
+            # 【FIX #5 - Task ID Validation】步骤2: 使用TaskLoader验证任务是否存在
+            if orchestrator.task_loader.get_task_data(task_name) is None:
+                return {"status": "error", "message": f"Task '{task_name}' not found in plan '{plan_name}'."}
+
             full_task_id = f"{plan_name}/{task_name}"
-            if full_task_id not in self.all_tasks_definitions:
-                return {"status": "error", "message": f"Task definition '{full_task_id}' not found."}
-            task_def = self.all_tasks_definitions[full_task_id]
+            # 此时可以安全地获取，因为上面已经验证过了
+            task_def = self.all_tasks_definitions.get(full_task_id)
+            if not task_def:
+                # Fallback for old task format which might not be in all_tasks_definitions
+                task_def = orchestrator.task_loader.get_task_data(task_name)
+
             tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True,
                               payload={'plan_name': plan_name, 'task_name': task_name},
-                              execution_mode=task_def.get('execution_mode', 'sync'), initial_context=params or {})
+                              execution_mode=task_def.get('execution_mode', 'sync'),
+                              initial_context=params or {})
             if self.is_running and self.is_running.is_set() and self._loop:
                 logger.info(f"临时任务 '{full_task_id}' 已通过线程安全方式加入正在运行的队列...")
                 future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet), self._loop)
                 try:
                     future.result(timeout=2)
                 except (asyncio.TimeoutError, queue.Full):
-                    logger.warning(f"Ad-hoc task failed: task queue is full or unresponsive for '{full_task_id}'.")
+                    logger.warning(
+                        f"Ad-hoc task failed: task queue is full or unresponsive for '{full_task_id}'.")
                     return {"status": "error", "message": "Task queue is full or unresponsive."}
             else:
                 logger.info(f"调度器未运行，临时任务 '{full_task_id}' 已加入启动前缓冲区。")
@@ -458,8 +516,8 @@ class Scheduler:
                 current_level[final_part] = None
             elif path.is_dir() and not any(path.iterdir()):
                 current_level.setdefault(final_part, {})
-        logger.debug(f"为 '{plan_name}' 构建的文件树: {tree}")
-        return tree
+            logger.debug(f"为 '{plan_name}' 构建的文件树: {tree}")
+            return tree
 
     def get_tasks_for_plan(self, plan_name: str) -> List[str]:
         with self.shared_data_lock:
@@ -472,7 +530,9 @@ class Scheduler:
 
     def get_all_services_status(self) -> List[Dict[str, Any]]:
         with self.shared_data_lock:
-            return service_registry.get_all_service_definitions()
+            # This now returns dataclass objects, which need to be converted for some UIs
+            service_defs = service_registry.get_all_service_definitions()
+            return [s.__dict__ for s in service_defs]
 
     def get_all_interrupts_status(self) -> List[Dict[str, Any]]:
         with self.shared_data_lock:
@@ -539,19 +599,25 @@ class Scheduler:
         handlers_to_use = [h for h in underlying_logger.handlers if h.name != "api_queue"]
         if not handlers_to_use:
             logger.warning("日志消费者启动，但没有找到文件或控制台等目标处理器。日志将不会被记录。")
-        while True:
+
+        # 【FIX #3 - Graceful Shutdown】循环条件依赖于 is_running 事件
+        while self.is_running.is_set():
             try:
-                log_entry = await self.api_log_queue.get()
+                # 【FIX #3 - Graceful Shutdown】使用带超时的 get
+                log_entry = await asyncio.wait_for(self.api_log_queue.get(), timeout=1.0)
                 if log_entry and isinstance(log_entry, dict):
                     record = logging.makeLogRecord(log_entry)
                     for handler in handlers_to_use:
                         if record.levelno >= handler.level:
                             handler.handle(record)
                 self.api_log_queue.task_done()
+            except asyncio.TimeoutError:
+                continue
             except asyncio.CancelledError:
                 logger.info("日志消费者服务已收到取消信号，正在关闭。")
                 break
             except Exception as e:
+                # Use print here as the logger itself might be the source of the issue
                 print(f"CRITICAL: 日志消费者循环出现严重错误: {e}")
                 await asyncio.sleep(1)
 
@@ -582,3 +648,8 @@ class Scheduler:
         if not orchestrator:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
         return await orchestrator.delete_path(relative_path)
+
+
+
+
+

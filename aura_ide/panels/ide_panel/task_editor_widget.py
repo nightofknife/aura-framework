@@ -1,5 +1,4 @@
-# src/aura_ide/panels/ide_panel/task_editor_widget.py
-
+# aura_ide/panels/ide_panel/task_editor_widget.py
 from typing import Dict, Any, List
 
 from PySide6.QtCore import Signal, Slot

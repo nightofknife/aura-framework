@@ -1,4 +1,4 @@
-# src/aura_ide/panels/ide_panel/ide_page.py [REFACTORED FOR NODE EDITOR]
+# aura_ide/panels/ide_panel/ide_page.py [REFACTORED FOR NODE EDITOR]
 
 import io
 from pathlib import PurePath

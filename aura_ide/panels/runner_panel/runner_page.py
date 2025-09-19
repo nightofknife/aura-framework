@@ -1,5 +1,4 @@
-# src/aura_ide/panels/runner_panel/runner_page.py (FINAL VERSION)
-
+# aura_ide/panels/runner_panel/runner_page.py
 from __future__ import annotations
 
 import json

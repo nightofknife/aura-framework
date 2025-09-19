@@ -1,8 +1,8 @@
-# src/aura_ide/panels/ide_panel/flow_panel.py
+# aura_ide/panels/ide_panel/flow_panel.py
 
 from typing import Dict, Any
 
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Signal, Slot, Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QListWidget, QPushButton, QListWidgetItem,
     QHBoxLayout, QAbstractItemView
