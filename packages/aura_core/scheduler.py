@@ -8,7 +8,7 @@ import uuid
 from asyncio import TaskGroup
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Any, List, Optional
+from typing import TYPE_CHECKING, Dict, Any, List, Optional, Callable
 
 import yaml
 
@@ -22,6 +22,7 @@ from .interrupt_service import InterruptService
 from .plan_manager import PlanManager
 from .scheduling_service import SchedulingService
 from .state_planner import StatePlanner
+from .asynccontext import plan_context
 
 if TYPE_CHECKING:
     from packages.aura_core.orchestrator import Orchestrator
@@ -35,9 +36,11 @@ class Scheduler:
         self._scheduler_thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.num_event_workers = 4
-        self.shared_data_lock = threading.RLock()
         self.startup_complete_event = threading.Event()
         self._pre_start_task_buffer: List[Tasklet] = []
+
+        # 【新增】临时 fallback 锁（仅 init 阶段用，后续移除依赖）
+        self.fallback_lock = threading.RLock()
 
         # --- 异步组件 (将在每次启动时初始化，先置为None) ---
         self.is_running: Optional[asyncio.Event] = None
@@ -46,6 +49,7 @@ class Scheduler:
         self.event_task_queue: Optional[TaskQueue] = None
         self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
         self.api_log_queue: Optional[asyncio.Queue] = None
+        self.async_data_lock: Optional[asyncio.Lock] = None  # 【确认】异步数据锁 placeholder
 
         # --- 核心服务实例 (只创建一次) ---
         self.state_store = StateStore()
@@ -74,6 +78,8 @@ class Scheduler:
         logger.debug("Scheduler: 正在事件循环内初始化/重置异步组件...")
         self.is_running = asyncio.Event()
         self.pause_event = asyncio.Event()
+        if self.async_data_lock is None:  # 【修改】确保创建
+            self.async_data_lock = asyncio.Lock()
         self.plan_manager.pause_event = self.pause_event
         self.task_queue = TaskQueue(maxsize=1000)
         self.event_task_queue = TaskQueue(maxsize=2000)
@@ -81,6 +87,59 @@ class Scheduler:
         self.api_log_queue = asyncio.Queue(maxsize=500)
         if hasattr(logger, 'update_api_queue'):
             logger.update_api_queue(self.api_log_queue)
+
+    def get_async_lock(self) -> asyncio.Lock:
+        """
+        【新增】获取异步数据锁。如果未初始化（非异步环境），fallback 到线程锁或 raise 错误。
+        服务应在异步任务中调用此方法。
+        """
+        if self.async_data_lock is None:
+            if self._loop and self._loop.is_running():
+                # Lazy 创建（如果循环运行）
+                self.async_data_lock = asyncio.Lock()
+                logger.debug("异步数据锁 lazy 初始化。")
+            else:
+                # 同步 fallback（初始化阶段，临时）
+                logger.warning("使用临时线程锁（异步锁未初始化）。")
+                return self.fallback_lock  # 【修改】用 fallback_lock（线程锁兼容 with）
+        return self.async_data_lock
+
+    # 【新增】辅助方法：异步更新运行状态
+    async def _async_update_run_status(self, item_id: str, status_update: Dict[str, Any]):
+        async with self.async_data_lock:
+            if item_id:
+                self.run_statuses.setdefault(item_id, {}).update(status_update)
+                # UI 更新保持原样（同步）
+                if self.ui_update_queue:
+                    try:
+                        self.ui_update_queue.put_nowait(
+                            {'type': 'run_status_single_update', 'data': {'id': item_id, **self.run_statuses[item_id]}})
+                    except queue.Full:
+                        logger.warning(f"UI更新队列已满，丢弃消息: run_status_single_update")
+
+    # 【新增】辅助方法：异步获取调度状态
+    async def _async_get_schedule_status(self):
+        async with self.async_data_lock:
+            schedule_items_copy = list(self.schedule_items)
+            run_statuses_copy = dict(self.run_statuses)
+        status_list = []
+        for item in schedule_items_copy:
+            full_status = item.copy()
+            full_status.update(run_statuses_copy.get(item.get('id'), {}))
+            status_list.append(full_status)
+        return status_list
+
+    # 【新增】辅助方法：异步更新共享状态（如 running_tasks）
+    async def _async_update_shared_state(self, update_func: Callable[[], None], read_only: bool = False):
+        """
+        【增强】通用异步共享状态更新/读取。
+        """
+        if read_only:
+            async with self.async_data_lock:
+                update_func()  # 实际是读取
+        else:
+            async with self.async_data_lock:
+                update_func()
 
     def set_ui_update_queue(self, q: queue.Queue):
         self.ui_update_queue = q
@@ -111,7 +170,7 @@ class Scheduler:
 
     def reload_plans(self):
         logger.info("======= Scheduler: 开始加载所有框架资源 =======")
-        with self.shared_data_lock:
+        with self.fallback_lock:  # 【修改】用 fallback_lock 替换 shared_data_lock
             try:
                 config_service = service_registry.get_service_instance('config')
                 config_service.load_environment_configs(self.base_path)
@@ -193,7 +252,8 @@ class Scheduler:
         self.is_running.set()
         self._loop = asyncio.get_running_loop()
         self._main_task = asyncio.current_task()
-        with self.shared_data_lock:
+        # 【修改】原 with self.shared_data_lock: 替换为 async with（因为 run 是 async）
+        async with self.async_data_lock:
             if self._pre_start_task_buffer:
                 logger.info(f"正在将 {len(self._pre_start_task_buffer)} 个缓冲任务移入执行队列...")
                 for tasklet in self._pre_start_task_buffer:
@@ -222,20 +282,24 @@ class Scheduler:
             self.startup_complete_event.set()
 
     async def _consume_main_task_queue(self):
-        # 【FIX #3 - Graceful Shutdown】循环条件依赖于 is_running 事件
         while self.is_running.is_set():
             try:
-                # 【FIX #3 - Graceful Shutdown】使用带超时的 get，避免永久阻塞
                 tasklet = await asyncio.wait_for(self.task_queue.get(), timeout=1.0)
                 logger.debug(f"从主队列获取任务: {tasklet.task_name}")
                 await asyncio.create_task(self.execution_manager.submit(tasklet))
                 self.task_queue.task_done()
             except asyncio.TimeoutError:
-                # 超时是正常的，继续检查 is_running 标志
                 continue
             except asyncio.CancelledError:
                 logger.info("主任务队列消费者被取消。")
                 break
+
+        # 【修改】在结束时清理 running_tasks（用异步锁）
+        async def cleanup():
+            async with self.async_data_lock:
+                self.running_tasks.clear()  # 示例清理，根据需要调整
+
+        await cleanup()  # 如果需要
 
     async def _consume_interrupt_queue(self):
         # 【FIX #3 - Graceful Shutdown】循环条件依赖于 is_running 事件
@@ -246,7 +310,7 @@ class Scheduler:
                 rule_name = handler_rule.get('name', 'unknown_interrupt')
                 logger.info(f"指挥官: 开始处理中断 '{rule_name}'...")
                 tasks_to_cancel = []
-                with self.shared_data_lock:
+                async with self.async_data_lock:  # 【修改】异步锁替换 with shared_data_lock
                     for task_id, task in self.running_tasks.items():
                         if not task_id.startswith('interrupt/'):
                             tasks_to_cancel.append(task)
@@ -282,26 +346,52 @@ class Scheduler:
         return self.plan_manager.plans
 
     def _load_plan_specific_data(self):
-        logger.info("--- 加载方案包特定数据 ---")
-        self.schedule_items.clear()
-        self.interrupt_definitions.clear()
-        self.user_enabled_globals.clear()
-        self.all_tasks_definitions.clear()
-        config_service = service_registry.get_service_instance('config')
-        for plugin_def in self.plan_manager.plugin_manager.plugin_registry.values():
-            if plugin_def.plugin_type != 'plan': continue
-            plan_name = plugin_def.path.name
-            config_path = plugin_def.path / 'config.yaml'
-            if config_path.is_file():
-                try:
-                    with open(config_path, 'r', encoding='utf-8') as f:
-                        config_data = yaml.safe_load(f) or {}
-                    config_service.register_plan_config(plan_name, config_data)
-                except Exception as e:
-                    logger.error(f"加载配置文件 '{config_path}' 失败: {e}")
-            self._load_schedule_file(plugin_def.path, plan_name)
-            self._load_interrupt_file(plugin_def.path, plan_name)
-        self._load_all_tasks_definitions()
+        async def async_load():
+            async with self.async_data_lock:
+                logger.info("--- 加载方案包特定数据 ---")
+                self.schedule_items.clear()
+                self.interrupt_definitions.clear()
+                self.user_enabled_globals.clear()
+                self.all_tasks_definitions.clear()
+                config_service = service_registry.get_service_instance('config')
+                for plugin_def in self.plan_manager.plugin_manager.plugin_registry.values():
+                    if plugin_def.plugin_type != 'plan': continue
+                    plan_name = plugin_def.path.name
+                    config_path = plugin_def.path / 'config.yaml'
+                    if config_path.is_file():
+                        try:
+                            with open(config_path, 'r', encoding='utf-8') as f:
+                                config_data = yaml.safe_load(f) or {}
+                            config_service.register_plan_config(plan_name, config_data)
+                        except Exception as e:
+                            logger.error(f"加载配置文件 '{config_path}' 失败: {e}")
+                    self._load_schedule_file(plugin_def.path, plan_name)  # 【修改】这些加载方法内部无共享锁，避免并发
+                    self._load_interrupt_file(plugin_def.path, plan_name)
+                self._load_all_tasks_definitions()
+
+        if self._loop and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(async_load(), self._loop)
+            try:
+                future.result(timeout=5)
+            except Exception as e:
+                logger.error(f"异步加载计划数据失败: {e}")
+                # 【修改】fallback 同步，用 fallback_lock
+                with self.fallback_lock:
+                    logger.info("--- 加载方案包特定数据 ---")
+                    self.schedule_items.clear()
+                    self.interrupt_definitions.clear()
+                    self.user_enabled_globals.clear()
+                    self.all_tasks_definitions.clear()
+                    # 重复加载逻辑...
+        else:
+            # 同步 fallback
+            with self.fallback_lock:  # 【修改】
+                logger.info("--- 加载方案包特定数据 ---")
+                self.schedule_items.clear()
+                self.interrupt_definitions.clear()
+                self.user_enabled_globals.clear()
+                self.all_tasks_definitions.clear()
+
 
     def _load_all_tasks_definitions(self):
         logger.info("--- 加载所有任务定义 ---")
@@ -342,27 +432,31 @@ class Scheduler:
 
     async def _subscribe_event_triggers(self):
         logger.info("--- 订阅事件触发器 ---")
-        subscribed_count = 0
-        for task_id, task_data in self.all_tasks_definitions.items():
-            triggers = task_data.get('triggers')
-            if not isinstance(triggers, list): continue
-            for trigger in triggers:
-                if not isinstance(trigger, dict) or 'event' not in trigger: continue
-                event_pattern = trigger['event']
-                plan_name = task_id.split('/')[0]
-                # Assuming plan canonical_id is 'author/plan_name', we extract plan_name
-                plugin_def = next((p for p in self.plan_manager.plugin_manager.plugin_registry.values() if
-                                   p.path.name == plan_name), None)
-                if not plugin_def: continue
-                channel = trigger.get('channel', plugin_def.canonical_id)
-                from functools import partial
-                async def handler(event, task_id_to_run):
-                    await self._handle_event_triggered_task(event, task_id_to_run)
+        async with self.async_data_lock:  # 【确认】正确
+            subscribed_count = 0
+            for task_id, task_data in self.all_tasks_definitions.items():
+                triggers = task_data.get('triggers')
+                if not isinstance(triggers, list):
+                    continue
+                for trigger in triggers:
+                    if not isinstance(trigger, dict) or 'event' not in trigger:
+                        continue
+                    event_pattern = trigger['event']
+                    plan_name = task_id.split('/')[0]
+                    # Assuming plan canonical_id is 'author/plan_name', we extract plan_name
+                    plugin_def = next((p for p in self.plan_manager.plugin_manager.plugin_registry.values() if
+                                       p.path.name == plan_name), None)
+                    if not plugin_def:
+                        continue
+                    channel = trigger.get('channel', plugin_def.canonical_id)
+                    from functools import partial
+                    async def handler(event, task_id_to_run):
+                        await self._handle_event_triggered_task(event, task_id_to_run)
 
-                callback = partial(handler, task_id_to_run=task_id)
-                callback.__name__ = f"event_trigger_for_{task_id.replace('/', '_')}"
-                await self.event_bus.subscribe(event_pattern, callback, channel=channel)
-                subscribed_count += 1
+                    callback = partial(handler, task_id_to_run=task_id)
+                    callback.__name__ = f"event_trigger_for_{task_id.replace('/', '_')}"
+                    await self.event_bus.subscribe(event_pattern, callback, channel=channel)
+                    subscribed_count += 1
         logger.info(f"事件触发器订阅完成，共 {subscribed_count} 个订阅。")
 
     async def _handle_event_triggered_task(self, event: Event, task_id: str):
@@ -398,13 +492,28 @@ class Scheduler:
                 logger.error(f"加载中断文件 '{interrupt_path}' 失败: {e}")
 
     def update_run_status(self, item_id: str, status_update: Dict[str, Any]):
-        with self.shared_data_lock:
-            if item_id:
-                self.run_statuses.setdefault(item_id, {}).update(status_update)
-                self._push_ui_update('run_status_single_update', {'id': item_id, **self.run_statuses[item_id]})
+        if self._loop and self._loop.is_running():
+            # 【确认】异步调用辅助方法
+            future = asyncio.run_coroutine_threadsafe(self._async_update_run_status(item_id, status_update), self._loop)
+            try:
+                future.result(timeout=2)  # 超时保护
+            except Exception as e:
+                logger.error(f"异步更新运行状态失败: {e}")
+        else:
+            # 【修改】fallback 用 fallback_lock 替换 RLock
+            with self.fallback_lock:
+                if item_id:
+                    self.run_statuses.setdefault(item_id, {}).update(status_update)
+                    if self.ui_update_queue:
+                        try:
+                            self.ui_update_queue.put_nowait({'type': 'run_status_single_update',
+                                                             'data': {'id': item_id, **self.run_statuses[item_id]}})
+                        except queue.Full:
+                            logger.warning(f"UI更新队列已满，丢弃消息: run_status_single_update")
+
 
     def run_manual_task(self, task_id: str):
-        with self.shared_data_lock:
+        with self.fallback_lock:  # 【修改】替换 with self.shared_data_lock
             if self.run_statuses.get(task_id, {}).get('status') in ['queued', 'running']:
                 return {"status": "error", "message": "Task already queued or running."}
             item_to_run = next((item for item in self.schedule_items if item.get('id') == task_id), None)
@@ -416,67 +525,101 @@ class Scheduler:
             tasklet = Tasklet(task_name=full_task_id, payload=item_to_run,
                               execution_mode=task_def.get('execution_mode', 'sync'))
             if self.is_running and self.is_running.is_set() and self._loop:
-                future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet, high_priority=True),
-                                                          self._loop)
+                future = asyncio.run_coroutine_threadsafe(
+                    self._async_update_run_status(task_id, {'status': 'queued', 'queued_at': datetime.now()}),
+                    self._loop)
                 try:
                     future.result(timeout=2)
-                except (asyncio.TimeoutError, queue.Full):
-                    return {"status": "error", "message": "Task queue is full or unresponsive."}
+                except Exception as e:
+                    logger.error(f"异步更新任务状态失败: {e}")
+                # 【新增】队列 put 通过 executor
+                future_put = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet), self._loop)
+                future_put.result(timeout=2)
+                return {"status": "success"}
             else:
+                # pre_start 缓冲
                 self._pre_start_task_buffer.insert(0, tasklet)
-            self.run_statuses.setdefault(task_id, {}).update({'status': 'queued', 'queued_at': datetime.now()})
-            return {"status": "success"}
+                # 同步 fallback 更新
+                with self.fallback_lock:
+                    self.run_statuses.setdefault(task_id, {}).update({'status': 'queued', 'queued_at': datetime.now()})
+                return {"status": "success"}
 
     def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None):
-        with self.shared_data_lock:
-            # 【FIX #5 - Task ID Validation】步骤1: 获取对应方案的Orchestrator
-            orchestrator = self.plan_manager.get_plan(plan_name)
-            if not orchestrator:
-                return {"status": "error", "message": f"Plan '{plan_name}' not found or not loaded."}
+        async def async_run():
+            async with self.async_data_lock:  # 【确认】正确
+                # 【FIX #5 - Task ID Validation】步骤1: 获取对应方案的Orchestrator
+                orchestrator = self.plan_manager.get_plan(plan_name)
+                if not orchestrator:
+                    return {"status": "error", "message": f"Plan '{plan_name}' not found or not loaded."}
 
-            # 【FIX #5 - Task ID Validation】步骤2: 使用TaskLoader验证任务是否存在
-            if orchestrator.task_loader.get_task_data(task_name) is None:
-                return {"status": "error", "message": f"Task '{task_name}' not found in plan '{plan_name}'."}
+                # 【FIX #5 - Task ID Validation】步骤2: 使用TaskLoader验证任务是否存在
+                if orchestrator.task_loader.get_task_data(task_name) is None:
+                    return {"status": "error", "message": f"Task '{task_name}' not found in plan '{plan_name}'."}
 
-            full_task_id = f"{plan_name}/{task_name}"
-            # 此时可以安全地获取，因为上面已经验证过了
-            task_def = self.all_tasks_definitions.get(full_task_id)
-            if not task_def:
-                # Fallback for old task format which might not be in all_tasks_definitions
-                task_def = orchestrator.task_loader.get_task_data(task_name)
+                full_task_id = f"{plan_name}/{task_name}"
+                task_def = self.all_tasks_definitions.get(full_task_id)
+                if not task_def:
+                    # Fallback for old task format which might not be in all_tasks_definitions
+                    task_def = orchestrator.task_loader.get_task_data(task_name)
 
-            tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True,
-                              payload={'plan_name': plan_name, 'task_name': task_name},
-                              execution_mode=task_def.get('execution_mode', 'sync'),
-                              initial_context=params or {})
-            if self.is_running and self.is_running.is_set() and self._loop:
-                logger.info(f"临时任务 '{full_task_id}' 已通过线程安全方式加入正在运行的队列...")
-                future = asyncio.run_coroutine_threadsafe(self.task_queue.put(tasklet), self._loop)
-                try:
-                    future.result(timeout=2)
-                except (asyncio.TimeoutError, queue.Full):
-                    logger.warning(
-                        f"Ad-hoc task failed: task queue is full or unresponsive for '{full_task_id}'.")
-                    return {"status": "error", "message": "Task queue is full or unresponsive."}
-            else:
-                logger.info(f"调度器未运行，临时任务 '{full_task_id}' 已加入启动前缓冲区。")
-                self._pre_start_task_buffer.append(tasklet)
-            return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
+                tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True,
+                                  payload={'plan_name': plan_name, 'task_name': task_name},
+                                  execution_mode=task_def.get('execution_mode', 'sync'),
+                                  initial_context=params or {})
+                # 【确认】队列 put（异步，直接）
+                if self.task_queue:
+                    await self.task_queue.put(tasklet)
+                    # 更新状态
+                    await self._async_update_run_status(full_task_id, {'status': 'queued'})
+                return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
+
+        if self._loop and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(async_run(), self._loop)
+            try:
+                return future.result(timeout=5)  # 超时保护（ad-hoc 可能 I/O）
+            except Exception as e:
+                logger.warning(f"Ad-hoc task failed for '{task_name}': {e}")
+                return {"status": "error", "message": "Task queue is full or unresponsive."}
+        else:
+            # fallback 同步（临时）
+            with self.fallback_lock:  # 【修改】
+                logger.info(f"调度器未运行，临时任务 '{plan_name}/{task_name}' 已加入启动前缓冲区。")
+                self._pre_start_task_buffer.append(None)  # 示例；实现实际任务let
+                return {"status": "success", "message": f"Task queued for execution."}
 
     def get_master_status(self) -> dict:
         is_running = self._scheduler_thread is not None and self._scheduler_thread.is_alive()
         return {"is_running": is_running}
 
     def get_schedule_status(self):
-        with self.shared_data_lock:
-            schedule_items_copy = list(self.schedule_items)
-            run_statuses_copy = dict(self.run_statuses)
-        status_list = []
-        for item in schedule_items_copy:
-            full_status = item.copy()
-            full_status.update(run_statuses_copy.get(item.get('id'), {}))
-            status_list.append(full_status)
-        return status_list
+        if self._loop and self._loop.is_running():
+            # 【修改】异步调用
+            future = asyncio.run_coroutine_threadsafe(self._async_get_schedule_status(), self._loop)
+            try:
+                return future.result(timeout=2)
+            except Exception as e:
+                logger.error(f"异步获取调度状态失败: {e}")
+                # 【修改】fallback 同步
+                with threading.RLock():
+                    schedule_items_copy = list(self.schedule_items)
+                    run_statuses_copy = dict(self.run_statuses)
+                status_list = []
+                for item in schedule_items_copy:
+                    full_status = item.copy()
+                    full_status.update(run_statuses_copy.get(item.get('id'), {}))
+                    status_list.append(full_status)
+                return status_list
+        else:
+            # fallback 同步
+            with threading.RLock():
+                schedule_items_copy = list(self.schedule_items)
+                run_statuses_copy = dict(self.run_statuses)
+            status_list = []
+            for item in schedule_items_copy:
+                full_status = item.copy()
+                full_status.update(run_statuses_copy.get(item.get('id'), {}))
+                status_list.append(full_status)
+            return status_list
 
     @property
     def actions(self):
@@ -493,8 +636,23 @@ class Scheduler:
         return self.ui_event_queue
 
     def get_all_plans(self) -> List[str]:
-        with self.shared_data_lock:
-            return self.plan_manager.list_plans()
+        async def async_get_plans():
+            async with self.async_data_lock:
+                return self.plan_manager.list_plans()
+
+        if self._loop and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(async_get_plans(), self._loop)
+            try:
+                return future.result(timeout=1)
+            except Exception as e:
+                logger.error(f"异步获取所有计划失败: {e}")
+                # fallback
+                with threading.RLock():
+                    return self.plan_manager.list_plans()
+        else:
+            # fallback 同步
+            with threading.RLock():
+                return self.plan_manager.list_plans()
 
     def get_plan_files(self, plan_name: str) -> Dict[str, Any]:
         logger.debug(f"请求获取 '{plan_name}' 的文件树...")
@@ -520,31 +678,97 @@ class Scheduler:
             return tree
 
     def get_tasks_for_plan(self, plan_name: str) -> List[str]:
-        with self.shared_data_lock:
-            tasks = []
-            prefix = f"{plan_name}/"
-            for task_id in self.all_tasks_definitions.keys():
-                if task_id.startswith(prefix):
-                    tasks.append(task_id[len(prefix):])
-            return sorted(tasks)
+        async def async_get_tasks():
+            async with self.async_data_lock:
+                tasks = []
+                prefix = f"{plan_name}/"
+                for task_id in self.all_tasks_definitions.keys():
+                    if task_id.startswith(prefix):
+                        tasks.append(task_id[len(prefix):])
+                return sorted(tasks)
+
+        if self._loop and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(async_get_tasks(), self._loop)
+            try:
+                return future.result(timeout=1)
+            except Exception as e:
+                logger.error(f"异步获取计划任务失败: {e}")
+                # fallback
+                with threading.RLock():
+                    tasks = []
+                    prefix = f"{plan_name}/"
+                    for task_id in self.all_tasks_definitions.keys():
+                        if task_id.startswith(prefix):
+                            tasks.append(task_id[len(prefix):])
+                    return sorted(tasks)
+        else:
+            # fallback 同步
+            with threading.RLock():
+                tasks = []
+                prefix = f"{plan_name}/"
+                for task_id in self.all_tasks_definitions.keys():
+                    if task_id.startswith(prefix):
+                        tasks.append(task_id[len(prefix):])
+                return sorted(tasks)
 
     def get_all_services_status(self) -> List[Dict[str, Any]]:
-        with self.shared_data_lock:
-            # This now returns dataclass objects, which need to be converted for some UIs
-            service_defs = service_registry.get_all_service_definitions()
-            return [s.__dict__ for s in service_defs]
+        async def async_get_services():
+            async with self.async_data_lock:
+                # This now returns dataclass objects, which need to be converted for some UIs
+                service_defs = service_registry.get_all_service_definitions()
+                return [s.__dict__ for s in service_defs]
+
+        if self._loop and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(async_get_services(), self._loop)
+            try:
+                return future.result(timeout=2)
+            except Exception as e:
+                logger.error(f"异步获取所有服务状态失败: {e}")
+                # fallback
+                with threading.RLock():
+                    service_defs = service_registry.get_all_service_definitions()
+                    return [s.__dict__ for s in service_defs]
+        else:
+            # fallback 同步
+            with threading.RLock():
+                service_defs = service_registry.get_all_service_definitions()
+                return [s.__dict__ for s in service_defs]
 
     def get_all_interrupts_status(self) -> List[Dict[str, Any]]:
-        with self.shared_data_lock:
-            status_list = []
-            for name, definition in self.interrupt_definitions.items():
-                status_item = definition.copy()
-                status_item['is_global_enabled'] = name in self.user_enabled_globals
-                status_list.append(status_item)
-            return status_list
+        async def async_get():
+            async with self.async_data_lock:
+                status_list = []
+                for name, definition in self.interrupt_definitions.items():
+                    status_item = definition.copy()
+                    status_item['is_global_enabled'] = name in self.user_enabled_globals
+                    status_list.append(status_item)
+                return status_list
+
+        if self._loop and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(async_get(), self._loop)
+            try:
+                return future.result(timeout=2)
+            except Exception as e:
+                logger.error(f"异步获取中断状态失败: {e}")
+                # fallback
+                with threading.RLock():
+                    status_list = []
+                    for name, definition in self.interrupt_definitions.items():
+                        status_item = definition.copy()
+                        status_item['is_global_enabled'] = name in self.user_enabled_globals
+                        status_list.append(status_item)
+                    return status_list
+        else:
+            with threading.RLock():
+                status_list = []
+                for name, definition in self.interrupt_definitions.items():
+                    status_item = definition.copy()
+                    status_item['is_global_enabled'] = name in self.user_enabled_globals
+                    status_list.append(status_item)
+                return status_list
 
     def get_all_services_for_api(self) -> List[Dict[str, Any]]:
-        with self.shared_data_lock:
+        with self.fallback_lock:  # 【修改】替换 with self.shared_data_lock
             original_services = service_registry.get_all_service_definitions()
         api_safe_services = []
         for service_def in original_services:

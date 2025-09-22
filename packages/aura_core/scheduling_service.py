@@ -1,5 +1,3 @@
-# packages/aura_core/scheduling_service.py (Fixed with Context Isolation)
-
 import asyncio
 from datetime import datetime
 
@@ -7,9 +5,8 @@ from croniter import croniter
 
 from packages.aura_core.task_queue import Tasklet
 from packages.aura_core.logger import logger
-# 【修复】导入用于设置配置上下文的 ContextVar
 from plans.aura_base.services.config_service import current_plan_name
-
+from .asynccontext import plan_context
 
 class SchedulingService:
     """
@@ -40,7 +37,7 @@ class SchedulingService:
 
     async def _check_and_enqueue_tasks(self, now: datetime):
         """检查所有调度项，并将到期的任务异步加入主任务队列。"""
-        with self.scheduler.shared_data_lock:
+        async with self.scheduler.get_async_lock():  # 【修改】替换 with self.scheduler.shared_data_lock 为异步锁
             schedule_items_copy = list(self.scheduler.schedule_items)
 
         for item in schedule_items_copy:
@@ -50,38 +47,35 @@ class SchedulingService:
             if not item_id or not plan_name or not item.get('enabled', False):
                 continue
 
-            # 【修复】为每个任务的检查设置独立的上下文
-            token = current_plan_name.set(plan_name)
-            try:
-                with self.scheduler.shared_data_lock:
-                    status = self.scheduler.run_statuses.get(item_id, {})
-                    if status.get('status') in ['queued', 'running']:
-                        continue
+            # 【确认】用 async with plan_context 包裹整个检查
+            async with plan_context(plan_name):
+                try:
+                    async with self.scheduler.get_async_lock():  # 【修改】替换 with shared_data_lock
+                        status = self.scheduler.run_statuses.get(item_id, {})
+                        if status.get('status') in ['queued', 'running']:
+                            continue
 
-                # 现在 _is_ready_to_run 可以在正确的上下文中安全地执行任何操作
-                if self._is_ready_to_run(item, now, status):
-                    logger.info(f"定时任务 '{item.get('name', item_id)}' ({plan_name}) 条件满足，已加入执行队列。")
+                    if self._is_ready_to_run(item, now, status):
+                        logger.info(f"定时任务 '{item.get('name', item_id)}' ({plan_name}) 条件满足，已加入执行队列。")
 
-                    full_task_id = f"{plan_name}/{item['task']}"
-                    task_def = self.scheduler.all_tasks_definitions.get(full_task_id, {})
+                        full_task_id = f"{plan_name}/{item['task']}"
+                        task_def = self.scheduler.all_tasks_definitions.get(full_task_id, {})
 
-                    tasklet = Tasklet(
-                        task_name=full_task_id,
-                        payload=item,
-                        execution_mode=task_def.get('execution_mode', 'sync')
-                    )
-                    await self.scheduler.task_queue.put(tasklet)
+                        tasklet = Tasklet(
+                            task_name=full_task_id,
+                            payload=item,
+                            execution_mode=task_def.get('execution_mode', 'sync')
+                        )
+                        await self.scheduler.task_queue.put(tasklet)
 
-                    with self.scheduler.shared_data_lock:
-                        self.scheduler.run_statuses.setdefault(item_id, {}).update({
-                            'status': 'queued',
-                            'queued_at': now
-                        })
-            except Exception as e:
-                logger.error(f"在检查定时任务 '{item_id}' 时发生错误: {e}", exc_info=True)
-            finally:
-                # 【修复】无论成功与否，都必须重置上下文
-                current_plan_name.reset(token)
+                        async with self.scheduler.get_async_lock():  # 【修改】替换最后 with shared_data_lock
+                            self.scheduler.run_statuses.setdefault(item_id, {}).update({
+                                'status': 'queued',
+                                'queued_at': now
+                            })
+                except Exception as e:
+                    logger.error(f"在检查定时任务 '{item_id}' 时发生错误: {e}", exc_info=True)
+                    # 管理器确保 reset，即使异常
 
     def _is_ready_to_run(self, item, now, status) -> bool:
         # 这个方法本身不需要修改，但现在它在被调用时，已经处于正确的上下文中了。
@@ -116,4 +110,3 @@ class SchedulingService:
         #         return True
 
         return False
-

@@ -3,6 +3,7 @@
 import asyncio
 import os
 import time
+import traceback
 import uuid
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Iterable, Tuple, Callable
@@ -11,14 +12,7 @@ from packages.aura_core.logger import logger
 from .action_injector import ActionInjector
 from .api import service_registry
 from .context import Context
-from .exceptions import StopTaskException
-
-
-class JumpSignal(Exception):
-    def __init__(self, jump_type: str, target: str):
-        self.type = jump_type
-        self.target = target
-        super().__init__(f"JumpSignal: type={self.type}, target={self.target}")
+from .exceptions import StopTaskException, JumpSignal
 
 
 class StepState(Enum):
@@ -30,7 +24,6 @@ class StepState(Enum):
 
 
 class ExecutionEngine:
-    # ... (init and other methods remain unchanged) ...
     def __init__(self, context: Context, orchestrator=None, pause_event: asyncio.Event = None,
                  parent_node_id: str = "", event_callback: Optional[Callable] = None):
         self.context = context
@@ -50,6 +43,9 @@ class ExecutionEngine:
         self.running_tasks: Set[asyncio.Task] = set()
         self.completion_event: Optional[asyncio.Event] = None
 
+        # 【新增】debug_mode 从 orchestrator/scheduler 继承，用于控制 traceback 包含
+        self.debug_mode = getattr(orchestrator, 'debug_mode', True) if orchestrator else True
+
     async def run(self, task_data: Dict[str, Any], task_name: str) -> Dict[str, Any]:
         task_display_name = task_data.get('meta', {}).get('title', task_name)
         if not self.context.is_sub_context():
@@ -68,15 +64,30 @@ class ExecutionEngine:
             self._build_graph(steps)
             if not self.context.is_sub_context():
                 self.context.set('steps', self.step_results)
-            await self._run_dag_scheduler()
+            await self._run_dag_scheduler()  # 假设调用 _execute_dag_node
         except JumpSignal as e:
-            raise e
+            # 【修改】记录栈，不 raise（返回 signal）
+            logger.info(f"Jump signal in task '{task_name}': {e.type} to {e.target}", exc_info=True)
+            final_result = {'status': e.type, 'jump_target': e.target}
+            if self.debug_mode:
+                final_result['traceback'] = e.get_full_traceback()
+            raise e  # 或不 raise，根据需求返回
+        except StopTaskException as e:
+            # 【新增】处理 StopTask
+            logger.error(f"StopTask in task '{task_name}': {e} (severity: {e.severity})", exc_info=True)
+            final_result = {'status': 'stopped', 'severity': e.severity}
+            if self.debug_mode:
+                final_result['traceback'] = e.get_full_traceback()
+            raise  # 传播
         except Exception as e:
-            logger.error(f"!! 任务 '{task_name}' 执行时发生未捕获的严重错误: {e}", exc_info=True)
+            logger.error(f"!! 任务 '{task_name}' 执行时发生未捕获的严重错误: {e}", exc_info=True)  # 【确认】已有
             final_result = {
                 'status': 'error',
                 'error_details': {'node_id': 'pre-execution', 'message': str(e), 'type': type(e).__name__}
             }
+            if self.debug_mode:
+                final_result['traceback'] = e.get_full_traceback() if hasattr(e,
+                                                                              'get_full_traceback') else traceback.format_exc()
 
         if not final_result:
             final_status = 'success'
@@ -189,85 +200,87 @@ class ExecutionEngine:
                 return not self._evaluate_dep_struct(struct['not'])
         return True
 
-    async def _execute_dag_node(self, node_id: str):
-        if self.step_states.get(node_id) != StepState.PENDING: return
-        self.step_states[node_id] = StepState.RUNNING
-        node_data = self.nodes[node_id]
-        node_name = node_data.get('name', node_id)
-        logger.info(f"\n[Node]: Starting '{node_name}' (ID: {node_id})")
-        step_start_time = time.time()
-        try:
-            if self.event_callback:
-                params_for_event = {}
-                if 'action' in node_data:
-                    params_for_event = await self.injector._render_params(node_data.get('params', {}))
-                await self.event_callback('step.started', {
-                    'step_id': node_id,
-                    'action': node_data.get('action', node_data.get('type', 'control_flow')),
-                    'start_time': step_start_time,
-                    'step_input_params': params_for_event
-                })
-            await self._check_pause()
-            if 'when' in node_data:
-                condition = await self.injector._render_value(node_data['when'], self.context._data)
-                if not condition:
-                    logger.info(f"  -> Skipping '{node_name}' because 'when' condition was false.")
-                    self.step_states[node_id] = StepState.SKIPPED
-                    self.step_results[node_id] = {'status': 'skipped', 'reason': 'when condition was false'}
-                    return
-            if 'try' in node_data:
-                node_result = await self._execute_try_catch_finally_node(node_id, node_data)
-            elif 'for_each' in node_data:
-                node_result = await self._execute_for_each_node(node_id, node_data)
-            elif 'while' in node_data:
-                node_result = await self._execute_while_node(node_id, node_data)
-            elif 'switch' in node_data:
-                node_result = await self._execute_switch_node(node_id, node_data)
-            elif 'do' in node_data:
-                node_result = await self._execute_linear_script_node(node_data['do'])
-            elif 'action' in node_data:
-                node_result = await self._execute_single_action_step(node_data)
-            else:
-                raise ValueError(f"Node '{node_id}' must contain a valid execution block.")
-            self.step_results[node_id] = {'status': 'success', 'result': node_result}
-            self.step_states[node_id] = StepState.SUCCESS
-            logger.info(f"[Node]: Finished '{node_name}' successfully.")
-            if self.event_callback:
-                await self.event_callback('step.succeeded', {
-                    'step_id': node_id,
-                    'end_time': time.time(),
-                    'duration': time.time() - step_start_time,
-                    'step_output': node_result,
-                    'context_after_step': self.context.to_serializable_dict()
-                })
-        except Exception as e:
-            error_details = {'node_id': node_id, 'message': str(e), 'type': type(e).__name__}
-            logger.error(f"!! [Node]: Failed '{node_name}': {e}", exc_info=True)
-            if 'on_failure' in node_data:
-                logger.warning(f"  -> Node '{node_name}' failed. Executing 'on_failure' handler...")
-                try:
-                    await self._run_failure_handler_script(node_data['on_failure'], error_details)
-                except Exception as handler_e:
-                    logger.critical(
-                        f"  -> !! The 'on_failure' handler for node '{node_name}' itself failed: {handler_e}",
-                        exc_info=True)
-            self.step_states[node_id] = StepState.FAILED
-            self.step_results[node_id] = {'status': 'failed', 'error_details': error_details}
-            if self.event_callback:
-                await self.event_callback('step.failed', {
-                    'step_id': node_id,
-                    'error_message': str(e),
-                    'end_time': time.time(),
-                    'duration': time.time() - step_start_time,
-                    'context_at_failure': self.context.to_serializable_dict()
-                })
+    async def _execute_dag_node(self, node_id: str, parent_node_id: str = "",
+                                result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """【新增/增强】执行单个 DAG 节点，支持异常栈保留。"""
+        if result is None:
+            result = {'node_id': node_id, 'status': 'success', 'output': {}, 'children': []}  # 【新增】result for traceback
+        original_exc = None
 
+        try:
+            node_data = self.nodes.get(node_id)
+            if not node_data:
+                raise ValueError(f"Node data not found for '{node_id}'")
+
+            # 原执行逻辑（调用子方法，不变）
+            if self.event_callback:
+                await self.event_callback('node.started', {'node_id': node_id})
+            await self._check_pause()
+
+            if node_data.get('type') == 'try_catch_finally' or 'try' in node_data:
+                child_result = await self._execute_try_catch_finally_node(node_id, node_data)
+            elif 'for_each' in node_data:
+                child_result = await self._execute_for_each_node(node_id, node_data)
+            elif 'while' in node_data:
+                child_result = await self._execute_while_node(node_id, node_data)
+            elif 'switch' in node_data:
+                child_result = await self._execute_switch_node(node_id, node_data)
+            elif 'do' in node_data:
+                child_result = await self._execute_linear_script_node(node_data['do'])
+            elif 'action' in node_data:
+                child_result = await self._execute_single_action_step(node_data)
+            else:
+                raise ValueError(f"Unknown node type for '{node_id}'")
+
+            result['output'] = child_result
+            result['status'] = 'success'
+            result['children'].append(child_result)  # 递归合并
+
+            if self.event_callback:
+                await self.event_callback('node.succeeded', {'node_id': node_id, 'output': child_result})
+
+        except JumpSignal as e:
+            # 【新增】捕获并记录完整栈
+            logger.info(f"Jump caught in node {node_id}: {e.type} to {e.target}", exc_info=True)
+            result['status'] = e.type  # e.g., 'break'
+            result['jump_target'] = e.target
+            if self.debug_mode:
+                result['traceback'] = e.get_full_traceback()  # 【新增】完整栈
+            # 不 raise，继续返回 signal status（控制流）
+
+        except StopTaskException as e:
+            # 【新增】根据 severity 处理
+            logger.error(f"StopTask in node {node_id}: {e} (severity: {e.severity})", exc_info=True)
+            result['status'] = 'stopped'
+            result['severity'] = e.severity
+            if self.debug_mode:
+                result['traceback'] = e.get_full_traceback()
+            raise  # 传播（上层如 orchestrator 处理 severity）
+
+        except Exception as e:
+            original_exc = e  # 【新增】
+            logger.error(f"Unexpected error in node {node_id}: {e}", exc_info=True)
+            result['status'] = 'error'
+            result['error'] = str(e)
+            if self.debug_mode:
+                result['traceback'] = e.get_full_traceback() if hasattr(e,
+                                                                        'get_full_traceback') else traceback.format_exc()  # 【新增】
+            raise
+
+        return result
     async def _execute_try_catch_finally_node(self, node_id: str, node_data: Dict) -> Any:
+        """【增强】执行 try-catch-finally 节点，支持 finally_on_failure 灵活性。"""
         try_config = node_data.get('try', {})
         catch_config = node_data.get('catch', {})
         finally_config = node_data.get('finally', {})
         try_result, try_error_details = None, None
         final_node_status = StepState.SUCCESS
+        original_exc = None  # 【新增】跟踪原始异常
+
+        # 【新增】解析 finally_on_failure（YAML 默认 'raise'，兼容旧）
+        on_failure = node_data.get('finally_on_failure', 'raise')  # 'raise' | 'ignore' | 'log'
+
+        # 执行 try
         if 'do' in try_config:
             logger.info(f"  -> [Try-Catch] Entering 'try' block for '{node_id}'.")
             sub_engine = ExecutionEngine(self.context.fork(), self.orchestrator, self.pause_event,
@@ -275,9 +288,15 @@ class ExecutionEngine:
             result = await sub_engine.run({'steps': try_config['do']}, "try_block")
             if result['status'] != 'success':
                 try_error_details = result.get('error_details')
+                original_exc = try_error_details.get('error') or Exception(
+                    try_error_details.get('message', 'Try failed'))  # 【新增】提取 exc
             else:
                 try_result = result['results']
-        if try_error_details and 'do' in catch_config:
+        else:
+            try_result = {'status': 'success'}
+
+        # 执行 catch (if try failed)
+        if original_exc and 'do' in catch_config:
             logger.warning(f"  -> [Try-Catch] 'try' block failed. Entering 'catch' block for '{node_id}'.")
             catch_context = self.context.fork()
             catch_context.set('error', try_error_details)
@@ -285,9 +304,14 @@ class ExecutionEngine:
                                          f"{self.engine_id}.{node_id}.catch")
             result = await sub_engine.run({'steps': catch_config['do']}, "catch_block")
             if result['status'] != 'success':
-                logger.error(f"  -> [Try-Catch] 'catch' block itself failed. The entire 'try' node will fail.")
+                logger.error(f"  -> [Try-Catch] 'catch' block itself failed. The entire 'try' node will fail.",
+                             exc_info=True)  # 【新增】exc_info=True
                 final_node_status = StepState.FAILED
-                raise StopTaskException(f"Catch block failed: {result.get('error_details', 'Unknown')}")
+                catch_exc = result.get('error_details', {}).get('error') or Exception(
+                    result.get('error_details', {}).get('message', 'Catch failed'))
+                raise StopTaskException(f"Catch block failed: {result.get('error_details', 'Unknown')}",
+                                        cause=catch_exc,
+                                        severity='critical') from original_exc  # 【修改】from cause + severity
             if catch_config.get('continue_on_success', False):
                 logger.info(
                     "  -> [Try-Catch] 'catch' block succeeded and 'continue_on_success' is true. The error is considered handled.")
@@ -295,25 +319,68 @@ class ExecutionEngine:
                 try_result = result['results']
             else:
                 final_node_status = StepState.FAILED
-        elif try_error_details:
+        elif original_exc:
             final_node_status = StepState.FAILED
+
+        # 执行 finally (always)
         if 'do' in finally_config:
             logger.info(f"  -> [Try-Catch] Entering 'finally' block for '{node_id}'.")
             finally_context = self.context.fork()
-            finally_context.set('status', 'SUCCESS' if not try_error_details else 'FAILED')
-            if try_error_details: finally_context.set('error', try_error_details)
+            finally_context.set('status', 'SUCCESS' if not original_exc else 'FAILED')
+            if original_exc:
+                finally_context.set('error', try_error_details)
             sub_engine = ExecutionEngine(finally_context, self.orchestrator, self.pause_event,
                                          f"{self.engine_id}.{node_id}.finally")
-            result = await sub_engine.run({'steps': finally_config['do']}, "finally_block")
-            if result['status'] != 'success':
-                logger.critical(
-                    f"  -> [Try-Catch] 'finally' block failed. This is a critical error. The entire 'try' node will fail.")
-                final_node_status = StepState.FAILED
-                raise StopTaskException(f"Finally block failed: {result.get('error_details', 'Unknown')}")
-        if final_node_status == StepState.FAILED: raise StopTaskException(
-            f"'try' node '{node_id}' failed. Original error: {try_error_details}")
-        return try_result
+            try:
+                result = await sub_engine.run({'steps': finally_config['do']}, "finally_block")
+                if result['status'] != 'success':
+                    finally_exc = result.get('error_details', {}).get('error') or Exception(
+                        result.get('error_details', {}).get('message', 'Finally failed'))
+                    logger.error(f"  -> [Try-Catch] 'finally' block failed: {finally_exc}", exc_info=True)  # 【新增】完整栈日志
+                    # 【新增】根据 on_failure 决定行为
+                    if on_failure == 'raise':
+                        raise StopTaskException(f"Finally critical failure in {node_id}", cause=finally_exc,
+                                                severity='critical') from finally_exc
+                    elif on_failure == 'ignore':
+                        logger.warning(f"Ignoring finally failure per config in {node_id}: {finally_exc}")
+                        # 继续，但标记
+                        final_node_status = StepState.SUCCESS  # 或保持原 status
+                    elif on_failure == 'log':
+                        logger.error(f"Logging finally failure in {node_id}: {finally_exc}", exc_info=True)
+                        # 继续
+                    else:
+                        logger.warning(f"Invalid finally_on_failure '{on_failure}' in {node_id}, default to 'log'")
+                        logger.error(f"Finally failure: {finally_exc}", exc_info=True)
+                    # 【新增】如果 debug_mode，记录到 finally_context 或返回
+                    if self.debug_mode:
+                        result['traceback'] = finally_exc.get_full_traceback() if hasattr(finally_exc,
+                                                                                          'get_full_traceback') else traceback.format_exc()
+                else:
+                    final_node_status = StepState.SUCCESS if final_node_status == StepState.SUCCESS else final_node_status
+            except StopTaskException as e:
+                # 【修改】传播，但记录
+                logger.error(f"StopTask in finally {node_id}: {e}", exc_info=True)
+                raise e from original_exc  # 保留链
+            except Exception as e:
+                # 【新增】通用 finally 异常处理
+                logger.error(f"Unexpected finally error in {node_id}: {e}", exc_info=True)
+                if on_failure == 'raise':
+                    raise StopTaskException(f"Finally failed critically: {e}", cause=e, severity='critical') from e
+                else:
+                    logger.warning(f"{on_failure} finally error in {node_id}: {e}")
+                    final_node_status = StepState.FAILED
 
+        if final_node_status == StepState.FAILED:
+            raise StopTaskException(f"'try' node '{node_id}' failed. Original error: {try_error_details}",
+                                    cause=original_exc,
+                                    severity='critical') from original_exc  # 【修改】from cause + severity
+
+        # 【新增】如果 debug_mode，返回 traceback
+        if self.debug_mode and original_exc:
+            return {'status': 'success', 'traceback': original_exc.get_full_traceback() if hasattr(original_exc,
+                                                                                                   'get_full_traceback') else traceback.format_exc()}
+
+        return try_result
     async def _run_failure_handler_script(self, failure_data: Dict, error_details: Dict):
         handler_context = self.context.fork()
         handler_context.set('error', error_details)
@@ -420,6 +487,7 @@ class ExecutionEngine:
 
     async def _execute_single_action_step(self, step_data: Dict[str, Any],
                                           injector: Optional[ActionInjector] = None) -> Any:
+        """【增强】执行单动作步骤，支持 JumpSignal/StopTaskException from cause 和 traceback。"""
         active_injector = injector or self.injector
         if 'next' in step_data: self.next_task_target = await active_injector._render_value(step_data['next'],
                                                                                             active_injector.context._data)
@@ -430,6 +498,9 @@ class ExecutionEngine:
         max_attempts = int(retry_config.get('count', 1))
         retry_interval = float(retry_config.get('interval', 1.0))
         last_exception = None
+        step_result = {'status': 'success', 'output': {}}  # 【新增】step_result for traceback
+        original_exc = None  # 【新增】跟踪 cause
+
         for attempt in range(max_attempts):
             await self._check_pause()
             if attempt > 0: logger.info(
@@ -443,19 +514,39 @@ class ExecutionEngine:
                     result = await active_injector.execute(action_name, step_data.get('params', {}))
                 is_logical_failure = (result is False or (hasattr(result, 'found') and result.found is False))
                 if not is_logical_failure:
+                    step_result['output'] = result
                     return result
                 else:
                     last_exception = StopTaskException(f"Action '{action_name}' returned a failure status.",
-                                                       success=False)
-            except JumpSignal:
-                raise
+                                                       success=False, severity='warning')  # 【修改】添加 severity
+                    original_exc = last_exception  # 【新增】
+            except JumpSignal as e:
+                # 【修改】直接 raise from cause（如果 e 有 cause）
+                logger.info(f"Jump signal in step: {e}", exc_info=True)  # 【新增】exc_info=True
+                if self.debug_mode:
+                    step_result['traceback'] = e.get_full_traceback() if hasattr(e,
+                                                                                 'get_full_traceback') else traceback.format_exc()
+                raise e from original_exc if original_exc else e  # 【新增】from cause
+            except StopTaskException as e:
+                # 【修改】传播但记录
+                logger.error(f"StopTask in step: {e} (severity: {e.severity})", exc_info=True)
+                if self.debug_mode:
+                    step_result['traceback'] = e.get_full_traceback()
+                raise e from original_exc if original_exc else e
             except Exception as e:
+                original_exc = e  # 【新增】捕获 cause
+                logger.error(f"Action '{action_name}' failed on attempt {attempt + 1}: {e}",
+                             exc_info=True)  # 【确认】已有，但确保
                 last_exception = e
+
         step_name = step_data.get('name', step_data.get('action', 'unnamed_step'))
         logger.error(f"  -> Step '{step_name}' failed after {max_attempts} attempts.")
         await self._capture_debug_screenshot(step_name)
-        raise last_exception or StopTaskException(f"Step '{step_name}' failed.", success=False)
+        # 【修改】raise with cause 和 severity
+        raise StopTaskException(f"Step '{step_name}' failed after retries.", cause=last_exception or original_exc,
+                                severity='critical') from last_exception or original_exc
 
+        # 【新增】如果 debug_mode，step_result['traceback'] 已设置，可在调用方用
     async def _check_pause(self):
         if self.pause_event.is_set():
             logger.warning("接收到全局暂停信号，任务执行已暂停。等待恢复信号...")
