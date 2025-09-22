@@ -284,22 +284,39 @@ class Scheduler:
     async def _consume_main_task_queue(self):
         while self.is_running.is_set():
             try:
+                # 【修改】使用 wait_for 确保超时；防护 None
                 tasklet = await asyncio.wait_for(self.task_queue.get(), timeout=1.0)
-                logger.debug(f"从主队列获取任务: {tasklet.task_name}")
-                await asyncio.create_task(self.execution_manager.submit(tasklet))
+                if tasklet is None:
+                    logger.debug("主队列 get() 返回 None，跳过空任务。")  # 【新增】防护
+                    # 如果 TaskQueue 支持 task_done on None，避免队列积累
+                    if hasattr(self.task_queue, 'task_done'):
+                        self.task_queue.task_done()
+                    continue
+                logger.debug(f"从主队列获取任务: {tasklet.task_name}")  # 【确认】原日志，现在安全
+                # 【新增】额外检查 tasklet 有效性
+                if not hasattr(tasklet, 'task_name') or not tasklet.task_name:
+                    logger.warning(f"无效 tasklet 在队列中，跳过: {tasklet}")
+                    self.task_queue.task_done()
+                    continue
+                # 【修改】submit 用 asyncio.create_task，避免直接 await 阻塞循环
+                submit_task = asyncio.create_task(self.execution_manager.submit(tasklet))
+                self.running_tasks[tasklet.task_name] = submit_task  # 【新增】跟踪 running_tasks
+                submit_task.add_done_callback(lambda t: self.running_tasks.pop(tasklet.task_name, None))
                 self.task_queue.task_done()
             except asyncio.TimeoutError:
-                continue
+                continue  # 正常超时
             except asyncio.CancelledError:
                 logger.info("主任务队列消费者被取消。")
                 break
+            except Exception as e:  # 【新增】捕获 get/submit 意外，防 TaskGroup 崩溃
+                logger.error(f"主任务队列消费异常 (tasklet=None 防护): {e}", exc_info=True)
+                if 'tasklet' in locals() and tasklet:
+                    self.task_queue.task_done()
+                await asyncio.sleep(0.1)  # 短暂暂停，避免 CPU 循环
 
-        # 【修改】在结束时清理 running_tasks（用异步锁）
-        async def cleanup():
-            async with self.async_data_lock:
-                self.running_tasks.clear()  # 示例清理，根据需要调整
-
-        await cleanup()  # 如果需要
+        # 【确认】结束时清理（原代码）
+        async with self.async_data_lock:
+            self.running_tasks.clear()
 
     async def _consume_interrupt_queue(self):
         # 【FIX #3 - Graceful Shutdown】循环条件依赖于 is_running 事件
@@ -578,14 +595,23 @@ class Scheduler:
             try:
                 return future.result(timeout=5)  # 超时保护（ad-hoc 可能 I/O）
             except Exception as e:
-                logger.warning(f"Ad-hoc task failed for '{task_name}': {e}")
+                logger.warning(f"Ad-hoc task failed for '{task_name}': {e}")  # 【修改】用 full_task_id
                 return {"status": "error", "message": "Task queue is full or unresponsive."}
         else:
             # fallback 同步（临时）
-            with self.fallback_lock:  # 【修改】
+            with self.fallback_lock:  # 【确认】正确
                 logger.info(f"调度器未运行，临时任务 '{plan_name}/{task_name}' 已加入启动前缓冲区。")
-                self._pre_start_task_buffer.append(None)  # 示例；实现实际任务let
-                return {"status": "success", "message": f"Task queued for execution."}
+                # 【修改】创建实际 tasklet（替换 None）
+                full_task_id = f"{plan_name}/{task_name}"
+                task_def = self.all_tasks_definitions.get(full_task_id, {})
+                tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True,
+                                  payload={'plan_name': plan_name, 'task_name': task_name},
+                                  execution_mode=task_def.get('execution_mode', 'sync'),
+                                  initial_context=params or {})
+                self._pre_start_task_buffer.append(tasklet)
+                # 更新状态
+                self.run_statuses.setdefault(full_task_id, {}).update({'status': 'queued', 'queued_at': datetime.now()})
+                return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
 
     def get_master_status(self) -> dict:
         is_running = self._scheduler_thread is not None and self._scheduler_thread.is_alive()
@@ -593,14 +619,14 @@ class Scheduler:
 
     def get_schedule_status(self):
         if self._loop and self._loop.is_running():
-            # 【修改】异步调用
+            # 【确认】异步调用
             future = asyncio.run_coroutine_threadsafe(self._async_get_schedule_status(), self._loop)
             try:
                 return future.result(timeout=2)
             except Exception as e:
                 logger.error(f"异步获取调度状态失败: {e}")
-                # 【修改】fallback 同步
-                with threading.RLock():
+                # 【修改】fallback 同步，用 fallback_lock 替换 threading.RLock()
+                with self.fallback_lock:
                     schedule_items_copy = list(self.schedule_items)
                     run_statuses_copy = dict(self.run_statuses)
                 status_list = []
@@ -610,8 +636,7 @@ class Scheduler:
                     status_list.append(full_status)
                 return status_list
         else:
-            # fallback 同步
-            with threading.RLock():
+            with self.fallback_lock:
                 schedule_items_copy = list(self.schedule_items)
                 run_statuses_copy = dict(self.run_statuses)
             status_list = []

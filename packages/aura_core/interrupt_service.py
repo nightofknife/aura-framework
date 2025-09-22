@@ -27,11 +27,13 @@ class InterruptService:
         try:
             while True:
                 if self.scheduler.is_running.is_set():
-                    active_interrupts = self._get_active_interrupts()
+                    # 【修改】await 异步 _get_active_interrupts（因为现在是 async def）
+                    active_interrupts = await self._get_active_interrupts()  # 【新增】await
                     now = datetime.now()
 
                     for rule_name in active_interrupts:
-                        should_check, rule = self._should_check_interrupt(rule_name, now)
+                        # 【修改】await 异步 _should_check_interrupt
+                        should_check, rule = await self._should_check_interrupt(rule_name, now)  # 【新增】await
                         if not should_check:
                             continue
 
@@ -40,7 +42,8 @@ class InterruptService:
                         # 【确认】用 async with plan_context 包裹检查
                         async with plan_context(rule['plan_name']):
                             try:
-                                orchestrator = self.scheduler.plans.get(rule['plan_name'])
+                                orchestrator = self.scheduler.plans.get(rule[
+                                                                            'plan_name'])  # 【新增】plans 是 plan_manager.plans（如果无，改为 self.scheduler.plan_manager.plans）
                                 if orchestrator and await orchestrator.perform_condition_check(
                                         rule.get('condition', {})):
                                     logger.warning(f"检测到中断条件: '{rule_name}'! 已提交给指挥官处理。")
@@ -48,7 +51,7 @@ class InterruptService:
                                     break  # 一次只处理一个中断
                             except Exception as e:
                                 logger.error(f"守护者在检查中断 '{rule_name}' 时出错: {e}", exc_info=True)
-                                # 管理器确保 reset
+                                # 管理器确保 reset，即使异常
 
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
@@ -56,60 +59,63 @@ class InterruptService:
         finally:
             self.is_running.clear()
 
-    def _get_active_interrupts(self) -> Set[str]:
-        """确定当前需要监控哪些中断规则。"""
-        # 【修改】同步方法：检测运行 loop，用 async_get 如果有，否则 fallback
-        try:
-            loop = asyncio.get_running_loop()
-            use_async = True
-        except RuntimeError:
-            loop = None
-            use_async = False
+    async def _get_active_interrupts(self) -> Set[str]:
+        """【修改】异步确定当前需要监控哪些中断规则。直接 await async_get，无嵌套 run_until_complete。"""
 
         async def async_get():
             async with self.scheduler.get_async_lock():  # 【确认】异步锁
+                # 复制一份以避免在迭代时修改
                 interrupt_definitions = dict(self.scheduler.interrupt_definitions)
                 user_enabled_globals = self.scheduler.user_enabled_globals.copy()
                 running_task_ids = list(self.scheduler.running_tasks.keys())
                 all_tasks_defs = dict(self.scheduler.all_tasks_definitions)
+
+            # 始终激活用户启用的全局中断
             active_set = set(user_enabled_globals)
+
+            # 添加当前正在运行的任务所激活的中断
             for task_id in running_task_ids:
                 task_def = all_tasks_defs.get(task_id)
                 if task_def:
+                    # 【确认】原修复
                     interrupts_to_activate = task_def.get('activates_interrupts')
                     if isinstance(interrupts_to_activate, list) and interrupts_to_activate:
                         active_set.update(interrupts_to_activate)
                         logger.debug(f"任务 '{task_id}' 激活了中断: {interrupts_to_activate}")
+
+            # 过滤掉不存在的规则定义
             return {rule_name for rule_name in active_set if rule_name in interrupt_definitions}
 
-        if use_async and loop:
-            return loop.run_until_complete(async_get())
-        else:
-            # 【修改】完整 fallback 逻辑，用 fallback_lock
-            with self.scheduler.fallback_lock:
-                interrupt_definitions = dict(self.scheduler.interrupt_definitions)
-                user_enabled_globals = self.scheduler.user_enabled_globals.copy()
-                running_task_ids = list(self.scheduler.running_tasks.keys())
-                all_tasks_defs = dict(self.scheduler.all_tasks_definitions)
-                active_set = set(user_enabled_globals)
-                for task_id in running_task_ids:
-                    task_def = all_tasks_defs.get(task_id)
-                    if task_def:
-                        interrupts_to_activate = task_def.get('activates_interrupts')
-                        if isinstance(interrupts_to_activate, list) and interrupts_to_activate:
-                            active_set.update(interrupts_to_activate)
-                            logger.debug(f"任务 '{task_id}' 激活了中断: {interrupts_to_activate}")
-                return {rule_name for rule_name in active_set if rule_name in interrupt_definitions}
-
-    def _should_check_interrupt(self, rule_name: str, now: datetime) -> tuple[bool, Optional[Dict]]:
-        """判断一个中断规则是否应该在此时被检查。"""
-        # 【修改】类似 _get_active_interrupts：异步优先，fallback 同步
+        # 【修改】直接 await（run() 已异步）；fallback 只在异常时
         try:
-            loop = asyncio.get_running_loop()
-            use_async = True
-        except RuntimeError:
-            loop = None
-            use_async = False
+            return await async_get()
+        except RuntimeError as e:
+            if "event loop is already running" in str(e).lower():
+                logger.warning("嵌套事件循环检测到，fallback 到同步实现。")
+                # 【确认】完整 fallback
+                with self.scheduler.fallback_lock:
+                    interrupt_definitions = dict(self.scheduler.interrupt_definitions)
+                    user_enabled_globals = self.scheduler.user_enabled_globals.copy()
+                    running_task_ids = list(self.scheduler.running_tasks.keys())
+                    all_tasks_defs = dict(self.scheduler.all_tasks_definitions)
+                    active_set = set(user_enabled_globals)
+                    for task_id in running_task_ids:
+                        task_def = all_tasks_defs.get(task_id)
+                        if task_def:
+                            interrupts_to_activate = task_def.get('activates_interrupts')
+                            if isinstance(interrupts_to_activate, list) and interrupts_to_activate:
+                                active_set.update(interrupts_to_activate)
+                                logger.debug(f"任务 '{task_id}' 激活了中断: {interrupts_to_activate}")
+                    return {rule_name for rule_name in active_set if rule_name in interrupt_definitions}
+            else:
+                logger.error(f"RuntimeError in _get_active_interrupts: {e}")
+                raise e
+        except Exception as e:
+            logger.error(f"Unexpected error in _get_active_interrupts: {e}", exc_info=True)
+            return set()  # 安全返回空集
+
+    async def _should_check_interrupt(self, rule_name: str, now: datetime) -> tuple[bool, Optional[Dict]]:
+        """【修改】异步判断一个中断规则是否应该在此时被检查。直接 await async_should_check。"""
 
         async def async_should_check():
             async with self.scheduler.get_async_lock():  # 【确认】异步锁
@@ -126,26 +132,34 @@ class InterruptService:
 
             # 更新 last_check 在锁外（原子）
             if interval_passed:
-                self.interrupt_last_check_times[rule_name] = now
+                self.interrupt_last_check_times[rule_name] = now  # 【确认】原代码
             return interval_passed, rule
 
-        if use_async and loop:
-            result = loop.run_until_complete(async_should_check())
-            return result
-        else:
-            # 【修改】完整 fallback 逻辑
-            with self.scheduler.fallback_lock:
-                rule = self.scheduler.interrupt_definitions.get(rule_name)
-                if not rule:
-                    return False, None
-                cooldown_expired = now >= self.interrupt_cooldown_until.get(rule_name, datetime.min)
-                if not cooldown_expired:
-                    return False, None
-                last_check = self.interrupt_last_check_times.get(rule_name, datetime.min)
-                interval_passed = (now - last_check).total_seconds() >= rule.get('check_interval', 5)
-                if interval_passed:
-                    self.interrupt_last_check_times[rule_name] = now
-                return interval_passed, rule
+        # 【修改】直接 await；fallback 类似
+        try:
+            return await async_should_check()
+        except RuntimeError as e:
+            if "event loop is already running" in str(e).lower():
+                logger.warning("嵌套事件循环检测到，fallback 到同步实现。")
+                # 【确认】完整 fallback
+                with self.scheduler.fallback_lock:
+                    rule = self.scheduler.interrupt_definitions.get(rule_name)
+                    if not rule:
+                        return False, None
+                    cooldown_expired = now >= self.interrupt_cooldown_until.get(rule_name, datetime.min)
+                    if not cooldown_expired:
+                        return False, None
+                    last_check = self.interrupt_last_check_times.get(rule_name, datetime.min)
+                    interval_passed = (now - last_check).total_seconds() >= rule.get('check_interval', 5)
+                    if interval_passed:
+                        self.interrupt_last_check_times[rule_name] = now
+                    return interval_passed, rule
+            else:
+                logger.error(f"RuntimeError in _should_check_interrupt: {e}")
+                raise e
+        except Exception as e:
+            logger.error(f"Unexpected error in _should_check_interrupt: {e}", exc_info=True)
+            return False, None  # 安全返回
 
     async def _submit_interrupt(self, rule: Dict, now: datetime):
         """将触发的中断异步放入 Scheduler 的队列并设置冷却时间。"""

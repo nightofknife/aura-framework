@@ -46,6 +46,7 @@ class ExecutionManager:
         return sems
 
     async def submit(self, tasklet: Tasklet, is_interrupt_handler: bool = False):
+        """【修复】提交任务执行，迁移 shared_data_lock 到 get_async_lock（异步锁）。"""
         if self._io_pool is None or self._cpu_pool is None:
             logger.error("ExecutionManager: 尝试在未启动的执行器上提交任务。请先调用 startup()。")
             raise RuntimeError("Executor pools are not running.")
@@ -60,7 +61,8 @@ class ExecutionManager:
 
         current_task = asyncio.current_task()
         if not is_interrupt_handler:
-            with self.scheduler.shared_data_lock:
+            # 【修改】原 with self.scheduler.shared_data_lock: → async with get_async_lock()
+            async with self.scheduler.get_async_lock():
                 self.scheduler.running_tasks[tasklet.task_name] = current_task
 
         semaphores = await self._get_semaphores_for(tasklet)
@@ -111,11 +113,14 @@ class ExecutionManager:
             await hook_manager.trigger('after_task_failure', task_context=task_context)
         finally:
             if not is_interrupt_handler:
-                with self.scheduler.shared_data_lock:
-                    self.scheduler.running_tasks.pop(tasklet.task_name, None)
+                # 【修改】原 with self.scheduler.shared_data_lock: → async with get_async_lock()
+                try:
+                    async with self.scheduler.get_async_lock():
+                        self.scheduler.running_tasks.pop(tasklet.task_name, None)
+                except Exception as lock_e:
+                    logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")  # 【新增】防护，防 finally 崩溃
             await hook_manager.trigger('after_task_run', task_context=task_context)
-            logger.info(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")
-
+            logger.debug(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")  # 【修改】debug 级，避免洪水
     async def _handle_state_planning(self, tasklet: Tasklet) -> bool:
         """
         【全新重构】处理状态规划，实现动态重规划（Replanning）逻辑。
