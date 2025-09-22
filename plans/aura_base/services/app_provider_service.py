@@ -24,12 +24,8 @@ class AppProviderService:
         self.config = config
         self.screen = screen
         self.controller = controller
-        self.window_title = self.config.get('app.target_window_title', None)
+        self.window_title = None
 
-        if self.window_title:
-            logger.info(f"AppProviderService 服务已为窗口 '{self.window_title}' 准备就绪。")
-        else:
-            logger.info("AppProviderService 服务已在无目标（全屏）模式下准备就绪。")
 
         # --- 桥接器组件 ---
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -38,6 +34,11 @@ class AppProviderService:
     # =========================================================================
     # Section 1: 公共同步接口
     # =========================================================================
+
+    def _get_window_title(self) -> Optional[str]:
+        self.window_title = self.config.get('app.target_window_title')
+        return self.window_title
+
 
     def capture(self, rect: Optional[Tuple[int, int, int, int]] = None) -> CaptureResult:
         # ScreenService 已经有桥接器，直接调用即可
@@ -106,18 +107,19 @@ class AppProviderService:
         return None
 
     async def move_to_async(self, x: int, y: int, duration: float = 0.25):
+        window_title = self._get_window_title()
         global_coords = await self._to_global_coords_async(x, y)
         if global_coords:
             await self.controller.move_to_async(global_coords[0], global_coords[1], duration)
         else:
-            raise RuntimeError(f"无法定位窗口 '{self.window_title or '未指定'}'，移动失败。")
+            raise RuntimeError(f"无法定位窗口 '{window_title or '未指定'}'，移动失败。")
 
     async def click_async(self, x: int, y: int, button: str = 'left', clicks: int = 1, interval: float = 0.1):
         global_coords = await self._to_global_coords_async(x, y)
         if global_coords:
             await self.controller.click_async(global_coords[0], global_coords[1], button, clicks, interval)
         else:
-            raise RuntimeError(f"无法定位窗口 '{self.window_title or '未指定'}'，点击失败。")
+            raise RuntimeError(f"无法定位窗口 '{self._get_window_title() or '未指定'}'，点击失败。")
 
     async def drag_async(self, start_x: int, start_y: int, end_x: int, end_y: int, button: str = 'left',
                          duration: float = 0.5):
@@ -129,18 +131,18 @@ class AppProviderService:
             await self.controller.move_to_async(global_start[0], global_start[1], duration=0.1)
             await self.controller.drag_to_async(global_end[0], global_end[1], button, duration)
         else:
-            raise RuntimeError(f"无法定位窗口 '{self.window_title or '未指定'}'，拖拽失败。")
+            raise RuntimeError(f"无法定位窗口 '{self._get_window_title() or '未指定'}'，拖拽失败。")
 
     async def key_down_async(self, key: str):
         focused = await self.screen.focus_async()
         if not focused:
-            logger.warning(f"无法自动激活窗口 '{self.window_title or '未指定'}'。将尝试直接按下按键。")
+            logger.warning(f"无法自动激活窗口 '{self._get_window_title() or '未指定'}'。将尝试直接按下按键。")
         await self.controller.key_down_async(key)
 
     async def key_up_async(self, key: str):
         focused = await self.screen.focus_async()
         if not focused:
-            logger.warning(f"无法自动激活窗口 '{self.window_title or '未指定'}'。将尝试直接松开按键。")
+            logger.warning(f"无法自动激活窗口 '{self._get_window_title() or '未指定'}'。将尝试直接松开按键。")
         await self.controller.key_up_async(key)
 
     @asynccontextmanager
@@ -156,13 +158,13 @@ class AppProviderService:
         if global_coords:
             return await asyncio.to_thread(self.screen.get_pixel_color_at, global_coords[0], global_coords[1])
         else:
-            raise RuntimeError(f"无法定位窗口 '{self.window_title or '未指定'}'，获取像素颜色失败。")
+            raise RuntimeError(f"无法定位窗口 '{self._get_window_title() or '未指定'}'，获取像素颜色失败。")
 
     async def type_text_async(self, text: str, interval: float = 0.01):
-        logger.info(f"准备向窗口 '{self.window_title or '未知'}' 异步输入文本...")
+        logger.info(f"准备向窗口 '{self._get_window_title() or '未知'}' 异步输入文本...")
         focused = await self.screen.focus_async()
         if not focused:
-            logger.warning(f"无法自动激活窗口 '{self.window_title or '未指定'}'。将尝试直接输入。")
+            logger.warning(f"无法自动激活窗口 '{self._get_window_title() or '未指定'}'。将尝试直接输入。")
         await self.controller.type_text_async(text, interval)
         logger.info(f"异步文本输入完成: '{text[:30]}...'")
 

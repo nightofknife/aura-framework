@@ -363,52 +363,49 @@ class Scheduler:
         return self.plan_manager.plans
 
     def _load_plan_specific_data(self):
-        async def async_load():
-            async with self.async_data_lock:
-                logger.info("--- 加载方案包特定数据 ---")
-                self.schedule_items.clear()
-                self.interrupt_definitions.clear()
-                self.user_enabled_globals.clear()
-                self.all_tasks_definitions.clear()
-                config_service = service_registry.get_service_instance('config')
-                for plugin_def in self.plan_manager.plugin_manager.plugin_registry.values():
-                    if plugin_def.plugin_type != 'plan': continue
-                    plan_name = plugin_def.path.name
-                    config_path = plugin_def.path / 'config.yaml'
-                    if config_path.is_file():
-                        try:
-                            with open(config_path, 'r', encoding='utf-8') as f:
-                                config_data = yaml.safe_load(f) or {}
-                            config_service.register_plan_config(plan_name, config_data)
-                        except Exception as e:
-                            logger.error(f"加载配置文件 '{config_path}' 失败: {e}")
-                    self._load_schedule_file(plugin_def.path, plan_name)  # 【修改】这些加载方法内部无共享锁，避免并发
-                    self._load_interrupt_file(plugin_def.path, plan_name)
-                self._load_all_tasks_definitions()
+        config_service = service_registry.get_service_instance('config')
+
+        def load_core():
+            logger.info("--- 加载方案包特定数据 ---")
+            self.schedule_items.clear()
+            self.interrupt_definitions.clear()
+            self.user_enabled_globals.clear()
+            self.all_tasks_definitions.clear()
+
+            for plugin_def in self.plan_manager.plugin_manager.plugin_registry.values():
+                if plugin_def.plugin_type != 'plan':
+                    continue
+
+                plan_name = plugin_def.path.name
+                config_path = plugin_def.path / 'config.yaml'
+                if config_path.is_file():
+                    try:
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config_data = yaml.safe_load(f) or {}
+                        config_service.register_plan_config(plan_name, config_data)
+                    except Exception as e:
+                        logger.error(f"加载配置文件 '{config_path}' 失败: {e}")
+
+                self._load_schedule_file(plugin_def.path, plan_name)
+                self._load_interrupt_file(plugin_def.path, plan_name)
+
+            self._load_all_tasks_definitions()
 
         if self._loop and self._loop.is_running():
+            async def async_load():
+                async with self.async_data_lock:
+                    load_core()
+
             future = asyncio.run_coroutine_threadsafe(async_load(), self._loop)
             try:
                 future.result(timeout=5)
             except Exception as e:
                 logger.error(f"异步加载计划数据失败: {e}")
-                # 【修改】fallback 同步，用 fallback_lock
                 with self.fallback_lock:
-                    logger.info("--- 加载方案包特定数据 ---")
-                    self.schedule_items.clear()
-                    self.interrupt_definitions.clear()
-                    self.user_enabled_globals.clear()
-                    self.all_tasks_definitions.clear()
-                    # 重复加载逻辑...
+                    load_core()
         else:
-            # 同步 fallback
-            with self.fallback_lock:  # 【修改】
-                logger.info("--- 加载方案包特定数据 ---")
-                self.schedule_items.clear()
-                self.interrupt_definitions.clear()
-                self.user_enabled_globals.clear()
-                self.all_tasks_definitions.clear()
-
+            with self.fallback_lock:
+                load_core()
 
     def _load_all_tasks_definitions(self):
         logger.info("--- 加载所有任务定义 ---")

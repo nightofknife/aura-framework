@@ -82,12 +82,13 @@ class ConfigService:
         """
         # 1. 从 contextvar 获取当前正在执行的方案名称
         plan_name = current_plan_name.get()
-
+        # print(f"% {plan_name}")
+        # print(f"% {self._env_config} {self._global_config}")
         # 2. 根据 plan_name 动态构建查找链
         maps_to_chain = [self._env_config, self._global_config]
         if plan_name and plan_name in self._plan_configs:
             maps_to_chain.append(self._plan_configs[plan_name])
-
+        # print(f"% {maps_to_chain}")
         config_chain = ChainMap(*maps_to_chain)
 
         # 3. 在动态链中查找值

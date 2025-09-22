@@ -202,17 +202,16 @@ class ExecutionEngine:
 
     async def _execute_dag_node(self, node_id: str, parent_node_id: str = "",
                                 result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """【新增/增强】执行单个 DAG 节点，支持异常栈保留。"""
         if result is None:
-            result = {'node_id': node_id, 'status': 'success', 'output': {}, 'children': []}  # 【新增】result for traceback
-        original_exc = None
+            result = {'node_id': node_id, 'status': 'success', 'output': {}, 'children': []}
+        self.step_states[node_id] = StepState.RUNNING
+        self.step_results[node_id] = result
 
         try:
             node_data = self.nodes.get(node_id)
             if not node_data:
                 raise ValueError(f"Node data not found for '{node_id}'")
 
-            # 原执行逻辑（调用子方法，不变）
             if self.event_callback:
                 await self.event_callback('node.started', {'node_id': node_id})
             await self._check_pause()
@@ -233,41 +232,52 @@ class ExecutionEngine:
                 raise ValueError(f"Unknown node type for '{node_id}'")
 
             result['output'] = child_result
+            if child_result is not None:
+                result['children'].append(child_result)
             result['status'] = 'success'
-            result['children'].append(child_result)  # 递归合并
+            self.step_states[node_id] = StepState.SUCCESS
+            self.step_results[node_id] = result
 
             if self.event_callback:
                 await self.event_callback('node.succeeded', {'node_id': node_id, 'output': child_result})
 
         except JumpSignal as e:
-            # 【新增】捕获并记录完整栈
             logger.info(f"Jump caught in node {node_id}: {e.type} to {e.target}", exc_info=True)
-            result['status'] = e.type  # e.g., 'break'
+            result['status'] = e.type
             result['jump_target'] = e.target
             if self.debug_mode:
-                result['traceback'] = e.get_full_traceback()  # 【新增】完整栈
-            # 不 raise，继续返回 signal status（控制流）
+                result['traceback'] = e.get_full_traceback()
+            self.step_states[node_id] = StepState.SUCCESS
+            self.step_results[node_id] = result
 
         except StopTaskException as e:
-            # 【新增】根据 severity 处理
             logger.error(f"StopTask in node {node_id}: {e} (severity: {e.severity})", exc_info=True)
             result['status'] = 'stopped'
             result['severity'] = e.severity
             if self.debug_mode:
                 result['traceback'] = e.get_full_traceback()
-            raise  # 传播（上层如 orchestrator 处理 severity）
+            self.step_states[node_id] = StepState.FAILED
+            self.step_results[node_id] = result
+            if self.event_callback:
+                await self.event_callback('node.failed', {'node_id': node_id, 'error': str(e), 'severity': e.severity})
+            raise
 
         except Exception as e:
-            original_exc = e  # 【新增】
             logger.error(f"Unexpected error in node {node_id}: {e}", exc_info=True)
             result['status'] = 'error'
             result['error'] = str(e)
             if self.debug_mode:
                 result['traceback'] = e.get_full_traceback() if hasattr(e,
-                                                                        'get_full_traceback') else traceback.format_exc()  # 【新增】
+                                                                        'get_full_traceback') else traceback.format_exc()
+            self.step_states[node_id] = StepState.FAILED
+            self.step_results[node_id] = result
+            if self.event_callback:
+                await self.event_callback('node.failed', {'node_id': node_id, 'error': str(e)})
             raise
 
         return result
+
+
     async def _execute_try_catch_finally_node(self, node_id: str, node_data: Dict) -> Any:
         """【增强】执行 try-catch-finally 节点，支持 finally_on_failure 灵活性。"""
         try_config = node_data.get('try', {})
