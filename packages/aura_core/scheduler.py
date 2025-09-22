@@ -560,54 +560,55 @@ class Scheduler:
 
     def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None):
         async def async_run():
-            async with self.async_data_lock:  # 【确认】正确
-                # 【FIX #5 - Task ID Validation】步骤1: 获取对应方案的Orchestrator
+            async with self.async_data_lock:
                 orchestrator = self.plan_manager.get_plan(plan_name)
                 if not orchestrator:
                     return {"status": "error", "message": f"Plan '{plan_name}' not found or not loaded."}
 
-                # 【FIX #5 - Task ID Validation】步骤2: 使用TaskLoader验证任务是否存在
                 if orchestrator.task_loader.get_task_data(task_name) is None:
                     return {"status": "error", "message": f"Task '{task_name}' not found in plan '{plan_name}'."}
 
                 full_task_id = f"{plan_name}/{task_name}"
                 task_def = self.all_tasks_definitions.get(full_task_id)
                 if not task_def:
-                    # Fallback for old task format which might not be in all_tasks_definitions
                     task_def = orchestrator.task_loader.get_task_data(task_name)
 
-                tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True,
-                                  payload={'plan_name': plan_name, 'task_name': task_name},
-                                  execution_mode=task_def.get('execution_mode', 'sync'),
-                                  initial_context=params or {})
-                # 【确认】队列 put（异步，直接）
-                if self.task_queue:
-                    await self.task_queue.put(tasklet)
-                    # 更新状态
-                    await self._async_update_run_status(full_task_id, {'status': 'queued'})
-                return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
+                tasklet = Tasklet(
+                    task_name=full_task_id,
+                    is_ad_hoc=True,
+                    payload={'plan_name': plan_name, 'task_name': task_name},
+                    execution_mode=task_def.get('execution_mode', 'sync'),
+                    initial_context=params or {}
+                )
+
+            if self.task_queue:
+                await self.task_queue.put(tasklet)
+                await self._async_update_run_status(full_task_id, {'status': 'queued'})
+            return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
 
         if self._loop and self._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(async_run(), self._loop)
             try:
-                return future.result(timeout=5)  # 超时保护（ad-hoc 可能 I/O）
+                return future.result(timeout=5)
             except Exception as e:
-                logger.warning(f"Ad-hoc task failed for '{task_name}': {e}")  # 【修改】用 full_task_id
+                logger.warning(f"Ad-hoc task failed for '{task_name}': {e}")
                 return {"status": "error", "message": "Task queue is full or unresponsive."}
         else:
-            # fallback 同步（临时）
-            with self.fallback_lock:  # 【确认】正确
+            with self.fallback_lock:
                 logger.info(f"调度器未运行，临时任务 '{plan_name}/{task_name}' 已加入启动前缓冲区。")
-                # 【修改】创建实际 tasklet（替换 None）
                 full_task_id = f"{plan_name}/{task_name}"
                 task_def = self.all_tasks_definitions.get(full_task_id, {})
-                tasklet = Tasklet(task_name=full_task_id, is_ad_hoc=True,
-                                  payload={'plan_name': plan_name, 'task_name': task_name},
-                                  execution_mode=task_def.get('execution_mode', 'sync'),
-                                  initial_context=params or {})
+                tasklet = Tasklet(
+                    task_name=full_task_id,
+                    is_ad_hoc=True,
+                    payload={'plan_name': plan_name, 'task_name': task_name},
+                    execution_mode=task_def.get('execution_mode', 'sync'),
+                    initial_context=params or {}
+                )
                 self._pre_start_task_buffer.append(tasklet)
-                # 更新状态
-                self.run_statuses.setdefault(full_task_id, {}).update({'status': 'queued', 'queued_at': datetime.now()})
+                self.run_statuses.setdefault(full_task_id, {}).update(
+                    {'status': 'queued', 'queued_at': datetime.now()}
+                )
                 return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
 
     def get_master_status(self) -> dict:
