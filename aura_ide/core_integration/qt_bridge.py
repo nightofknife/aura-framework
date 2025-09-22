@@ -244,4 +244,3 @@ class QtBridge(QObject):
                 self._populate_workspace_tree(child_item, content)
 
 
-
