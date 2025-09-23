@@ -1,158 +1,49 @@
-# packages/aura_core/context.py (Stage 1 Refactor - Complete File)
+# packages/aura_core/context.py
 
 from __future__ import annotations
 import copy
-from typing import Any, Dict, Optional, TYPE_CHECKING
-
-from pydantic import BaseModel, Field
-
-from packages.aura_core.logger import logger
+from typing import Any, Dict, List
 
 
-from packages.aura_core.event_bus import Event
-from .persistent_context import PersistentContext
-
-class TaskContextModel(BaseModel):
+class ExecutionContext:
     """
-    Defines the structured data model for the task execution context.
-    This provides type safety, autocompletion, and self-documentation.
-    """
-    # Core metadata
-    plan_name: str
-    task_name: str
-
-    # Core services and objects
-    log: logger
-    persistent_context: PersistentContext
-    config: Dict[str, Any]
-    debug_dir: str
-
-    # Triggering event (optional)
-    event: Optional[Event] = None
-
-    # Internal state flag
-    is_sub_context: bool = False
-
-    # Dynamic data store for step outputs, loop variables, etc.
-    dynamic_data: Dict[str, Any] = Field(default_factory=dict)
-
-    class Config:
-        # Allow complex types like Logger, Event, etc., which are not Pydantic models.
-        arbitrary_types_allowed = True
-
-
-
-
-class Context:
-    """
-    A smart wrapper for the TaskContextModel, providing a controlled interface.
-    It maintains the original class's methods and behaviors (forking, sub-context checks)
-    while leveraging Pydantic for core data integrity.
+    管理单次任务执行期间的数据流。
+    这是一个只增不减的数据结构，支持分支和合并。
     """
 
-    def __init__(self, model: TaskContextModel):
-        self._model = model
-
-    @property
-    def _data(self) -> Dict[str, Any]:
-        """Provides a flattened data view for Jinja2 rendering."""
-        # Merge model fields and dynamic data. Dynamic data has higher priority.
-        model_dict = self._model.dict(exclude={'dynamic_data', 'log', 'persistent_context', 'event'})
-
-        # Manually add non-serializable core objects
-        model_dict['log'] = self._model.log
-        model_dict['persistent_context'] = self._model.persistent_context
-        model_dict['event'] = self._model.event
-
-        return {**model_dict, **self._model.dynamic_data}
-
-    def set(self, key: str, value: Any):
+    def __init__(self, initial_data: Dict[str, Any] = None):
         """
-        Sets a value in the context's dynamic data store.
-        It prevents overwriting core, structured context variables.
+        初始化一个执行上下文。
+
+        :param initial_data: 任务启动时传入的初始数据。
         """
-        key_lower = key.lower()
-        # Allow setting 'error' for failure handlers
-        if hasattr(self._model, key_lower) and key_lower not in ['dynamic_data', 'error']:
-            self._model.log.warning(f"Attempted to overwrite core context variable '{key_lower}'. "
-                           f"Dynamic values are stored separately. Use a different key.")
-            return
-        self._model.dynamic_data[key_lower] = value
+        self.data: Dict[str, Any] = {
+            "initial": initial_data or {},
+            "nodes": {}
+        }
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def fork(self) -> 'ExecutionContext':
         """
-        Gets a value from the context.
-        Priority: 1. Dynamic data, 2. Core structured data.
+        为并行分支创建一个当前上下文的深度拷贝副本。
         """
-        key_lower = key.lower()
-        if key_lower in self._model.dynamic_data:
-            return self._model.dynamic_data[key_lower]
-        if hasattr(self._model, key_lower):
-            return getattr(self._model, key_lower)
-        return default
+        forked_context = ExecutionContext()
+        forked_context.data = copy.deepcopy(self.data)
+        return forked_context
 
-    def delete(self, key: str):
-        """Deletes a key only from the dynamic data store."""
-        self._model.dynamic_data.pop(key.lower(), None)
-
-    def is_sub_context(self) -> bool:
-        """Checks if this is a sub-context."""
-        return self._model.is_sub_context
-
-    def get_triggering_event(self) -> Optional[Event]:
-        """Gets the event that triggered this context's creation."""
-        return self._model.event
-
-    def fork(self) -> 'Context':
+    def merge(self, other_contexts: List['ExecutionContext']):
         """
-        【Corrected】Creates a new, variable-isolated sub-context.
-        It inherits core services but gets a fresh, empty dynamic_data store.
+        将来自多个父分支的上下文合并到当前上下文中。
+        由于节点ID是唯一的，直接更新 'nodes' 字典即可。
         """
-        # Use Pydantic's copy method for a safe copy of the model structure
-        # and its data, including complex types.
-        forked_model = self._model.copy(deep=True)
+        for other in other_contexts:
+            self.data["nodes"].update(other.data["nodes"])
 
-        # Explicitly set the forked properties
-        forked_model.is_sub_context = True
-        # A fork always starts with a clean slate for dynamic data
-        forked_model.dynamic_data = {}
-
-        return Context(forked_model)
-
-    def merge(self, other_context: 'Context'):
+    def add_node_result(self, node_id: str, result: Dict[str, Any]):
         """
-        将另一个上下文的动态数据合并到当前上下文中。
-        这对于从子上下文中取回结果非常有用。
+        将一个节点的完整输出（包括run_state和具名输出）添加到上下文中。
         """
-        if not isinstance(other_context, Context):
-            return
+        self.data["nodes"][node_id] = result
 
-        # 只合并 dynamic_data，因为核心服务是共享的
-        self._model.dynamic_data.update(other_context._model.dynamic_data)
+    def __repr__(self):
+        return f"ExecutionContext(initial_keys={list(self.data['initial'].keys())}, node_keys={list(self.data['nodes'].keys())})"
 
-    def to_serializable_dict(self) -> Dict[str, Any]:
-        """
-        [NEW] Exports the context to a dictionary containing only
-        JSON-serializable data, suitable for events and logging.
-        """
-        # Start with a copy of the flattened data
-        data = self._data.copy()
-
-        # Explicitly remove non-serializable core objects
-        data.pop('log', None)
-        data.pop('persistent_context', None)
-
-        # The 'event' object might also be complex, let's handle it safely
-        event_obj = data.get('event')
-        if event_obj and hasattr(event_obj, 'to_dict'):
-            data['event'] = event_obj.to_dict()
-        elif event_obj:
-            # Fallback for unexpected event types
-            data['event'] = str(event_obj)
-
-        return data
-
-    def __str__(self):
-        trigger_id = self._model.event.id if self._model.event else None
-        return (f"Context(dynamic_keys={list(self._model.dynamic_data.keys())}, "
-                f"sub={self._model.is_sub_context}, trigger={trigger_id})")
