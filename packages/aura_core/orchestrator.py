@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional
 
 from packages.aura_core.template_renderer import TemplateRenderer
 from plans.aura_base.services.config_service import current_plan_name
+from .action_injector import ActionInjector
 from .api import service_registry
 from .context import ExecutionContext
 from .engine import ExecutionEngine, JumpSignal

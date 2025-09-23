@@ -12,7 +12,7 @@ from .action_injector import ActionInjector
 from .api import service_registry
 from .context import ExecutionContext
 from .exceptions import StopTaskException, JumpSignal
-from .services.state_store_service import StateStoreService
+from .state_store_service import StateStoreService
 from .template_renderer import TemplateRenderer
 
 
