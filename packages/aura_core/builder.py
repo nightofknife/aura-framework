@@ -143,8 +143,11 @@ def _process_task_entry_points(tasks_dir: Path, plugin_def: PluginDefinition) ->
                 task_name_from_file = task_path.relative_to(tasks_dir).with_suffix('').as_posix()
                 process_single_task(task_name_from_file, all_task_data)
             else:  # 新格式: 单文件多任务
+                file_prefix = task_path.relative_to(tasks_dir).with_suffix('').as_posix()
                 for task_key, task_definition in all_task_data.items():
-                    process_single_task(task_key, task_definition)
+                    # 组合路径和任务键来创建唯一的任务ID
+                    full_task_id = f"{file_prefix}/{task_key}"
+                    process_single_task(full_task_id, task_definition)
 
         except Exception as e:
             logger.warning(f"解析任务文件元数据失败 '{task_path.relative_to(plugin_def.path)}': {e}")
