@@ -24,6 +24,7 @@ class ActionDefinition:
     plugin: PluginDefinition
     is_async: bool = False
 
+
     @property
     def signature(self) -> inspect.Signature: return inspect.signature(self.func)
 

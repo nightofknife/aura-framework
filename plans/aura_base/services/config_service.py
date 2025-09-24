@@ -117,3 +117,9 @@ class ConfigService:
             else:
                 destination[key] = value
 
+    def get_state_store_config(self) -> Dict[str, Any]:
+        """
+        [NEW] 获取长期状态存储的配置。
+        """
+        # 从全局配置中查找 state_store 部分
+        return self.get('state_store', {'type': 'file', 'path': './project_state.json'})

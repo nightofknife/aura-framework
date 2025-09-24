@@ -117,8 +117,8 @@ class StatePlanner:
                                 logger.debug(f"并行状态检查任务 '{check_info['task_name']}' 返回结果: {result}")
 
                                 # 【修复】使用 bool() 放宽检查，将任何 "truthy" 值（如 "True", 1, 非空对象）视为成功
-                                if isinstance(result, dict) and result.get('status') == 'success' and bool(
-                                        result.get('returns', False)):
+                                if isinstance(result, dict) and result.get('status').upper() == 'SUCCESS' and bool(
+                                        result.get('user_data', False)):
                                     current_state = check_info['state_name']
                                     logger.info(f"✅ 状态确认: 当前状态是 '{current_state}'。中断其他检查。")
                                     break
@@ -144,8 +144,8 @@ class StatePlanner:
                     logger.debug(f"串行状态检查任务 '{check['task_name']}' 返回结果: {result}")
 
                     # 【修复】同样，使用 bool() 放宽检查
-                    if isinstance(result, dict) and result.get('status') == 'success' and bool(
-                            result.get('returns', False)):
+                    if isinstance(result, dict) and result.get('status').upper() == 'SUCCESS' and bool(
+                            result.get('user_data', False)):
                         current_state = check['state_name']
                         logger.info(f"✅ 状态确认: 当前状态是 '{current_state}'。")
                         break  # 找到即停

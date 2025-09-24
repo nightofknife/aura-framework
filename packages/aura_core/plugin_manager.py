@@ -1,4 +1,5 @@
-# packages/aura_core/plugin_manager.py (Refactored)
+# packages/aura_core/plugin_manager.py (FIXED)
+
 import asyncio
 import importlib.util
 import inspect
@@ -9,6 +10,9 @@ from typing import Dict, Any, List, Optional
 
 import yaml
 from resolvelib import Resolver, BaseReporter
+
+# [MODIFIED] 导入 dataclasses.field 用于修复 api.py
+from dataclasses import field
 
 from .api import service_registry, ServiceDefinition, ACTION_REGISTRY, ActionDefinition, hook_manager
 from .builder import build_package_from_source, clear_build_cache, API_FILE_NAME
@@ -65,7 +69,8 @@ class PluginManager:
             for plugin_yaml_path in root_path.glob('**/plugin.yaml'):
                 plugin_dir = plugin_yaml_path.parent
                 try:
-                    with open(plugin_yaml_path, 'r', encoding='utf-8') as f: data = yaml.safe_load(f)
+                    with open(plugin_yaml_path, 'r', encoding='utf-8') as f:
+                        data = yaml.safe_load(f)
                     relative_path = plugin_dir.relative_to(self.base_path)
                     plugin_type = 'plan' if relative_path.parts[0] == 'plans' else 'core'
                     plugin_def = PluginDefinition.from_yaml(data, plugin_dir, plugin_type)
@@ -89,7 +94,7 @@ class PluginManager:
             resolver.resolve(self.plugin_registry.keys())
 
             # 步骤 2: 手动构建一个 TopologicalSorter 兼容的、简单的图字典
-            # key 是插件ID，value 是该插件依赖的插件ID集合
+            # key 是插件ID，value 是该插件依赖的插件ID**
             graph = {pid: set(pdef.dependencies.keys()) for pid, pdef in self.plugin_registry.items()}
 
             # 步骤 3: 使用标准库进行拓扑排序
@@ -112,8 +117,6 @@ class PluginManager:
             if not api_file_path.exists():
                 build_package_from_source(plugin_def)
 
-                # packages/aura_core/plugin_manager.py (Refactored - Part 2)
-                # ... (Continuing from the previous part) ...
             self._load_package_from_api_file(plugin_def, api_file_path)
             self._load_hooks_for_package(plugin_def)
 
@@ -143,12 +146,17 @@ class PluginManager:
                 module = self._lazy_load_module(plugin_def.path / action_info['source_file'])
                 action_func = getattr(module, action_info['function_name'])
                 is_async_action = asyncio.iscoroutinefunction(action_func)
+
+                # [FIX] 从函数对象的元数据中读取所有信息
+                action_meta = getattr(action_func, '_aura_action_meta', {})
+
                 definition = ActionDefinition(
                     func=action_func,
-                    name=action_info['name'],
-                    read_only=getattr(action_func, '_aura_action_meta', {}).get('read_only', False),
-                    public=True,
-                    service_deps=action_info.get('required_services', {}),
+                    name=action_meta.get('name', action_info['name']),  # 优先使用元数据中的名字
+                    read_only=action_meta.get('read_only', False),
+                    public=action_meta.get('public', True),
+                    # [CORE FIX] 从函数元数据中获取服务依赖
+                    service_deps=action_meta.get('services', {}),
                     plugin=plugin_def,
                     is_async=is_async_action
                 )
@@ -176,10 +184,6 @@ class PluginManager:
             relative_path = file_path.relative_to(self.base_path)
             module_name = str(relative_path).replace('/', '.').replace('\\', '.').removesuffix('.py')
 
-            # 【核心修正】
-            # 如果模块已经加载，直接返回它，不要 reload。
-            # reload 会导致 ImportError，因为它需要父包在 sys.modules 中，
-            # 而 spec_from_file_location 不会创建这些父包。
             if module_name in sys.modules:
                 return sys.modules[module_name]
 
@@ -192,7 +196,4 @@ class PluginManager:
             return module
         except Exception as e:
             logger.error(f"延迟加载模块 '{file_path}' 失败: {e}", exc_info=True)
-            # 重新抛出异常，让上层知道加载失败
             raise
-
-
