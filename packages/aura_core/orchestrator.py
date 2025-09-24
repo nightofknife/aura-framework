@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -34,7 +35,10 @@ class Orchestrator:
             task_name_in_plan: str,
             triggering_event: Optional[Event] = None,
             initial_data: Optional[Dict[str, Any]] = None
-    ) -> Any:
+    ) -> Dict[str, Any]:
+        """
+        执行一个任务并返回一个标准化的 TFR (Task Final Result) 对象。
+        """
         token = current_plan_name.set(self.plan_name)
         logger.debug(f"Configuration context set to: '{self.plan_name}'")
 
@@ -45,8 +49,11 @@ class Orchestrator:
                      'initial_context': initial_data or {}}
         ))
 
-        final_status = 'unknown'
-        final_result = None
+        # 初始化TFR的各个部分
+        final_status = 'UNKNOWN'
+        user_data = None
+        framework_data = None
+        error_details = None
 
         try:
             full_task_id = f"{self.plan_name}/{task_name_in_plan}"
@@ -54,10 +61,8 @@ class Orchestrator:
             if not task_data:
                 raise ValueError(f"Task definition not found: {full_task_id}")
 
-            # 1. 创建根执行上下文
             root_context = ExecutionContext(initial_data=initial_data)
 
-            # 2. 创建并运行引擎
             async def step_event_callback(event_name: str, payload: Dict):
                 payload['plan_name'] = self.plan_name
                 payload['task_name'] = task_name_in_plan
@@ -69,50 +74,72 @@ class Orchestrator:
                 event_callback=step_event_callback
             )
 
-            # 引擎现在返回最终的上下文
             final_context = await engine.run(task_data, full_task_id, root_context)
 
-            # 3. 从最终上下文中计算返回值
-            returns_template = task_data.get('returns')
-            if returns_template is not None:
-                try:
-                    renderer = TemplateRenderer(final_context, self.state_store)
-                    final_result = await renderer.render(returns_template)
-                except Exception as e:
-                    logger.error(f"渲染任务 '{full_task_id}' 的返回值失败: {e}")
-                    raise ValueError(f"无法渲染返回值: {returns_template}") from e
-            else:
-                final_result = True  # 默认成功返回True
+            # 任务执行完毕后，将最终上下文存入 framework_data
+            framework_data = final_context.data
 
-            # 4. 确定最终状态
-            final_status = 'success'
-            for node_result in final_context.data['nodes'].values():
-                if node_result.get('run_state', {}).get('status') == 'FAILED':
-                    final_status = 'failed'
+            # 确定最终状态
+            is_failed = False
+            for node_result in framework_data.get('nodes', {}).values():
+                run_state = node_result.get('run_state', {})
+                if run_state.get('status') == 'FAILED':
+                    final_status = 'FAILED'
+                    error_details = run_state.get('error', {'message': 'A node failed.'})
+                    # 将失败节点的ID也加入错误信息
+                    if 'node_id' in node_result.get('run_state', {}):
+                        error_details['node_id'] = node_result['run_state']['node_id']
+                    is_failed = True
                     break
 
+            if not is_failed:
+                final_status = 'SUCCESS'
+
+            # 如果成功，计算用户返回值 (user_data)
+            if final_status == 'SUCCESS':
+                returns_template = task_data.get('returns')
+                if returns_template is not None:
+                    try:
+                        renderer = TemplateRenderer(final_context, self.state_store)
+                        # 注意：这里我们不需要缓存作用域，因为整个任务只计算一次返回值
+                        user_data = await renderer.render(returns_template)
+                    except Exception as e:
+                        raise ValueError(f"无法渲染返回值: {returns_template}") from e
+                else:
+                    user_data = True  # 默认的业务返回值为True
+
         except Exception as e:
-            final_status = 'error'
-            final_result = {'status': 'error', 'message': str(e)}
+            final_status = 'ERROR'
+            error_details = {'message': str(e), 'type': type(e).__name__}
+            # 假设有一个 debug_mode 属性
+            if getattr(self, 'debug_mode', False):
+                error_details['traceback'] = traceback.format_exc()
             logger.critical(f"Task execution failed at orchestrator level for '{task_name_in_plan}': {e}",
                             exc_info=True)
 
         finally:
+            # 构建最终的、包含分离数据的TFR对象
+            tfr_object = {
+                'status': final_status,
+                'user_data': user_data,
+                'framework_data': framework_data,
+                'error': error_details
+            }
+
             await self.event_bus.publish(Event(
                 name='task.finished',
                 payload={
                     'plan_name': self.plan_name, 'task_name': task_name_in_plan, 'end_time': time.time(),
                     'duration': time.time() - task_start_time, 'final_status': final_status,
-                    'final_result': final_result
+                    'final_result': tfr_object
                 }
             ))
             current_plan_name.reset(token)
             logger.debug(f"Configuration context reset (was: '{self.plan_name}')")
 
-        return final_result
+        return tfr_object
 
-    # ... (其他Orchestrator方法保持不变, 比如 perform_condition_check, get_file_content 等)
-    # 注意: perform_condition_check 也需要更新以使用新上下文模型
+
     async def perform_condition_check(self, condition_data: dict) -> bool:
         action_name = condition_data.get('action')
         if not action_name: return False

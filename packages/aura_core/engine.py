@@ -15,6 +15,9 @@ from .exceptions import StopTaskException, JumpSignal
 from .state_store_service import StateStoreService
 from .template_renderer import TemplateRenderer
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .orchestrator import Orchestrator
 
 class StepState(Enum):
     PENDING = "PENDING"
@@ -25,13 +28,17 @@ class StepState(Enum):
 
 
 class ExecutionEngine:
-    def __init__(self, orchestrator=None, pause_event: asyncio.Event = None,
+    def __init__(self, orchestrator: 'Orchestrator', pause_event: asyncio.Event,
                  event_callback: Optional[Callable] = None):
         self.orchestrator = orchestrator
-        self.pause_event = pause_event if pause_event else asyncio.Event()
+        self.pause_event = pause_event
         self.engine_id = str(uuid.uuid4())[:8]
         self.event_callback = event_callback
-        self.debug_mode = getattr(orchestrator, 'debug_mode', True) if orchestrator else True
+        self.debug_mode = getattr(orchestrator, 'debug_mode', True)
+
+        # [NEW] 从 Orchestrator 获取 services 字典
+        # 假设 Orchestrator 有一个名为 services 的属性
+        self.services = getattr(orchestrator, 'services', {})
 
         # 核心状态
         self.nodes: Dict[str, Dict] = {}
@@ -48,7 +55,7 @@ class ExecutionEngine:
         self.completion_event: Optional[asyncio.Event] = None
 
         # 依赖的服务
-        self.state_store: StateStoreService = service_registry.get_service_instance('state_store')
+        self.state_store: StateStoreService = self.services.get('state_store')
 
     async def run(self, task_data: Dict[str, Any], task_name: str, root_context: ExecutionContext) -> ExecutionContext:
         task_display_name = task_data.get('meta', {}).get('title', task_name)
@@ -238,7 +245,7 @@ class ExecutionEngine:
 
             # 创建此节点专用的渲染器和注入器
             renderer = TemplateRenderer(node_context, self.state_store)
-            injector = ActionInjector(node_context, self, renderer)
+            injector = ActionInjector(node_context, self, renderer, self.services)
 
             # 真正执行action
             action_name = node_data.get('action')
@@ -254,7 +261,7 @@ class ExecutionEngine:
                 # 为了在outputs块中引用action结果，我们创建一个临时渲染作用域
                 output_render_scope = {
                     "result": action_result,
-                    **(await renderer._get_render_scope())
+                    **(await renderer.get_render_scope())
                 }
                 for name, template in outputs_block.items():
                     node_result[name] = await renderer._render_recursive(template, output_render_scope)
@@ -284,7 +291,7 @@ class ExecutionEngine:
 
         finally:
             # 无论成功失败，都生成run_state并更新到上下文中
-            run_state = self._create_run_state(self.step_states[node_id], start_time, error=error_details)
+            run_state = self._create_run_state(self.step_states.get(node_id, StepState.FAILED), start_time, error=error_details)
             final_node_output = {"run_state": run_state, **node_result}
 
             # 将结果写入该节点的上下文以及父级（root）上下文

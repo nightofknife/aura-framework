@@ -14,9 +14,10 @@ import yaml
 
 from packages.aura_core.api import service_registry, ACTION_REGISTRY
 from packages.aura_core.event_bus import EventBus, Event
-from packages.aura_core.state_store import StateStore
+from packages.aura_core.state_store_service import StateStoreService
 from packages.aura_core.task_queue import TaskQueue, Tasklet
 from packages.aura_core.logger import logger
+from plans.aura_base.services.config_service import ConfigService
 from .execution_manager import ExecutionManager
 from .interrupt_service import InterruptService
 from .plan_manager import PlanManager
@@ -38,23 +39,31 @@ class Scheduler:
         self.num_event_workers = 4
         self.startup_complete_event = threading.Event()
         self._pre_start_task_buffer: List[Tasklet] = []
-
-        # 【新增】临时 fallback 锁（仅 init 阶段用，后续移除依赖）
         self.fallback_lock = threading.RLock()
+
+        # --- [CORE FIX] 提前创建 pause_event ---
+        self.pause_event = asyncio.Event()
 
         # --- 异步组件 (将在每次启动时初始化，先置为None) ---
         self.is_running: Optional[asyncio.Event] = None
-        self.pause_event: Optional[asyncio.Event] = None
+        # self.pause_event: Optional[asyncio.Event] = None  <- [MOVED]
         self.task_queue: Optional[TaskQueue] = None
         self.event_task_queue: Optional[TaskQueue] = None
         self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
         self.api_log_queue: Optional[asyncio.Queue] = None
-        self.async_data_lock: Optional[asyncio.Lock] = None  # 【确认】异步数据锁 placeholder
+        self.async_data_lock: Optional[asyncio.Lock] = None
 
-        # --- 核心服务实例 (只创建一次) ---
-        self.state_store = StateStore()
+        # --- [FIX] 核心服务实例化顺序调整 ---
+        # 1. 首先创建无依赖或基础依赖的服务
+        self.config_service = ConfigService()
         self.event_bus = EventBus()
-        self.plan_manager = PlanManager(str(self.base_path), None)
+
+        # 2. 创建依赖于ConfigService的服务
+        self.state_store = StateStoreService(config=self.config_service)
+
+        # 3. 创建依赖于Scheduler自身的服务 (self)
+        # [CORE FIX] 将 self.pause_event 传递给 PlanManager
+        self.plan_manager = PlanManager(str(self.base_path), self.pause_event)
         self.execution_manager = ExecutionManager(self)
         self.scheduling_service = SchedulingService(self)
         self.interrupt_service = InterruptService(self)
@@ -77,17 +86,17 @@ class Scheduler:
     def _initialize_async_components(self):
         logger.debug("Scheduler: 正在事件循环内初始化/重置异步组件...")
         self.is_running = asyncio.Event()
-        self.pause_event = asyncio.Event()
-        if self.async_data_lock is None:  # 【修改】确保创建
+        # self.pause_event = asyncio.Event() <- [MOVED]
+        if self.async_data_lock is None:
             self.async_data_lock = asyncio.Lock()
-        self.plan_manager.pause_event = self.pause_event
+
+
         self.task_queue = TaskQueue(maxsize=1000)
         self.event_task_queue = TaskQueue(maxsize=2000)
         self.interrupt_queue = asyncio.Queue(maxsize=100)
         self.api_log_queue = asyncio.Queue(maxsize=500)
         if hasattr(logger, 'update_api_queue'):
             logger.update_api_queue(self.api_log_queue)
-
     def get_async_lock(self) -> asyncio.Lock:
         """
         【新增】获取异步数据锁。如果未初始化（非异步环境），fallback 到线程锁或 raise 错误。
@@ -153,12 +162,14 @@ class Scheduler:
                 logger.warning(f"UI更新队列已满，丢弃消息: {msg_type}")
 
     def _register_core_services(self):
-        from plans.aura_base.services.config_service import ConfigService
         from packages.aura_core.builder import set_project_base_path
         set_project_base_path(self.base_path)
-        service_registry.register_instance('config', ConfigService(), public=True, fqid='core/config')
+
+        # [FIX] 注册已经创建好的实例
+        service_registry.register_instance('config', self.config_service, public=True, fqid='core/config')
         service_registry.register_instance('state_store', self.state_store, public=True, fqid='core/state_store')
         service_registry.register_instance('event_bus', self.event_bus, public=True, fqid='core/event_bus')
+
         service_registry.register_instance('scheduler', self, public=True, fqid='core/scheduler')
         service_registry.register_instance('plan_manager', self.plan_manager, public=False, fqid='core/plan_manager')
         service_registry.register_instance('execution_manager', self.execution_manager, public=False,

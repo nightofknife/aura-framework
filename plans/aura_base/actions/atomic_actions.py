@@ -640,9 +640,15 @@ def find_image_and_click(app: AppProviderService, vision: VisionService, engine:
                          button: str = 'left', move_duration: float = 0.2) -> bool:
     match_result = find_image(app, vision, engine, template, region, threshold)
     if match_result.found:
-        logger.info(f"图像找到，位于窗口坐标 {match_result.center_point}，置信度: {match_result.confidence:.2f}")
-        app.move_to(match_result.center_point[0], match_result.center_point[1], duration=move_duration)
-        app.click(button=button)  # 点击当前位置
+        found_x, found_y = match_result.center_point
+        logger.info(f"图像找到，位于窗口坐标 ({found_x}, {found_y})，置信度: {match_result.confidence:.2f}")
+
+        # 先移动到目标点
+        app.move_to(found_x, found_y, duration=move_duration)
+
+        # [CORE FIX] 调用 click 时，必须传入 x 和 y 坐标
+        app.click(x=found_x, y=found_y, button=button)
+
         logger.info("点击操作完成。")
         return True
     else:
@@ -657,10 +663,16 @@ def find_text_and_click(app: AppProviderService, ocr: OcrService, engine: Execut
                         button: str = 'left', move_duration: float = 0.2) -> bool:
     ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode)
     if ocr_result.found:
+        found_x, found_y = ocr_result.center_point
         logger.info(
-            f"文本找到: '{ocr_result.text}'，位于窗口坐标 {ocr_result.center_point}，置信度: {ocr_result.confidence:.2f}")
-        app.move_to(ocr_result.center_point[0], ocr_result.center_point[1], duration=move_duration)
-        app.click(button=button)  # 点击当前位置
+            f"文本找到: '{ocr_result.text}'，位于窗口坐标 ({found_x}, {found_y})，置信度: {ocr_result.confidence:.2f}")
+
+        # 先移动到目标点
+        app.move_to(found_x, found_y, duration=move_duration)
+
+        # [CORE FIX] 调用 click 时，必须传入 x 和 y 坐标
+        app.click(x=found_x, y=found_y, button=button)
+
         logger.info("点击操作完成。")
         return True
     else:
