@@ -86,7 +86,7 @@ class Scheduler:
     def _initialize_async_components(self):
         logger.debug("Scheduler: 正在事件循环内初始化/重置异步组件...")
         self.is_running = asyncio.Event()
-        # self.pause_event = asyncio.Event() <- [MOVED]
+
         if self.async_data_lock is None:
             self.async_data_lock = asyncio.Lock()
 

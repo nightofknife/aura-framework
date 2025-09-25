@@ -148,7 +148,7 @@ class Orchestrator:
             # 为条件检查创建一个临时的、空的上下文
             temp_context = ExecutionContext()
             renderer = TemplateRenderer(temp_context, self.state_store)
-            injector = ActionInjector(temp_context, self, renderer)
+            injector = ActionInjector(temp_context, self, renderer) # todo 这里涉及到的中断检查设计有问题，可能需要从结构上重新搞一个。
 
             result = await injector.execute(action_name, condition_data.get('params', {}))
             return bool(result)
@@ -156,7 +156,6 @@ class Orchestrator:
             logger.error(f"条件检查 '{action_name}' 失败: {e}", exc_info=False)
             return False
 
-    # ... (其他文件操作方法不变)
     def load_task_data(self, full_task_id: str) -> Optional[Dict]:
         try:
             plan_name, task_name_in_plan = full_task_id.split('/', 1)
