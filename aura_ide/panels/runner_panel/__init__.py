@@ -1,11 +1,10 @@
-# aura_ide/panels/runner_panel/__init__.py
+# aura_ide/panels/runner_panel/__init__.py (修改版)
 
 from PySide6.QtWidgets import QStyle, QWidget
 from PySide6.QtGui import QIcon
 
 from aura_ide.panels.base_panel import BasePanel
-from .runner_page import RunnerPage
-
+from .runner_widget import RunnerWidget # <-- 导入新的主控件
 
 class RunnerPanel(BasePanel):
     @property
@@ -14,20 +13,16 @@ class RunnerPanel(BasePanel):
 
     @property
     def icon(self) -> QIcon:
-        # 使用Qt内置的标准图标
-        # 需要一个临时的QWidget来获取style
         temp_widget = QWidget()
         return temp_widget.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
 
     def create_widget(self) -> QWidget:
-        # Runner面板的主体就是RunnerPage
+        # Runner面板的主体现在是 RunnerWidget
         if not hasattr(self, '_widget'):
-            self._widget = RunnerPage(self.bridge)
+            self._widget = RunnerWidget(self.bridge) # <-- 实例化新的主控件
         return self._widget
 
     def on_activate(self):
         # 当切换到此面板时，可以自动刷新任务列表
-        if hasattr(self, '_widget') and hasattr(self._widget.picker, '_reload_plans'):
-            print("Runner Panel Activated: Refreshing plans...")
-            self._widget.picker._reload_plans()
-
+        if hasattr(self, '_widget'):
+             self._widget.refresh_data()

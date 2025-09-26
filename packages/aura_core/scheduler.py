@@ -86,7 +86,7 @@ class Scheduler:
     def _initialize_async_components(self):
         logger.debug("Scheduler: 正在事件循环内初始化/重置异步组件...")
         self.is_running = asyncio.Event()
-        # self.pause_event = asyncio.Event() <- [MOVED]
+
         if self.async_data_lock is None:
             self.async_data_lock = asyncio.Lock()
 
@@ -744,6 +744,44 @@ class Scheduler:
                     if task_id.startswith(prefix):
                         tasks.append(task_id[len(prefix):])
                 return sorted(tasks)
+
+    def get_all_task_definitions_with_meta(self) -> List[Dict[str, Any]]:
+        """
+        【新增】返回一个包含所有任务详细信息的列表，专为UI构建而设计。
+
+        每个任务都是一个字典，包含:
+        - 'full_task_id': "plan_name/task_name_in_plan"
+        - 'plan_name': "plan_name"
+        - 'task_name_in_plan': "task_name_in_plan"
+        - 'meta': 任务定义中的 'meta' 字典 (如果存在)
+        - 'definition': 完整的任务定义字典
+        """
+        # 这个方法是同步的，因为它直接读取内存中的数据，非常快。
+        # 我们使用 fallback_lock 来确保在加载计划时不会发生数据竞争。
+        with self.fallback_lock:
+            detailed_tasks = []
+            # self.all_tasks_definitions 是在 reload_plans() 中被填充的
+            for full_task_id, task_def in self.all_tasks_definitions.items():
+                try:
+                    # 确保 task_def 是一个字典，以安全地调用 .get()
+                    if not isinstance(task_def, dict):
+                        continue
+
+                    plan_name, task_name_in_plan = full_task_id.split('/', 1)
+
+                    detailed_tasks.append({
+                        'full_task_id': full_task_id,
+                        'plan_name': plan_name,
+                        'task_name_in_plan': task_name_in_plan,
+                        'meta': task_def.get('meta', {}),  # 安全地获取meta，不存在则返回空字典
+                        'definition': task_def  # 也包含完整的定义，供将来使用
+                    })
+                except ValueError:
+                    # 如果 full_task_id 不符合 "plan/task" 格式，记录一个警告并跳过
+                    logger.warning(f"无法从任务ID '{full_task_id}' 中解析方案名，已跳过。")
+
+            return detailed_tasks
+
 
     def get_all_services_status(self) -> List[Dict[str, Any]]:
         async def async_get_services():
