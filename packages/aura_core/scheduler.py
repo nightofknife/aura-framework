@@ -890,30 +890,27 @@ class Scheduler:
         self._push_ui_update('full_status_update', payload)
 
     async def _log_consumer_loop(self):
-        logger.info("日志消费者服务已启动。")
-        underlying_logger = logger.logger
-        handlers_to_use = [h for h in underlying_logger.handlers if h.name != "api_queue"]
-        if not handlers_to_use:
-            logger.warning("日志消费者启动，但没有找到文件或控制台等目标处理器。日志将不会被记录。")
+        # A 方案：不回放到处理器，避免与 emit 阶段的 console/file/ui 形成双写
+        logger.info("日志消费者服务已启动（A 方案：不回放到处理器）。")
 
-        # 【FIX #3 - Graceful Shutdown】循环条件依赖于 is_running 事件
+        # 【保持原有的优雅关闭逻辑：依赖 is_running 事件 + 超时 get】
         while self.is_running.is_set():
             try:
-                # 【FIX #3 - Graceful Shutdown】使用带超时的 get
-                log_entry = await asyncio.wait_for(self.api_log_queue.get(), timeout=1.0)
-                if log_entry and isinstance(log_entry, dict):
-                    record = logging.makeLogRecord(log_entry)
-                    for handler in handlers_to_use:
-                        if record.levelno >= handler.level:
-                            handler.handle(record)
+                # 取出日志（dict 或其它），但不再回放给任何 handler
+                _ = await asyncio.wait_for(self.api_log_queue.get(), timeout=1.0)
+
+                # 如果你以后需要转发给 WebSocket/远端订阅者，可在这里处理 _
+                # 例如：await self._broadcast_log(_)
+
                 self.api_log_queue.task_done()
+
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 logger.info("日志消费者服务已收到取消信号，正在关闭。")
                 break
             except Exception as e:
-                # Use print here as the logger itself might be the source of the issue
+                # 用 print 避免 logger 自身问题导致死循环
                 print(f"CRITICAL: 日志消费者循环出现严重错误: {e}")
                 await asyncio.sleep(1)
 

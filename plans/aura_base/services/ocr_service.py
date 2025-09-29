@@ -93,8 +93,13 @@ class OcrService:
             if self._engine is None:
                 logger.info("OCR服务: 正在初始化共享的PaddleOCR引擎...")
                 self._engine = await asyncio.to_thread(
-                    PaddleOCR, lang="ch", ocr_version="PP-OCRv5", device="gpu", use_doc_unwarping=False
-                )
+                    PaddleOCR, lang="ch", ocr_version="PP-OCRv5", device="gpu", use_doc_unwarping=False,
+                    doc_orientation_classify_model_dir= r".\plans\aura_base\services\ocr_model\PP-LCNet_x1_0_doc_ori",
+                    text_detection_model_dir= r".\plans\aura_base\services\ocr_model\PP-OCRv5_server_det",
+                    text_recognition_model_dir = r".\plans\aura_base\services\ocr_model\PP-OCRv5_server_rec",
+                    textline_orientation_model_dir=r".\plans\aura_base\services\ocr_model\PP-LCNet_x1_0_textline_ori" ,
+                    )
+
                 logger.info("OCR服务: 共享引擎初始化完成。")
             else:
                 logger.info("OCR服务: 共享引擎已初始化，无需重复操作。")
@@ -252,3 +257,5 @@ class OcrService:
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         # .result() 会阻塞当前线程，直到协程在事件循环中完成，并返回结果或抛出异常
         return future.result()
+
+
