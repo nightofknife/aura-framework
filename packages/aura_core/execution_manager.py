@@ -121,17 +121,17 @@ class ExecutionManager:
                     logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")  # 【新增】防护，防 finally 崩溃
             await hook_manager.trigger('after_task_run', task_context=task_context)
             logger.debug(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")  # 【修改】debug 级，避免洪水
+
     async def _handle_state_planning(self, tasklet: Tasklet) -> bool:
         """
-        【全新重构】处理状态规划，实现动态重规划（Replanning）逻辑。
+        【最终修正版】处理状态规划，集成健壮的、带重试的转移验证。
         """
         task_def = self.scheduler.all_tasks_definitions.get(tasklet.task_name)
         if not task_def: return True
 
-        # 检查任务元数据中是否有 'requires_initial_state' 字段
         target_state = task_def.get('meta', {}).get('requires_initial_state')
         if not target_state:
-            return True  # 无需规划
+            return True
 
         plan_name = tasklet.task_name.split('/')[0]
         orchestrator = self.scheduler.plans.get(plan_name)
@@ -140,61 +140,76 @@ class ExecutionManager:
             return False
 
         state_planner = orchestrator.state_planner
+        max_replans = 10
 
-        # --- 开始动态重规划循环 ---
-        replan_attempts = 0
-        max_replans = 10  # 保险丝
-
-        while replan_attempts < max_replans:
-            replan_attempts += 1
+        for attempt in range(max_replans):
+            logger.info(f"【规划循环 {attempt + 1}/{max_replans}】正在确定当前状态 (目标: '{target_state}')...")
 
             # 1. 感知 (Perceive)
-            logger.info(f"【规划循环 {replan_attempts}/{max_replans}】正在确定当前状态 (目标: '{target_state}')...")
             current_state = await state_planner.determine_current_state(target_state)
-
             if not current_state:
                 logger.error("无法确定当前系统状态，规划中止。")
                 return False
 
-            logger.info(f"当前状态已确认为: '{current_state}'")
-
             if current_state == target_state:
-                logger.info("状态规划成功，系统已达到目标状态。")
+                logger.info(f"✅ 状态规划成功，系统已达到目标状态 '{target_state}'。")
                 return True
+
+            logger.info(f"当前状态已确认为: '{current_state}'")
 
             # 2. 规划 (Plan)
             logger.info(f"正在从 '{current_state}' 规划到 '{target_state}' 的路径...")
-            transition_tasks = state_planner.find_path(current_state, target_state)
-
-            if transition_tasks is None:
+            path = state_planner.find_path(current_state, target_state)
+            if not path:
                 logger.error(f"找不到从 '{current_state}' 到 '{target_state}' 的路径，规划中止。")
                 return False
 
-            if not transition_tasks:
-                logger.warning(f"'{current_state}' 和 '{target_state}' 之间无需转移，但状态不匹配。将重试状态检查。")
-                await asyncio.sleep(2)
-                continue
+            # 3. 行动与验证 (Act & Verify)
+            transition_ok = True
+            for transition_task in path:
+                expected_state = state_planner.get_expected_state_after_transition(current_state, transition_task)
+                full_task_id = f"{plan_name}/{transition_task}"
 
-            # 3. 行动 (Act) - 只执行第一步
-            next_task_name = transition_tasks[0]
-            full_task_id = f"{plan_name}/{next_task_name}"
-            expected_state = state_planner.get_expected_state_after_transition(current_state, next_task_name)
+                logger.info(f"执行转移任务: '{full_task_id}' (期望到达: '{expected_state}')...")
 
-            logger.info(f"执行转移任务: '{full_task_id}' (期望到达: '{expected_state}')...")
+                # 执行转移任务
+                transition_tfr = await orchestrator.execute_task(transition_task)
 
-            # 使用内部任务执行器来运行转移任务
-            result = await self._run_internal_task(full_task_id)
+                # 检查任务本身是否失败
+                if not transition_tfr or transition_tfr.get('status') != 'SUCCESS':
+                    logger.warning(f"转移任务 '{full_task_id}' 本身执行失败。将重新规划。")
+                    transition_ok = False
+                    break  # 中断当前路径，进入下一次重规划循环
 
-            if result.get('status') != 'success':
-                logger.warning(f"转移任务 '{full_task_id}' 执行失败。将重新规划。")
-                # 无需做任何事，循环会自动从顶部重新开始“感知”
-            else:
-                logger.info(f"转移任务 '{full_task_id}' 执行成功。将重新验证状态。")
+                # 任务成功，现在带重试地验证是否到达了期望状态
+                if expected_state:
+                    # 调用 StatePlanner 中新增的验证方法
+                    is_verified = await state_planner.verify_state_with_retry(expected_state)
+                    if not is_verified:
+                        logger.warning(
+                            f"转移任务 '{full_task_id}' 执行成功，但未能验证到达状态 '{expected_state}'。将重新规划。")
+                        transition_ok = False
+                        break  # 验证失败，中断当前路径，进入下一次重规划循环
+                    else:
+                        # 验证成功！更新当前状态，为路径中的下一步做准备
+                        current_state = expected_state
+                else:
+                    logger.warning(f"在状态图中找不到任务 '{transition_task}' 对应的目标状态，无法验证，假设成功。")
 
-        # 如果循环结束仍未到达目标
+            if transition_ok:
+                # 如果整个路径都成功执行并验证，我们再次确认最终状态
+                if current_state == target_state:
+                    logger.info(f"✅ 整个状态转移路径成功完成，系统已到达目标状态 '{target_state}'。")
+                    return True
+                else:
+                    logger.warning(
+                        f"路径执行完毕，但最终状态为 '{current_state}'，与目标 '{target_state}' 不符。将重新规划。")
+
+            # 如果 transition_ok 为 False，或者路径走完状态不对，就等待一下再重新规划
+            await asyncio.sleep(1)
+
         logger.critical(f"重规划次数达到上限 ({max_replans})，但仍未到达目标状态 '{target_state}'。")
         return False
-
 
     async def _run_internal_task(self, task_id: str) -> Dict[str, Any]:
         """
