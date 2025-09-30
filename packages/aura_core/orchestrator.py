@@ -29,12 +29,16 @@ class Orchestrator:
         self.state_planner = state_planner
         self.event_bus = service_registry.get_service_instance('event_bus')
         self.state_store: StateStoreService = service_registry.get_service_instance('state_store')
+        # [NEW] 添加 services 属性，供 Engine 使用
+        self.services = service_registry.get_all_services()
+
 
     async def execute_task(
             self,
             task_name_in_plan: str,
             triggering_event: Optional[Event] = None,
-            initial_data: Optional[Dict[str, Any]] = None
+            # [MODIFIED] 将 initial_data 重命名为 inputs 以符合新架构
+            inputs: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         执行一个任务并返回一个标准化的 TFR (Task Final Result) 对象。
@@ -45,8 +49,9 @@ class Orchestrator:
         task_start_time = time.time()
         await self.event_bus.publish(Event(
             name='task.started',
+            # [MODIFIED] 更新 payload key
             payload={'plan_name': self.plan_name, 'task_name': task_name_in_plan, 'start_time': task_start_time,
-                     'initial_context': initial_data or {}}
+                     'inputs': inputs or {}}
         ))
 
         # 初始化TFR的各个部分
@@ -61,7 +66,9 @@ class Orchestrator:
             if not task_data:
                 raise ValueError(f"Task definition not found: {full_task_id}")
 
-            root_context = ExecutionContext(initial_data=initial_data)
+            # [MODIFIED] 使用 inputs 初始化 ExecutionContext
+            # triggering_event 可以在未来用于填充 'initial' 数据
+            root_context = ExecutionContext(inputs=inputs)
 
             async def step_event_callback(event_name: str, payload: Dict):
                 payload['plan_name'] = self.plan_name
@@ -76,17 +83,15 @@ class Orchestrator:
 
             final_context = await engine.run(task_data, full_task_id, root_context)
 
-            # 任务执行完毕后，将最终上下文存入 framework_data
+            # ... (后续代码无重大逻辑变更)
             framework_data = final_context.data
 
-            # 确定最终状态
             is_failed = False
             for node_result in framework_data.get('nodes', {}).values():
                 run_state = node_result.get('run_state', {})
                 if run_state.get('status') == 'FAILED':
                     final_status = 'FAILED'
                     error_details = run_state.get('error', {'message': 'A node failed.'})
-                    # 将失败节点的ID也加入错误信息
                     if 'node_id' in node_result.get('run_state', {}):
                         error_details['node_id'] = node_result['run_state']['node_id']
                     is_failed = True
@@ -95,30 +100,26 @@ class Orchestrator:
             if not is_failed:
                 final_status = 'SUCCESS'
 
-            # 如果成功，计算用户返回值 (user_data)
             if final_status == 'SUCCESS':
                 returns_template = task_data.get('returns')
                 if returns_template is not None:
                     try:
                         renderer = TemplateRenderer(final_context, self.state_store)
-                        # 注意：这里我们不需要缓存作用域，因为整个任务只计算一次返回值
                         user_data = await renderer.render(returns_template)
                     except Exception as e:
                         raise ValueError(f"无法渲染返回值: {returns_template}") from e
                 else:
-                    user_data = True  # 默认的业务返回值为True
+                    user_data = True
 
         except Exception as e:
             final_status = 'ERROR'
             error_details = {'message': str(e), 'type': type(e).__name__}
-            # 假设有一个 debug_mode 属性
             if getattr(self, 'debug_mode', False):
                 error_details['traceback'] = traceback.format_exc()
             logger.critical(f"Task execution failed at orchestrator level for '{task_name_in_plan}': {e}",
                             exc_info=True)
 
         finally:
-            # 构建最终的、包含分离数据的TFR对象
             tfr_object = {
                 'status': final_status,
                 'user_data': user_data,
@@ -145,10 +146,10 @@ class Orchestrator:
         if not action_name: return False
 
         try:
-            # 为条件检查创建一个临时的、空的上下文
             temp_context = ExecutionContext()
             renderer = TemplateRenderer(temp_context, self.state_store)
-            injector = ActionInjector(temp_context, self, renderer) # todo 这里涉及到的中断检查设计有问题，可能需要从结构上重新搞一个。
+            # [MODIFIED] 确保 ActionInjector 初始化时传递 services
+            injector = ActionInjector(temp_context, self, renderer, self.services)
 
             result = await injector.execute(action_name, condition_data.get('params', {}))
             return bool(result)
