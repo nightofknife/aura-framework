@@ -27,12 +27,14 @@ class TemplateRenderer:
         """
         state_data = {}
         if self.state_store:
+            if not getattr(self.state_store, '_initialized', False):
+                await self.state_store.initialize()
             state_data = await self.state_store.get_all_data()
 
         exec_data = self.execution_context.data
 
         return {
-            "context": state_data,
+            "state": state_data,
             "initial": exec_data.get("initial", {}),
             "nodes": exec_data.get("nodes", {})
         }
@@ -61,7 +63,7 @@ class TemplateRenderer:
                 template = self.jinja_env.from_string(value)
                 return await template.render_async(scope)
             except UndefinedError as e:
-                logger.warning(f"渲染模板'{value}'时出错: {e.message}。返回None。")
+                logger.warning(f"渲染模板 '{value}' 时出错: 变量或属性未定义 - {e.message}。返回 None。")
                 return None
             except Exception as e:
                 logger.error(f"渲染模板'{value}'时发生未知错误: {e}", exc_info=True)

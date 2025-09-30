@@ -57,6 +57,9 @@ class ExecutionEngine:
         # 依赖的服务
         self.state_store: StateStoreService = self.services.get('state_store')
 
+        # 定义所有合法的状态查询关键字
+        self.VALID_DEPENDENCY_STATUSES = {'success', 'failed', 'running', 'skipped'}
+
     async def run(self, task_data: Dict[str, Any], task_name: str, root_context: ExecutionContext) -> ExecutionContext:
         task_display_name = task_data.get('meta', {}).get('title', task_name)
         logger.info(f"======= 开始执行任务: {task_display_name} =======")
@@ -114,19 +117,30 @@ class ExecutionEngine:
                 raise ValueError(f"检测到循环依赖: 节点 '{node_id}' 直接或间接依赖于自身。")
 
     def _get_all_deps_from_struct(self, struct: Any) -> Set[str]:
+        """
+        【MODIFIED】递归地从复杂的依赖结构中提取所有节点ID。
+        """
         deps = set()
         if isinstance(struct, str):
             # 简单依赖形式: "my_node"
-            # 高级依赖形式: "when: {{...}}"
+            # 条件依赖形式: "when: {{...}}" - 这种不包含节点ID，忽略
             if not struct.startswith("when:"):
                 deps.add(struct)
         elif isinstance(struct, list):
             for item in struct:
                 deps.update(self._get_all_deps_from_struct(item))
         elif isinstance(struct, dict):
-            # 兼容旧的 and/or 结构
-            for key, value in struct.items():
-                deps.update(self._get_all_deps_from_struct(value))
+            # 逻辑组合器: and, or, not
+            if 'and' in struct:
+                deps.update(self._get_all_deps_from_struct(struct['and']))
+            elif 'or' in struct:
+                deps.update(self._get_all_deps_from_struct(struct['or']))
+            elif 'not' in struct:
+                deps.update(self._get_all_deps_from_struct(struct['not']))
+            # 状态查询: {node_id: status}
+            else:
+                # 假设字典是状态查询，key就是node_id
+                deps.update(struct.keys())
         return deps
 
     async def _run_dag_scheduler(self):
@@ -192,34 +206,69 @@ class ExecutionEngine:
             self.completion_event.set()
 
     async def _are_dependencies_met(self, node_id: str) -> bool:
-        dep_struct = self.dependencies.get(node_id, [])
+        dep_struct = self.dependencies.get(node_id)
         return await self._evaluate_dep_struct(dep_struct)
 
     async def _evaluate_dep_struct(self, struct: Any) -> bool:
+        """
+        【REWRITTEN】递归评估依赖结构。
+        支持逻辑组合 (and/or/not)、明确的状态查询以及'|'分隔的多状态。
+        """
+        # 0. 空依赖
+        if struct is None:
+            return True
+
+        # 1. 简单依赖 (语法糖 for success) 和 条件依赖
         if isinstance(struct, str):
             if struct.startswith("when:"):
-                # 高级依赖
                 expression = struct.replace("when:", "").strip()
-                # 临时创建一个渲染器来评估条件
                 # 注意：这里使用root_context，因为它包含了所有已完成节点的数据
                 renderer = TemplateRenderer(self.root_context, self.state_store)
                 return bool(await renderer.render(expression))
             else:
-                # 简单依赖（语法糖）
-                return self.step_states.get(struct) == StepState.SUCCESS
+                state = self.step_states.get(struct)
+                return state == StepState.SUCCESS
 
+        # 2. 列表隐含 AND 逻辑
         if isinstance(struct, list):
+            if not struct: return True
             results = await asyncio.gather(*[self._evaluate_dep_struct(item) for item in struct])
             return all(results)
 
         if isinstance(struct, dict):
-            # 兼容旧格式
-            if 'and' in struct: return await self._evaluate_dep_struct(struct['and'])
+            if not struct: return True
+
+            # 3. 逻辑组合器 (and, or, not)
+            if 'and' in struct:
+                return await self._evaluate_dep_struct(struct['and'])
             if 'or' in struct:
                 results = await asyncio.gather(*[self._evaluate_dep_struct(item) for item in struct['or']])
                 return any(results)
+            if 'not' in struct:
+                return not await self._evaluate_dep_struct(struct['not'])
 
-        return True  # 空依赖
+            # 4. 状态查询依赖
+            if len(struct) != 1:
+                raise ValueError(f"依赖条件格式错误: {struct}。状态查询必须是单个键值对。")
+
+            node_id, expected_status_str = next(iter(struct.items()))
+
+            raw_statuses = {s.strip().lower() for s in expected_status_str.split('|')}
+
+            invalid_statuses = raw_statuses - self.VALID_DEPENDENCY_STATUSES
+            if invalid_statuses:
+                raise ValueError(f"发现未知的依赖状态: {invalid_statuses}. "
+                                 f"支持的状态: {self.VALID_DEPENDENCY_STATUSES}")
+
+            current_state_enum = self.step_states.get(node_id)
+            if not current_state_enum:
+                return False
+
+            current_state_str = current_state_enum.name.lower()
+            return current_state_str in raw_statuses
+
+        # 对于其他无法解析的类型，也视为空依赖
+        return True
 
     def _create_run_state(self, status: StepState, start_time: float, error: Optional[Dict] = None) -> Dict:
         end_time = time.time()
