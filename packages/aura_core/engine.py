@@ -194,16 +194,19 @@ class ExecutionEngine:
 
     def _on_task_completed(self, task: asyncio.Task):
         self.running_tasks.discard(task)
-        # 捕获任务中的异常，以防有未处理的严重错误
         try:
             task.result()
         except Exception as e:
             logger.critical(f"DAG调度器捕获到未处理的任务异常: {e}", exc_info=True)
 
-        asyncio.create_task(self._schedule_ready_nodes())
+        async def reschedule_and_maybe_finish():
+            try:
+                await self._schedule_ready_nodes()
+            finally:
+                if not self.running_tasks and self.completion_event:
+                    self.completion_event.set()
 
-        if not self.running_tasks and self.completion_event:
-            self.completion_event.set()
+        asyncio.create_task(reschedule_and_maybe_finish())
 
     async def _are_dependencies_met(self, node_id: str) -> bool:
         dep_struct = self.dependencies.get(node_id)
