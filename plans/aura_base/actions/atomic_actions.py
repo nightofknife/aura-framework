@@ -748,6 +748,6 @@ def scan_and_find_best_match(app: AppProviderService, vision: VisionService, eng
     logger.info(f"找到最佳匹配项，位于 {best_match.center_point}")
     return best_match
 
-# ... (其他action保持类似修改)
+
 
 

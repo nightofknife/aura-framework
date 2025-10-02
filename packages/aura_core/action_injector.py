@@ -37,6 +37,10 @@ class ActionInjector:
         3. 准备所有调用参数（包括服务注入）。
         4. 根据Action是同步还是异步，选择正确的执行方式。
         """
+
+        if action_name == "aura.run_task":
+            return await self._execute_run_task(raw_params)
+
         action_def = ACTION_REGISTRY.get(action_name)
         if not action_def:
             raise ValueError(f"Action '{action_name}' not found.")
@@ -61,6 +65,48 @@ class ActionInjector:
                 None,
                 lambda: context_snapshot.run(action_def.func, **call_args)
             )
+
+    async def _execute_run_task(self, raw_params: Dict[str, Any]) -> Any:
+        """
+        使用 orchestrator 执行一个子任务。这是实现多节点循环和任务复用的核心。
+        """
+        logger.info(f"Executing sub-task via aura.run_task...")
+
+        # 步骤 1: 渲染参数
+        # 子任务的参数也需要渲染，因为它可能包含来自父任务的变量
+        render_scope = await self.renderer.get_render_scope()
+        rendered_params = await self.renderer.render(raw_params, scope=render_scope)
+
+        # 步骤 2: 验证和提取参数
+        task_name = rendered_params.get('task_name')
+        if not task_name:
+            raise ValueError("aura.run_task action requires a 'task_name' parameter.")
+
+        sub_task_inputs = rendered_params.get('inputs', {})
+        if not isinstance(sub_task_inputs, dict):
+            raise TypeError(f"aura.run_task 'inputs' parameter must be a dictionary.")
+
+        # 步骤 3: 获取 Orchestrator 实例
+        # 这是安全访问顶层服务的正确路径
+        orchestrator = self.engine.orchestrator
+
+        # 步骤 4: 调用 Orchestrator 执行子任务
+        # 这是上下文传递的关键点：将计算好的 sub_task_inputs 传递给新任务
+        tfr = await orchestrator.execute_task(
+            task_name_in_plan=task_name,
+            inputs=sub_task_inputs
+        )
+
+        # 步骤 5: 处理子任务结果
+        # 如果子任务失败，则当前 action 也失败，并将错误信息向上传播
+        if tfr.get('status') in ('FAILED', 'ERROR'):
+            error_info = tfr.get('error', {'message': 'Unknown error in sub-task.'})
+            raise Exception(f"Sub-task '{task_name}' failed. Reason: {error_info}")
+
+        # 如果成功，将子任务的完整执行结果作为此 action 的返回值
+        # 这使得父任务可以访问子任务的内部状态，例如：
+        # {{ nodes.my_loop_node.output[0].nodes.sub_task_node.output }}
+        return tfr.get('framework_data')
 
     def _prepare_action_arguments(self, action_def: ActionDefinition, rendered_params: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -252,6 +252,16 @@ class ServiceRegistry:
     def get_all_service_definitions(self) -> List[ServiceDefinition]:
         with self._lock: return sorted(list(self._fqid_map.values()), key=lambda s: s.fqid)
 
+    def get_all_services(self) -> Dict[str, Any]:
+        """
+        返回所有已实例化的服务的字典。
+        返回的是一个副本，以确保内部状态的线程安全。
+        """
+        with self._lock:
+            # 返回 self._instances 的一个浅拷贝
+            return dict(self._instances)
+
+
     def remove_services_by_prefix(self, prefix: str = "", exclude_prefix: Optional[str] = None):
         with self._lock:
             fqids_to_remove = [fqid for fqid in self._fqid_map if

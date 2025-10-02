@@ -197,3 +197,31 @@ class StatePlanner:
             if t.get('from') == from_state and t.get('transition_task') == transition_task:
                 return t.get('to')
         return None
+
+    async def verify_state_with_retry(self, state_name: str, retries: int = 5, delay: float = 0.5) -> bool:
+        """
+        带重试机制地检查当前是否处于某个状态。
+        这是一个独立的验证器，用于在状态转移后确认结果。
+        """
+        check_task = self.state_map.states.get(state_name, {}).get('check_task')
+        if not check_task:
+            logger.error(f"无法验证状态 '{state_name}'，因为它没有定义 'check_task'。")
+            return False
+
+        for attempt in range(retries):
+            logger.info(f"正在验证状态 '{state_name}'... (尝试 {attempt + 1}/{retries})")
+            try:
+                tfr = await self.orchestrator.execute_task(check_task)
+                # 检查任务是否成功，并且其业务返回值 (user_data) 为 True 或 'True'
+                if tfr and tfr.get('status') == 'SUCCESS' and tfr.get('user_data'):
+                    logger.info(f"✅ 状态 '{state_name}' 验证成功。")
+                    return True
+            except Exception as e:
+                logger.warning(f"验证状态 '{state_name}' 时发生异常: {e}", exc_info=False)
+
+            # 如果不是最后一次尝试，就等待一下
+            if attempt < retries - 1:
+                await asyncio.sleep(delay)
+
+        logger.error(f"在 {retries} 次尝试后，仍无法验证状态 '{state_name}'。")
+        return False

@@ -113,7 +113,7 @@ class Logger:
             cls._instance = super(Logger, cls).__new__(cls, *args, **kwargs)
             logger_obj = logging.getLogger("AuraFramework")
             logger_obj.setLevel(TRACE_LEVEL_NUM)
-
+            logger_obj.propagate = False
             # 【说明】保持默认的控制台处理器，作为未调用 setup 时的后备
             if not any(h.name == "console" for h in logger_obj.handlers):
                 console_handler = logging.StreamHandler(sys.stdout)

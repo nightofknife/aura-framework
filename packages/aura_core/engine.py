@@ -5,7 +5,7 @@ import time
 import traceback
 import uuid
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Callable
+from typing import Any, Dict, List, Optional, Set, Callable, Coroutine
 
 from packages.aura_core.logger import logger
 from .action_injector import ActionInjector
@@ -56,6 +56,9 @@ class ExecutionEngine:
 
         # 依赖的服务
         self.state_store: StateStoreService = self.services.get('state_store')
+
+        # 定义所有合法的状态查询关键字
+        self.VALID_DEPENDENCY_STATUSES = {'success', 'failed', 'running', 'skipped'}
 
     async def run(self, task_data: Dict[str, Any], task_name: str, root_context: ExecutionContext) -> ExecutionContext:
         task_display_name = task_data.get('meta', {}).get('title', task_name)
@@ -114,19 +117,30 @@ class ExecutionEngine:
                 raise ValueError(f"检测到循环依赖: 节点 '{node_id}' 直接或间接依赖于自身。")
 
     def _get_all_deps_from_struct(self, struct: Any) -> Set[str]:
+        """
+        【MODIFIED】递归地从复杂的依赖结构中提取所有节点ID。
+        """
         deps = set()
         if isinstance(struct, str):
             # 简单依赖形式: "my_node"
-            # 高级依赖形式: "when: {{...}}"
+            # 条件依赖形式: "when: {{...}}" - 这种不包含节点ID，忽略
             if not struct.startswith("when:"):
                 deps.add(struct)
         elif isinstance(struct, list):
             for item in struct:
                 deps.update(self._get_all_deps_from_struct(item))
         elif isinstance(struct, dict):
-            # 兼容旧的 and/or 结构
-            for key, value in struct.items():
-                deps.update(self._get_all_deps_from_struct(value))
+            # 逻辑组合器: and, or, not
+            if 'and' in struct:
+                deps.update(self._get_all_deps_from_struct(struct['and']))
+            elif 'or' in struct:
+                deps.update(self._get_all_deps_from_struct(struct['or']))
+            elif 'not' in struct:
+                deps.update(self._get_all_deps_from_struct(struct['not']))
+            # 状态查询: {node_id: status}
+            else:
+                # 假设字典是状态查询，key就是node_id
+                deps.update(struct.keys())
         return deps
 
     async def _run_dag_scheduler(self):
@@ -180,46 +194,84 @@ class ExecutionEngine:
 
     def _on_task_completed(self, task: asyncio.Task):
         self.running_tasks.discard(task)
-        # 捕获任务中的异常，以防有未处理的严重错误
         try:
             task.result()
         except Exception as e:
             logger.critical(f"DAG调度器捕获到未处理的任务异常: {e}", exc_info=True)
 
-        asyncio.create_task(self._schedule_ready_nodes())
+        async def reschedule_and_maybe_finish():
+            try:
+                await self._schedule_ready_nodes()
+            finally:
+                if not self.running_tasks and self.completion_event:
+                    self.completion_event.set()
 
-        if not self.running_tasks and self.completion_event:
-            self.completion_event.set()
+        asyncio.create_task(reschedule_and_maybe_finish())
 
     async def _are_dependencies_met(self, node_id: str) -> bool:
-        dep_struct = self.dependencies.get(node_id, [])
+        dep_struct = self.dependencies.get(node_id)
         return await self._evaluate_dep_struct(dep_struct)
 
     async def _evaluate_dep_struct(self, struct: Any) -> bool:
+        """
+        【REWRITTEN】递归评估依赖结构。
+        支持逻辑组合 (and/or/not)、明确的状态查询以及'|'分隔的多状态。
+        """
+        # 0. 空依赖
+        if struct is None:
+            return True
+
+        # 1. 简单依赖 (语法糖 for success) 和 条件依赖
         if isinstance(struct, str):
             if struct.startswith("when:"):
-                # 高级依赖
                 expression = struct.replace("when:", "").strip()
-                # 临时创建一个渲染器来评估条件
                 # 注意：这里使用root_context，因为它包含了所有已完成节点的数据
                 renderer = TemplateRenderer(self.root_context, self.state_store)
                 return bool(await renderer.render(expression))
             else:
-                # 简单依赖（语法糖）
-                return self.step_states.get(struct) == StepState.SUCCESS
+                state = self.step_states.get(struct)
+                return state == StepState.SUCCESS
 
+        # 2. 列表隐含 AND 逻辑
         if isinstance(struct, list):
+            if not struct: return True
             results = await asyncio.gather(*[self._evaluate_dep_struct(item) for item in struct])
             return all(results)
 
         if isinstance(struct, dict):
-            # 兼容旧格式
-            if 'and' in struct: return await self._evaluate_dep_struct(struct['and'])
+            if not struct: return True
+
+            # 3. 逻辑组合器 (and, or, not)
+            if 'and' in struct:
+                return await self._evaluate_dep_struct(struct['and'])
             if 'or' in struct:
                 results = await asyncio.gather(*[self._evaluate_dep_struct(item) for item in struct['or']])
                 return any(results)
+            if 'not' in struct:
+                return not await self._evaluate_dep_struct(struct['not'])
 
-        return True  # 空依赖
+            # 4. 状态查询依赖
+            if len(struct) != 1:
+                raise ValueError(f"依赖条件格式错误: {struct}。状态查询必须是单个键值对。")
+
+            node_id, expected_status_str = next(iter(struct.items()))
+
+            raw_statuses = {s.strip().lower() for s in expected_status_str.split('|')}
+
+            invalid_statuses = raw_statuses - self.VALID_DEPENDENCY_STATUSES
+            if invalid_statuses:
+                raise ValueError(f"发现未知的依赖状态: {invalid_statuses}. "
+                                 f"支持的状态: {self.VALID_DEPENDENCY_STATUSES}")
+
+            current_state_enum = self.step_states.get(node_id)
+            if not current_state_enum:
+                return False
+
+            current_state_str = current_state_enum.name.lower()
+            return current_state_str in raw_statuses
+
+        # 对于其他无法解析的类型，也视为空依赖
+        return True
 
     def _create_run_state(self, status: StepState, start_time: float, error: Optional[Dict] = None) -> Dict:
         end_time = time.time()
@@ -236,6 +288,7 @@ class ExecutionEngine:
         start_time = time.time()
         node_result = {}
         error_details = None
+        action_result = None
 
         try:
             node_data = self.nodes[node_id]
@@ -243,33 +296,21 @@ class ExecutionEngine:
                 await self.event_callback('node.started', {'node_id': node_id})
             await self._check_pause()
 
-            # 创建此节点专用的渲染器和注入器
-            renderer = TemplateRenderer(node_context, self.state_store)
-            injector = ActionInjector(node_context, self, renderer, self.services)
+            loop_config = node_data.get('loop')
+            if loop_config:
+                action_result = await self._execute_loop(node_id, node_data, node_context, loop_config)
+            else:
+                action_result = await self._execute_single_action(node_data, node_context)
 
-            # 真正执行action
-            action_name = node_data.get('action')
-            if not action_name:
-                raise ValueError("节点定义中缺少'action'。")
-
-            raw_params = node_data.get('params', {})
-            action_result = await injector.execute(action_name, raw_params)
-
-            # 处理具名输出
             outputs_block = node_data.get('outputs', {})
             if outputs_block:
-                # 为了在outputs块中引用action结果，我们创建一个临时渲染作用域
-                output_render_scope = {
-                    "result": action_result,
-                    **(await renderer.get_render_scope())
-                }
+                renderer = TemplateRenderer(node_context, self.state_store)
+                output_render_scope = {"result": action_result, **(await renderer.get_render_scope())}
                 for name, template in outputs_block.items():
                     node_result[name] = await renderer._render_recursive(template, output_render_scope)
             else:
-                # 如果没有outputs块，默认将action结果放入名为'output'的块
                 node_result['output'] = action_result
 
-            # 成功
             self.step_states[node_id] = StepState.SUCCESS
             if self.event_callback:
                 await self.event_callback('node.succeeded', {'node_id': node_id, 'output': node_result})
@@ -290,13 +331,86 @@ class ExecutionEngine:
                 await self.event_callback('node.failed', {'node_id': node_id, 'error': str(e)})
 
         finally:
-            # 无论成功失败，都生成run_state并更新到上下文中
-            run_state = self._create_run_state(self.step_states.get(node_id, StepState.FAILED), start_time, error=error_details)
+            run_state = self._create_run_state(self.step_states.get(node_id, StepState.FAILED), start_time,
+                                               error=error_details)
             final_node_output = {"run_state": run_state, **node_result}
-
-            # 将结果写入该节点的上下文以及父级（root）上下文
             node_context.add_node_result(node_id, final_node_output)
             self.root_context.add_node_result(node_id, final_node_output)
+
+    # [NEW] 执行单次 action 的逻辑
+    async def _execute_single_action(self, node_data: Dict, node_context: ExecutionContext) -> Any:
+        renderer = TemplateRenderer(node_context, self.state_store)
+        injector = ActionInjector(node_context, self, renderer, self.services)
+
+        action_name = node_data.get('action')
+        if not action_name:
+            raise ValueError("节点定义中缺少'action'。")
+
+        raw_params = node_data.get('params', {})
+        return await injector.execute(action_name, raw_params)
+
+    # [NEW] 执行循环的逻辑
+    async def _execute_loop(self, node_id: str, node_data: Dict, node_context: ExecutionContext, loop_config: Dict) -> \
+    List[Any]:
+        renderer = TemplateRenderer(node_context, self.state_store)
+        rendered_config = await renderer.render(loop_config)
+
+        tasks: List[Coroutine] = []
+
+        if 'for_each' in rendered_config:
+            items = rendered_config['for_each']
+            if not isinstance(items, (list, dict)):
+                raise TypeError(f"loop.for_each 的结果必须是列表或字典，但得到的是 {type(items)}")
+
+            item_source = items.items() if isinstance(items, dict) else enumerate(items)
+            for index, item in item_source:
+                iter_context = node_context.fork()
+                iter_context.set_loop_variables({'item': item, 'index': index})
+                tasks.append(self._execute_single_action(node_data, iter_context))
+
+        elif 'times' in rendered_config:
+            try:
+                count = int(rendered_config['times'])
+            except (ValueError, TypeError):
+                raise TypeError(f"loop.times 的结果必须是整数，但得到的是 {rendered_config['times']}")
+
+            for i in range(count):
+                iter_context = node_context.fork()
+                iter_context.set_loop_variables({'index': i})
+                tasks.append(self._execute_single_action(node_data, iter_context))
+
+        elif 'while' in loop_config:  # 'while' 条件在每次迭代前渲染
+            results = []
+            index = 0
+            max_iterations = rendered_config.get('max_iterations', 1000)  # 防止死循环
+            while index < max_iterations:
+                iter_context = node_context.fork()
+                iter_context.set_loop_variables({'index': index})
+
+                # 'while' 条件在每次迭代的上下文中渲染
+                while_renderer = TemplateRenderer(iter_context, self.state_store)
+                condition = bool(await while_renderer.render(loop_config['while']))
+
+                if not condition:
+                    break
+
+                result = await self._execute_single_action(node_data, iter_context)
+                results.append(result)
+                index += 1
+            return results
+
+        else:
+            raise ValueError(f"节点 '{node_id}' 的 loop 配置无效: {loop_config}")
+
+        parallelism = rendered_config.get('parallelism', len(tasks))  # 默认为完全并行
+        semaphore = asyncio.Semaphore(parallelism)
+
+        async def run_with_semaphore(task: Coroutine) -> Any:
+            async with semaphore:
+                return await task
+
+        results = await asyncio.gather(*[run_with_semaphore(task) for task in tasks])
+        return results
 
     async def _check_pause(self):
         if self.pause_event.is_set():
