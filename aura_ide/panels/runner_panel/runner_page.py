@@ -1,4 +1,23 @@
-# aura_ide/panels/runner_panel/runner_page.py
+"""
+定义了“运行中心”面板的主页面 `RunnerPage` 及其所有子控件。
+
+该模块是 `RunnerPanel` 功能的核心实现，它整合了多个子控件来提供一个
+完整的任务运行和监控界面。
+
+主要组件包括：
+- **RunnerPage**: 顶层控件，使用 `QSplitter` 布局，将界面分为左右两部分。
+  左侧是任务选择和队列，右侧是详情和日志。它负责协调所有子控件和处理
+  来自后端的事件，管理整个页面的状态。
+- **TaskPickerWidget**: 左上角的任务选择器。它允许用户浏览所有已加载的
+  方案（Plans）和任务，并可以立即运行或添加到执行队列。
+- **RunQueueWidget**: 左下角的任务队列。用户可以将多个任务添加到这里，
+  并以串行或并行的方式执行它们。
+- **LiveLogView**: 右下角的实时日志视图。它显示来自后端的原始日志和事件流，
+  并提供过滤、搜索和暂停滚动等功能。
+- **TaskRunDetailPanel**: 右上角的任务详情面板（在此文件中导入），用于
+  显示单个任务的详细执行步骤和状态。
+- **QueueItem**: 一个 `dataclass`，用于结构化地表示运行队列中的单个任务项。
+"""
 from __future__ import annotations
 
 import json
@@ -17,10 +36,28 @@ from PySide6.QtWidgets import (
 )
 
 from .detail_panel import TaskRunDetailPanel
+from ....core_integration.qt_bridge import QtBridge
 
 
 @dataclass
 class QueueItem:
+    """
+    一个数据类，用于表示执行队列中的单个任务项。
+
+    Attributes:
+        id (str): 任务项的唯一ID。
+        plan (str): 任务所属的方案名称。
+        task_name (str): 任务的名称。
+        params_override (Dict[str, Any]): 运行时要覆盖的参数。
+        env (str): 运行环境。
+        mode (str): 执行模式（如 'serial'）。
+        group_id (Optional[str]): 所属的批次组ID。
+        status (str): 当前状态 ('pending', 'queued', 'running', 'ok', 'failed', etc.)。
+        submitted_at (Optional[float]): 提交时间戳。
+        started_at (Optional[float]): 开始时间戳。
+        ended_at (Optional[float]): 结束时间戳。
+        client_run_tag (str): 客户端生成的唯一运行标签，用于追踪。
+    """
     id: str
     plan: str
     task_name: str
@@ -36,7 +73,11 @@ class QueueItem:
 
 
 class LiveLogView(QWidget):
-    def __init__(self, parent=None):
+    """
+    一个用于显示实时日志流的控件。
+    """
+    def __init__(self, parent: Optional[QWidget] = None):
+        """初始化日志视图，包括工具栏和文本显示区域。"""
         super().__init__(parent)
         v = QVBoxLayout(self)
         bar = QHBoxLayout()
@@ -69,6 +110,11 @@ class LiveLogView(QWidget):
         self._flush_timer.start()
 
     def append(self, line: str, level: str = "INFO", tag: str = ""):
+        """
+        向日志视图添加一行新日志。
+
+        日志会先进入缓冲区，并根据当前筛选条件决定是否显示。
+        """
         lvl = (level or "INFO").upper()
         sel = self.level_combo.currentText()
         kw = self.search_edit.toPlainText().strip()
@@ -79,6 +125,7 @@ class LiveLogView(QWidget):
         if show: self._buffer.append(prefix + line)
 
     def _flush(self):
+        """由定时器调用，将缓冲区中的日志高效地刷新到文本框中。"""
         if not self._buffer: return
         cursor = self.text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -90,6 +137,7 @@ class LiveLogView(QWidget):
             self.text.verticalScrollBar().maximum())
 
     def _export_logs(self):
+        """将当前显示的日志内容导出到文件。"""
         from datetime import datetime
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         fname = f"runner_logs_{ts}.txt"
@@ -102,10 +150,14 @@ class LiveLogView(QWidget):
 
 
 class TaskPickerWidget(QWidget):
+    """
+    任务选择器控件，允许用户浏览和选择要运行的任务。
+    """
     run_now_requested = Signal(str, str, dict)
     add_to_queue_requested = Signal(dict)
 
-    def __init__(self, bridge, parent=None):
+    def __init__(self, bridge: QtBridge, parent: Optional[QWidget] = None):
+        """初始化任务选择器界面。"""
         super().__init__(parent)
         self.bridge = bridge
         outer = QVBoxLayout(self)
@@ -140,6 +192,7 @@ class TaskPickerWidget(QWidget):
         outer.addStretch()
 
     def _reload_plans(self):
+        """从后端重新加载方案列表并更新下拉框。"""
         plans = []
         try:
             plans = self.bridge.list_plans() or []
@@ -150,6 +203,7 @@ class TaskPickerWidget(QWidget):
         if plans: self._reload_tasks(plans[0])
 
     def _reload_tasks(self, plan_name: str):
+        """根据所选方案重新加载任务树。"""
         self.task_tree.clear()
         if not plan_name: return
         tasks = []
@@ -158,17 +212,17 @@ class TaskPickerWidget(QWidget):
         except Exception:
             pass
         root = self.task_tree.invisibleRootItem()
-        node_map = {}
+        node_map: Dict[str, QTreeWidgetItem] = {}
         for t in sorted(tasks):
             parts = t.split('/')
-            parent = root
+            parent: Union[QTreeWidget, QTreeWidgetItem] = root
             accum = []
             for i, p in enumerate(parts):
                 accum.append(p)
                 key = "/".join(accum)
                 if i == len(parts) - 1:
                     leaf = QTreeWidgetItem([p])
-                    leaf.setData(0, Qt.UserRole, t)
+                    leaf.setData(0, Qt.ItemDataRole.UserRole, t)
                     parent.addChild(leaf)
                 else:
                     item = node_map.get(key)
@@ -177,11 +231,13 @@ class TaskPickerWidget(QWidget):
         self.task_tree.expandToDepth(2)
 
     def _get_selected_task(self) -> Optional[str]:
+        """获取当前在任务树中选中的任务名称。"""
         items = self.task_tree.selectedItems()
         if not items: return None
-        return items[0].data(0, Qt.UserRole)
+        return items[0].data(0, Qt.ItemDataRole.UserRole)
 
-    def _parse_params(self) -> Optional[dict]:
+    def _parse_params(self) -> Optional[Dict[str, Any]]:
+        """解析参数覆盖文本框中的YAML内容。"""
         txt = self.params_edit.toPlainText().strip()
         if not txt: return {}
         try:
@@ -194,6 +250,7 @@ class TaskPickerWidget(QWidget):
             return None
 
     def _emit_run_now(self):
+        """当点击“立即运行”时，收集信息并发出 `run_now_requested` 信号。"""
         task_name = self._get_selected_task()
         if not task_name: QMessageBox.warning(self, "请选择任务", "请在任务列表中选择一个具体的任务。"); return
         plan = self.plan_combo.currentText() or ""
@@ -203,6 +260,7 @@ class TaskPickerWidget(QWidget):
         self.run_now_requested.emit(plan, task_name, params)
 
     def _emit_add_to_queue(self):
+        """当点击“添加到队列”时，收集信息并发出 `add_to_queue_requested` 信号。"""
         task_name = self._get_selected_task()
         if not task_name: QMessageBox.warning(self, "请选择任务", "请在任务列表中选择一个具体的任务。"); return
         plan = self.plan_combo.currentText() or ""
@@ -214,13 +272,17 @@ class TaskPickerWidget(QWidget):
 
 
 class RunQueueWidget(QWidget):
+    """
+    待执行任务队列控件，以表格形式展示任务，并提供排序和批处理控制功能。
+    """
     queue_changed = Signal()
     play_serial_requested = Signal()
     play_parallel_requested = Signal(int)
     stop_all_requested = Signal()
     pause_toggled = Signal(bool)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QWidget] = None):
+        """初始化运行队列界面。"""
         super().__init__(parent)
         self.items: List[QueueItem] = []
         self.paused = False
@@ -249,9 +311,9 @@ class RunQueueWidget(QWidget):
         gl.addLayout(ctrl)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Plan", "Task", "Mode", "Status", "Env", "操作"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         gl.addWidget(self.table, 1)
         self.btn_play_serial.clicked.connect(self.play_serial_requested.emit)
         self.btn_play_parallel.clicked.connect(lambda: self.play_parallel_requested.emit(self.spin_conc.value()))
@@ -260,15 +322,19 @@ class RunQueueWidget(QWidget):
         self.btn_clear.clicked.connect(self.clear)
 
     def _on_pause_toggled(self, checked: bool):
+        """处理暂停按钮的切换状态。"""
         self.paused = checked; self.pause_toggled.emit(checked)
 
     def add_item(self, item: QueueItem):
+        """向队列中添加一个任务项。"""
         self.items.append(item); self._append_row(item); self.queue_changed.emit()
 
     def clear(self):
+        """清空整个队列。"""
         self.items.clear(); self.table.setRowCount(0); self.queue_changed.emit()
 
     def _append_row(self, item: QueueItem):
+        """在表格末尾追加一行来显示一个任务项。"""
         r = self.table.rowCount()
         self.table.insertRow(r)
         self.table.setItem(r, 0, QTableWidgetItem(item.plan))
@@ -306,11 +372,13 @@ class RunQueueWidget(QWidget):
         btn_del.clicked.connect(do_del)
 
     def _reload_table(self):
+        """根据内部 `self.items` 列表完全重绘表格。"""
         self.table.setRowCount(0)
         for it in self.items: self._append_row(it)
         self.queue_changed.emit()
 
     def set_item_status(self, item: QueueItem, status: str):
+        """更新队列中指定任务项的状态。"""
         item.status = status
         for r in range(self.table.rowCount()):
             if (self.table.item(r, 0).text(), self.table.item(r, 1).text()) == (item.plan, item.task_name):
@@ -319,7 +387,11 @@ class RunQueueWidget(QWidget):
 
 
 class RunnerPage(QWidget):
-    def __init__(self, bridge, parent=None):
+    """
+    “运行中心”面板的顶层UI页面，整合了所有子控件。
+    """
+    def __init__(self, bridge: QtBridge, parent: Optional[QWidget] = None):
+        """初始化运行页面，创建并布局所有子控件。"""
         super().__init__(parent)
         self.bridge = bridge
         main_split = QSplitter(Qt.Horizontal, self)
@@ -377,13 +449,15 @@ class RunnerPage(QWidget):
         self.picker.task_tree.itemSelectionChanged.connect(self._auto_load_task_details)
 
     def _set_state(self, s: str):
+        """设置并更新页面的运行状态。"""
         self.state = s
         self.status_label.setText(f"状态: {s}")
 
     def _auto_load_task_details(self):
+        """当用户在任务树中选择一个任务时，自动加载其定义和详情。"""
         items = self.picker.task_tree.selectedItems()
         if not items: return
-        task_name = items[0].data(0, Qt.UserRole)
+        task_name = items[0].data(0, Qt.ItemDataRole.UserRole)
         if not task_name: return
         plan = self.picker.plan_combo.currentText()
 
@@ -413,6 +487,7 @@ class RunnerPage(QWidget):
 
     @Slot(str, str, dict)
     def _run_single_now(self, plan: str, task_name: str, params: dict):
+        """槽函数，处理“立即运行”请求。"""
         if (self.current_plan, self.current_task_name) != (plan, task_name):
             self._switch_to_task(plan, task_name)
 
@@ -424,6 +499,7 @@ class RunnerPage(QWidget):
 
     @Slot(dict)
     def _add_to_queue(self, payload: dict):
+        """槽函数，处理“添加到队列”请求。"""
         item = QueueItem(id=str(uuid.uuid4()), plan=payload["plan"], task_name=payload["task_name"],
                          params_override=payload.get("params_override") or {}, env=payload.get("env") or "Default",
                          mode="serial")
@@ -431,18 +507,21 @@ class RunnerPage(QWidget):
         self.logs.append(f"已加入队列：{item.plan}/{item.task_name}", tag="STEP")
 
     def _play_serial(self):
+        """开始串行执行任务队列。"""
         self._parallel_mode = False
         self._parallel_max = 1
         self._set_state("RUNNING")
         self.logs.append("开始串行执行队列…", tag="STEP")
 
     def _play_parallel(self, conc: int):
+        """开始并行执行任务队列。"""
         self._parallel_mode = True
         self._parallel_max = max(1, conc)
         self._set_state("RUNNING")
         self.logs.append(f"开始并行执行队列（并发上限={self._parallel_max}）…", tag="STEP")
 
     def _stop_all(self):
+        """停止所有任务并重启后端调度器。"""
         try:
             self._set_state("STOPPING")
             self.logs.append("正在停止调度器并重启（StopAll）…", tag="STEP")
@@ -459,9 +538,16 @@ class RunnerPage(QWidget):
             self._set_state("IDLE")
 
     def _pause_toggled(self, paused: bool):
+        """处理队列暂停状态的切换。"""
         self.logs.append("已暂停出队" if paused else "已恢复出队", tag="STEP")
 
     def _dispatch_loop(self):
+        """
+        由定时器驱动的核心调度循环。
+
+        它会检查当前是否处于运行状态，并根据串行/并行模式和并发上限，
+        从队列中取出“待定”的任务并提交给后端执行。
+        """
         if self.state != "RUNNING" or self.queue.paused: return
         running_now = sum(1 for it in self.queue.items if it.status == "running")
         queued_now = sum(1 for it in self.queue.items if it.status == "queued")
@@ -481,9 +567,10 @@ class RunnerPage(QWidget):
                     dispatched += 1
         if all(it.status in ("ok", "failed", "cancelled", "skipped") for it in self.queue.items if
                it.status != "pending"):
-            if all(it.status not in ("queued", "running") for it in self.queue.items): self._set_state("IDLE")
+            if all(x.status not in ("queued", "running") for x in self.queue.items): self._set_state("IDLE")
 
     def _do_run_ad_hoc(self, plan: str, task_name: str, params: dict) -> bool:
+        """实际调用 `QtBridge` 来运行单个临时任务的辅助方法。"""
         try:
             res = self.bridge.run_ad_hoc(plan, task_name, params or {})
             if not isinstance(res, dict) or res.get("status") != "success":
@@ -500,22 +587,19 @@ class RunnerPage(QWidget):
 
     @Slot(dict)
     def _on_runner_event(self, ev: dict):
-
+        """处理来自后端的通用事件，分发给详情面板和日志视图。"""
         self.detail_panel.update_for_event(ev)
-
         try:
             name = ev.get("name", "unknown_event")
-            # Use default=str to handle non-serializable objects like datetime
             payload_str = json.dumps(ev.get("payload", {}), indent=2, ensure_ascii=False, default=str)
             self.logs.append(f"{name}\n{payload_str}", tag="EVENT")
         except Exception:
             self.logs.append(str(ev), tag="EVENT")
 
     def _switch_to_task(self, plan: str, task_name: str):
+        """当一个新任务开始运行时，自动在UI中选中并显示该任务的详情。"""
         if (self.current_plan, self.current_task_name) == (plan, task_name): return
         try:
-            # This is a simplified way to find and select the item in the tree
-            # A more robust solution might involve iterating through the tree
             items = self.picker.task_tree.findItems(task_name.split('/')[-1], Qt.MatchFlag.MatchRecursive)
             if items: self.picker.task_tree.setCurrentItem(items[0])
             self._auto_load_task_details()
@@ -525,6 +609,7 @@ class RunnerPage(QWidget):
 
     @Slot(dict)
     def _on_raw_log(self, event: dict):
+        """处理来自后端的原始日志事件。"""
         if (event or {}).get("name") != "log.emitted": return
         rec = (event.get("payload") or {}).get("log_record") or {}
         message = rec.get("message", "")

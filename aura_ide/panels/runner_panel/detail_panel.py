@@ -1,23 +1,47 @@
-# aura_ide/panels/runner_panel/detail_panel.py
+"""
+定义了“运行中心”中用于显示单次任务运行详情的面板。
 
+该模块的核心是 `TaskRunDetailPanel` 类，它是一个 `QWidget`，
+负责以结构化的方式展示一个任务从开始到结束的完整生命周期。
+
+主要功能包括：
+- **任务总览**: 显示任务的名称、描述、总体状态和耗时。
+- **步骤列表**: 使用 `QTreeWidget` 以树状结构实时展示任务中每个步骤
+  （step）的执行状态（等待、运行中、成功、失败）、开始时间、耗时和
+  详细信息或错误。
+- **进度条**: 直观地显示任务的完成进度。
+- **详细信息视图**: 使用 `QTabWidget` 分页显示选定步骤的运行参数、
+  实时上下文和接收到的原始事件，为调试和分析提供深入信息。
+- **事件驱动更新**: 通过 `update_for_event` 方法接收来自 `QtBridge` 的
+  实时事件，并动态更新UI，实现了与后端执行引擎的解耦。
+"""
 import json
 import time
 from typing import Dict, Any, List, Optional
 
 import yaml
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QIcon, QColor, QPalette
+from PySide6.QtGui import QIcon, QPalette
 from PySide6.QtWidgets import (
     QWidget, QSplitter, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
     QTreeWidget, QTreeWidgetItem, QGroupBox, QTabWidget, QHeaderView, QApplication, QStyle,
     QProgressBar, QCheckBox, QAbstractItemView
 )
 
-# Icon cache
+# 图标缓存
 ICONS: Dict[str, QIcon] = {}
 
 
 def get_icon(name: str) -> QIcon:
+    """
+    根据状态名称获取一个带缓存的Qt标准图标。
+
+    Args:
+        name (str): 状态名称 ('pending', 'running', 'success', 'failed', 'skipped')。
+
+    Returns:
+        QIcon: 对应的图标对象。
+    """
     if name in ICONS: return ICONS[name]
     icon = {
         "pending": QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight),
@@ -31,9 +55,18 @@ def get_icon(name: str) -> QIcon:
 
 
 class TaskRunDetailPanel(QWidget):
+    """
+    用于显示单次任务运行详细信息的UI面板。
+    """
     COL_STATUS, COL_STEP, COL_START, COL_DURATION, COL_DETAILS = range(5)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QWidget] = None):
+        """
+        初始化任务运行详情面板的UI布局和组件。
+
+        Args:
+            parent (Optional[QWidget]): 父控件。
+        """
         super().__init__(parent)
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -104,9 +137,8 @@ class TaskRunDetailPanel(QWidget):
         splitter.addWidget(right_widget)
         splitter.setSizes([600, 400])
 
-        # State variables
         self._step_items: Dict[str, QTreeWidgetItem] = {}
-        self._step_events: Dict[str, List[Dict]] = {}
+        self._step_events: Dict[str, List[Dict[str, Any]]] = {}
         self._run_start_time: Optional[float] = None
         self._step_start_times: Dict[str, float] = {}
         self._timer = QTimer(self)
@@ -118,11 +150,14 @@ class TaskRunDetailPanel(QWidget):
         self._is_legacy_list = False
         self._legacy_list_step_order: List[str] = []
         self._legacy_list_current_index = -1
-
-        # --- NEW: Reliable state storage ---
         self._step_states: Dict[str, str] = {}
 
     def clear_panel(self):
+        """
+        清除面板上的所有信息，重置为初始状态。
+
+        在加载新的任务运行详情前调用此方法。
+        """
         self.plan_label.setText("Plan: -")
         self.task_label.setText("任务: -")
         self.description_label.setText("描述: -")
@@ -151,6 +186,14 @@ class TaskRunDetailPanel(QWidget):
         self.auto_scroll_checkbox.setChecked(True)
 
     def load_task_definition(self, plan_name: str, task_name: str, task_def: Dict[str, Any]):
+        """
+        根据任务定义加载静态信息到面板上，为运行做准备。
+
+        Args:
+            plan_name (str): 方案名称。
+            task_name (str): 任务名称。
+            task_def (Dict[str, Any]): 从YAML文件解析出的任务定义字典。
+        """
         self.clear_panel()
         self._current_task_id = f"{plan_name}/{task_name}"
 
@@ -187,6 +230,14 @@ class TaskRunDetailPanel(QWidget):
             self.progress_bar.setVisible(True)
 
     def update_for_event(self, event: Dict[str, Any]):
+        """
+        处理从后端接收到的事件，并据此更新UI。
+
+        这是面板与后端交互的主要入口点。
+
+        Args:
+            event (Dict[str, Any]): 事件字典，包含名称和负载。
+        """
         event_name = event.get("name", "")
         payload = event.get("payload", {})
 
@@ -222,7 +273,8 @@ class TaskRunDetailPanel(QWidget):
             else:
                 self._handle_dag_step_event(event_name, payload)
 
-    def _handle_dag_step_event(self, event_name: str, payload: Dict):
+    def _handle_dag_step_event(self, event_name: str, payload: Dict[str, Any]):
+        """处理基于DAG（有向无环图）的任务的步骤事件。"""
         step_id = payload.get('step_id')
         item = self._step_items.get(step_id)
         if not item: return
@@ -231,7 +283,8 @@ class TaskRunDetailPanel(QWidget):
 
 
 
-    def _handle_legacy_list_event(self, event_name: str, payload: Dict):
+    def _handle_legacy_list_event(self, event_name: str, payload: Dict[str, Any]):
+        """处理旧式线性列表任务的步骤事件。"""
         if event_name == 'step.started':
             self._legacy_list_current_index = 0
             if 0 <= self._legacy_list_current_index < len(self._legacy_list_step_order):
@@ -241,7 +294,6 @@ class TaskRunDetailPanel(QWidget):
                     self._update_item_from_event(item, step_id, event_name, payload)
 
         elif event_name == 'step.succeeded':
-            # Mark ALL steps as successful
             for step_id in self._legacy_list_step_order:
                 item = self._step_items.get(step_id)
                 if item and self._step_states.get(step_id) in ("PENDING", "RUNNING"):
@@ -252,14 +304,11 @@ class TaskRunDetailPanel(QWidget):
             self._update_progress()
 
         elif event_name == 'step.failed':
-            # Mark current as failed, subsequent as skipped
             if 0 <= self._legacy_list_current_index < len(self._legacy_list_step_order):
-                # Mark current as failed
                 failed_step_id = self._legacy_list_step_order[self._legacy_list_current_index]
                 item = self._step_items.get(failed_step_id)
                 if item:
                     self._update_item_from_event(item, failed_step_id, event_name, payload)
-                # Mark subsequent as skipped
                 for i in range(self._legacy_list_current_index + 1, len(self._legacy_list_step_order)):
                     skipped_step_id = self._legacy_list_step_order[i]
                     item = self._step_items.get(skipped_step_id)
@@ -269,7 +318,8 @@ class TaskRunDetailPanel(QWidget):
                         item.setText(self.COL_DETAILS, "Previous step failed")
             self._update_progress()
 
-    def _update_item_from_event(self, item: QTreeWidgetItem, step_id: str, event_name: str, payload: Dict):
+    def _update_item_from_event(self, item: QTreeWidgetItem, step_id: str, event_name: str, payload: Dict[str, Any]):
+        """根据单个事件更新步骤树中的一个项目。"""
         self._step_events.setdefault(step_id, []).append(payload)
 
         if event_name == 'step.started':
@@ -310,6 +360,7 @@ class TaskRunDetailPanel(QWidget):
             self._on_step_selected(item)
 
     def _update_durations(self):
+        """由QTimer调用，以实时更新正在运行的步骤和任务的总耗时。"""
         now = time.time()
         if self._run_start_time:
             self.duration_label.setText(f"总耗时: {now - self._run_start_time:.2f}s")
@@ -319,6 +370,7 @@ class TaskRunDetailPanel(QWidget):
                 item.setText(self.COL_DURATION, f"{now - self._step_start_times[step_id]:.2f}s")
 
     def _update_progress(self):
+        """根据已完成（成功、失败、跳过）的步骤数量更新进度条。"""
         if not self.progress_bar.isVisible(): return
 
         completed_count = 0
@@ -328,6 +380,11 @@ class TaskRunDetailPanel(QWidget):
         self.progress_bar.setValue(completed_count)
 
     def _on_step_selected(self, current: Optional[QTreeWidgetItem], previous: Optional[QTreeWidgetItem] = None):
+        """
+        当用户在步骤树中选择一个项目时调用的槽函数。
+
+        它会更新右侧的详细信息视图，显示与所选步骤相关的原始事件。
+        """
         if not current:
             self.events_edit.clear()
             return

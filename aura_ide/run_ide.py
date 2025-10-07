@@ -1,5 +1,15 @@
-# aura_ide/run_ide.py (修改版)
+"""
+Aura IDE 的主启动脚本。
 
+该脚本负责：
+1.  初始化 `QApplication`，这是任何 PySide6 应用程序所必需的。
+2.  创建 `TextureManager` 实例，用于生成和管理UI的背景纹理。
+3.  加载全局的 QSS 样式表，为整个应用程序定义外观。
+4.  实例化并显示主窗口 `MainWindow`。
+5.  启动应用程序的事件循环。
+
+要运行 Aura IDE，请直接执行此脚本。
+"""
 import sys
 from pathlib import Path
 from PySide6.QtWidgets import QApplication

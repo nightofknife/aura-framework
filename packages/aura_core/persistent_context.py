@@ -1,40 +1,75 @@
-# packages/aura_core/persistent_context.py (Refactored)
+"""
+提供 `PersistentContext` 类，用于管理与 JSON 文件绑定的持久化数据存储。
+
+该模块的核心是 `PersistentContext` 类，它实现了一个完全异步的、
+线程安全的键值存储。数据在内存中进行操作，并可以异步地从文件加载或
+保存到文件。所有文件 I/O 操作都在线程池中执行，以避免阻塞事件循环。
+这对于需要在任务执行之间保持状态的场景非常有用。
+"""
 import asyncio
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Type, TypeVar
 
 from packages.aura_core.logger import logger
+
+T = TypeVar('T', bound='PersistentContext')
 
 
 class PersistentContext:
     """
-    【Async Refactor - Corrected】负责管理一个与文件绑定的、可持久化的上下文。
-    所有文件I/O操作都是异步且线程安全的，构造函数是非阻塞的。
+    负责管理一个与 JSON 文件绑定的、可持久化的上下文。
+
+    此类将数据存储在内存中的一个字典里，并提供了异步方法来从文件系统
+    加载数据和向文件系统保存数据。所有的文件 I/O 操作都通过 `asyncio.Lock`
+    来保证异步安全，防止并发读写导致的数据损坏。
+
+    推荐使用 `PersistentContext.create()` 工厂方法来实例化，因为它会
+    确保在返回实例之前，数据已从文件中成功加载。
     """
 
     def __init__(self, filepath: str):
+        """
+        初始化 PersistentContext 实例。
+
+        这是一个非阻塞的构造函数。请注意，它只设置文件路径和锁，
+        并不会实际读取文件。请使用 `create()` 类方法或手动调用 `load()`
+        来加载数据。
+
+        Args:
+            filepath (str): 关联的 JSON 文件的路径。
+        """
         self.filepath = filepath
         self._data: Dict[str, Any] = {}
-        # 【新增】为所有I/O操作添加一个异步锁，以防止竞争条件
         self._lock = asyncio.Lock()
 
     @classmethod
-    async def create(cls, filepath: str) -> "PersistentContext":
+    async def create(cls: Type[T], filepath: str) -> T:
         """
-        【新增】异步工厂方法，用于创建并初始化一个 PersistentContext 实例。
-        这是推荐的实例化方式。
+        异步工厂方法，用于创建并初始化一个 PersistentContext 实例。
+
+        这是推荐的实例化方式，因为它会返回一个已经加载了文件数据的实例。
+
+        Args:
+            filepath (str): 关联的 JSON 文件的路径。
+
+        Returns:
+            PersistentContext: 一个新的、已加载数据的实例。
         """
         instance = cls(filepath)
         await instance.load()
         return instance
 
     async def load(self):
-        """异步从JSON文件加载数据到内存中，此操作是线程安全的。"""
+        """
+        异步地从 JSON 文件加载数据到内存中。
+
+        此操作是原子和异步安全的。它会覆盖当前内存中的所有数据。
+        如果文件不存在或解析失败，内存中的数据将被清空为一个空字典。
+        """
         async with self._lock:
             loop = asyncio.get_running_loop()
             try:
-                # 【修正】直接将加载的数据赋值给 self._data
                 self._data = await loop.run_in_executor(None, self._sync_load_internal)
                 logger.debug(f"已从 '{os.path.basename(self.filepath)}' 异步加载长期上下文。")
             except Exception as e:
@@ -42,7 +77,7 @@ class PersistentContext:
                 self._data = {}
 
     def _sync_load_internal(self) -> Dict[str, Any]:
-        """【简化】内部同步加载逻辑，用于线程池。现在是唯一的同步加载实现。"""
+        """内部同步加载逻辑，供 `load` 方法在线程池中调用。"""
         try:
             if os.path.exists(self.filepath):
                 with open(self.filepath, 'r', encoding='utf-8') as f:
@@ -51,8 +86,15 @@ class PersistentContext:
             logger.warning(f"读取长期上下文文件 '{self.filepath}' 时出错 (可能是空文件或已损坏): {e}。将视为空白上下文。")
         return {}
 
-    async def save(self):
-        """将内存中的数据异步保存回JSON文件，此操作是线程安全的。"""
+    async def save(self) -> bool:
+        """
+        将内存中的数据异步地保存回 JSON 文件。
+
+        此操作是原子和异步安全的。它会覆盖整个文件。
+
+        Returns:
+            bool: 如果保存成功则返回 True，否则返回 False。
+        """
         async with self._lock:
             loop = asyncio.get_running_loop()
             try:
@@ -66,21 +108,45 @@ class PersistentContext:
                 return False
 
     def _sync_save_internal(self, data: Dict[str, Any]):
-        """内部同步保存逻辑，用于线程池。"""
-        # 【新增】确保目录存在
+        """内部同步保存逻辑，供 `save` 方法在线程池中调用。"""
         os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
         with open(self.filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
 
     def set(self, key: str, value: Any):
-        """在内存中设置一个值。注意：这不会立即保存到文件。"""
+        """
+        在内存中设置一个键值对。
+
+        注意：此操作只修改内存中的数据，并不会立即保存到文件。
+        需要显式调用 `save()` 方法来持久化更改。
+
+        Args:
+            key (str): 要设置的键。
+            value (Any): 要设置的值。
+        """
         self._data[key] = value
 
     def get(self, key: str, default: Any = None) -> Any:
-        """从内存中获取一个值。"""
+        """
+        从内存中获取一个键对应的值。
+
+        Args:
+            key (str): 要获取的键。
+            default (Any): 如果键不存在时返回的默认值。
+
+        Returns:
+            Any: 键对应的值，如果不存在则为 `default`。
+        """
         return self._data.get(key, default)
 
     def get_all_data(self) -> Dict[str, Any]:
-        """返回所有内存中数据的副本。"""
+        """
+        返回所有内存中数据的副本。
+
+        返回的是一个浅拷贝，以防止外部代码意外修改内部状态。
+
+        Returns:
+            Dict[str, Any]: 包含所有数据的字典副本。
+        """
         return self._data.copy()
 

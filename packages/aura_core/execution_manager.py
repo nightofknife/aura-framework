@@ -1,4 +1,34 @@
 # packages/aura_core/execution_manager.py (修改版)
+"""
+定义了 `ExecutionManager`，它是 Aura 框架的中央执行单元和并发控制器。
+
+`ExecutionManager` 的核心职责是接收来自调度器（Scheduler）的任务单元（Tasklet），
+并根据其元数据（如执行模式、资源标签）安全、高效地执行它们。
+
+主要功能包括：
+1.  **并发与资源管理**:
+    - 管理一个全局并发信号量，限制整个系统的最大并发任务数。
+    - 为带有特定资源标签的任务动态创建和管理专用的资源信号量，实现对
+      特定资源（如单个API端点、特定硬件）的并发访问控制。
+    - 【已移除】之前版本管理线程池和进程池，现已将此部分逻辑简化，因为执行
+      主要在 `Orchestrator` 和 `Engine` 的异步上下文中完成。
+
+2.  **任务提交流程**:
+    - `submit` 方法是任务执行的入口点。它负责获取所需信号量、处理状态规划、
+      设置超时、触发钩子，并调用 `Orchestrator` 开始真正的任务执行链。
+
+3.  **状态规划 (State Planning)**:
+    - 在执行任务前，如果任务定义了 `requires_initial_state`，`ExecutionManager`
+      会调用 `StatePlanner` 来检查并驱动系统达到所需的前置状态。
+    - 这个过程是健壮的，包含感知、规划、行动和验证的闭环，并带有重试机制。
+
+4.  **健壮的错误处理**:
+    - 统一处理任务执行过程中的各种异常，包括超时、取消、状态规划失败以及
+      其他意外错误，并确保任务状态被正确更新，资源被正确释放。
+
+5.  **生命周期管理**:
+    - 【已移除】管理执行器池（线程池/进程池）的启动和关闭。
+"""
 
 import asyncio
 import queue
@@ -13,12 +43,23 @@ from packages.aura_core.logger import logger
 
 if TYPE_CHECKING:
     from packages.aura_core.scheduler import Scheduler
-    from packages.aura_core.state_planner import StateMap
 
 
 class ExecutionManager:
+    """
+    中央执行管理器，负责并发控制、资源管理和任务的实际执行。
+    """
     def __init__(self, scheduler: 'Scheduler', max_concurrent_tasks: int = 32, io_workers: int = 16,
                  cpu_workers: int = 4):
+        """
+        初始化 ExecutionManager。
+
+        Args:
+            scheduler (Scheduler): 父级调度器实例的引用。
+            max_concurrent_tasks (int): 系统范围内的最大并发任务数。
+            io_workers (int): 【已弃用】IO密集型任务线程池的工作线程数。
+            cpu_workers (int): 【已弃用】CPU密集型任务进程池的工作进程数。
+        """
         self.scheduler = scheduler
         self.max_concurrent_tasks = max_concurrent_tasks
         self.io_workers = io_workers
@@ -31,9 +72,24 @@ class ExecutionManager:
         self._resource_sem_lock = asyncio.Lock()
 
     def set_ui_update_queue(self, q: queue.Queue):
+        """
+        设置用于向UI发送更新的队列。
+
+        Args:
+            q (queue.Queue): 一个线程安全的队列实例。
+        """
         self.ui_update_queue = q
 
     async def _get_semaphores_for(self, tasklet: Tasklet) -> List[asyncio.Semaphore]:
+        """
+        根据任务的资源标签，获取所有需要的信号量。
+
+        Args:
+            tasklet (Tasklet): 要执行的任务单元。
+
+        Returns:
+            List[asyncio.Semaphore]: 一个包含全局信号量和所有相关资源信号量的列表。
+        """
         sems = [self._global_sem]
         for tag in tasklet.resource_tags:
             parts = tag.split(':', 1)
@@ -46,7 +102,17 @@ class ExecutionManager:
         return sems
 
     async def submit(self, tasklet: Tasklet, is_interrupt_handler: bool = False):
-        """【修复】提交任务执行，迁移 shared_data_lock 到 get_async_lock（异步锁）。"""
+        """
+        提交一个任务单元（Tasklet）以供执行。
+
+        这是执行流程的核心入口。它会处理并发控制、状态规划、超时和错误，
+        然后调用 `_run_execution_chain` 来启动任务。
+
+        Args:
+            tasklet (Tasklet): 要执行的任务单元。
+            is_interrupt_handler (bool): 标记此任务是否是中断处理程序，
+                若是，则跳过某些常规流程（如状态更新和规划）。
+        """
         if self._io_pool is None or self._cpu_pool is None:
             logger.error("ExecutionManager: 尝试在未启动的执行器上提交任务。请先调用 startup()。")
             raise RuntimeError("Executor pools are not running.")
@@ -61,7 +127,6 @@ class ExecutionManager:
 
         current_task = asyncio.current_task()
         if not is_interrupt_handler:
-            # 【修改】原 with self.scheduler.shared_data_lock: → async with get_async_lock()
             async with self.scheduler.get_async_lock():
                 self.scheduler.running_tasks[tasklet.task_name] = current_task
 
@@ -113,18 +178,25 @@ class ExecutionManager:
             await hook_manager.trigger('after_task_failure', task_context=task_context)
         finally:
             if not is_interrupt_handler:
-                # 【修改】原 with self.scheduler.shared_data_lock: → async with get_async_lock()
                 try:
                     async with self.scheduler.get_async_lock():
                         self.scheduler.running_tasks.pop(tasklet.task_name, None)
                 except Exception as lock_e:
-                    logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")  # 【新增】防护，防 finally 崩溃
+                    logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")
             await hook_manager.trigger('after_task_run', task_context=task_context)
-            logger.debug(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")  # 【修改】debug 级，避免洪水
+            logger.debug(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")
 
     async def _handle_state_planning(self, tasklet: Tasklet) -> bool:
         """
-        【最终修正版】处理状态规划，集成健壮的、带重试的转移验证。
+        处理状态规划，确保系统在执行任务前处于正确的初始状态。
+
+        这是一个包含“感知-规划-行动-验证”的闭环，并带有重试逻辑。
+
+        Args:
+            tasklet (Tasklet): 要执行的任务单元。
+
+        Returns:
+            bool: 如果成功达到目标状态则返回 True，否则返回 False。
         """
         task_def = self.scheduler.all_tasks_definitions.get(tasklet.task_name)
         if not task_def: return True
@@ -213,7 +285,8 @@ class ExecutionManager:
 
     async def _run_internal_task(self, task_id: str) -> Dict[str, Any]:
         """
-        【升级版】一个内部辅助方法，执行任务并返回统一的字典结果。
+        一个内部辅助方法，用于执行一个任务并返回统一的字典结果。
+        主要供框架内部（如状态规划器）调用。
         """
         if task_id not in self.scheduler.all_tasks_definitions:
             logger.error(f"内部任务执行失败: 任务 '{task_id}' 未定义。")
@@ -234,6 +307,10 @@ class ExecutionManager:
             return {'status': 'error', 'reason': str(e)}
 
     async def _run_execution_chain(self, tasklet: Tasklet) -> Any:
+        """
+        解析 Tasklet，找到对应的 Orchestrator，并委托其执行任务。
+        这是从 ExecutionManager 到 Orchestrator 的“交接点”。
+        """
         payload = tasklet.payload or {}
         plan_name = payload.get('plan_name')
         task_name_in_plan = payload.get('task') or payload.get('task_name')
@@ -256,6 +333,10 @@ class ExecutionManager:
         )
 
     def startup(self):
+        """
+        【已弃用】启动执行器池（线程池和进程池）。
+        在现代版本中，此函数保留以兼容旧接口，但实际的执行器管理已简化。
+        """
         if self._io_pool is None or self._io_pool._shutdown:
             logger.info(f"ExecutionManager: 正在创建新的IO线程池 (workers={self.io_workers})...")
             self._io_pool = ThreadPoolExecutor(max_workers=self.io_workers, thread_name_prefix="aura-io-worker")
@@ -264,6 +345,9 @@ class ExecutionManager:
             self._cpu_pool = ProcessPoolExecutor(max_workers=self.cpu_workers)
 
     def shutdown(self):
+        """
+        【已弃用】关闭执行器池，并等待所有任务完成。
+        """
         logger.info("ExecutionManager: 正在关闭执行器池...")
         if self._io_pool:
             self._io_pool.shutdown(wait=True)
@@ -277,4 +361,5 @@ class ExecutionManager:
 
 
 class StatePlanningError(Exception):
+    """当状态规划失败时抛出的特定异常。"""
     pass

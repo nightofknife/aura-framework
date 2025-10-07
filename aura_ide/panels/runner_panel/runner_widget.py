@@ -1,63 +1,80 @@
-# aura_ide/panels/runner_panel/runner_widget.py (新建文件)
+"""
+定义了“运行中心”面板的主UI控件 `RunnerWidget`。
+
+该模块的核心是 `RunnerWidget`，它是一个 `QWidget`，负责构建和协调
+“运行中心”的经典三栏式布局：
+- 左栏：任务库 (`TaskLibraryWidget`)
+- 中栏：执行批次 (`ExecutionBatchWidget`)
+- 右栏：监控和详情 (`MonitoringWidget`)
+
+它使用 `QSplitter` 来允许用户自由调整各栏的宽度，并通过信号和槽机制
+将这三个子控件以及与后端的 `QtBridge` 连接起来，形成一个完整的功能单元。
+"""
+from typing import List, Any, Dict, Optional
 
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QSplitter
 from PySide6.QtCore import Qt
 
-# 假设这些新文件你也会创建
 from .task_library_widget import TaskLibraryWidget
 from .execution_batch_widget import ExecutionBatchWidget
 from .monitoring_widget import MonitoringWidget
+from ....core_integration.qt_bridge import QtBridge
 
 class RunnerWidget(QWidget):
-    def __init__(self, bridge, parent=None):
+    """
+    “运行中心”面板的主UI控件。
+
+    它整合了任务库、执行批次和监控面板，构成了运行中心的核心用户界面。
+    """
+    def __init__(self, bridge: QtBridge, parent: Optional[QWidget] = None):
+        """
+        初始化 RunnerWidget。
+
+        Args:
+            bridge (QtBridge): 用于与后端核心服务通信的桥接器实例。
+            parent (Optional[QWidget]): 父控件。
+        """
         super().__init__(parent)
         self.bridge = bridge
 
-        # 1. 创建三栏布局
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(splitter)
 
-        #
-        # aura_ide/panels/runner_panel/runner_widget.py (新建文件 - 续)
-
-        # 2. 实例化三栏的控件
         self.task_library = TaskLibraryWidget(self.bridge)
         self.execution_batch = ExecutionBatchWidget(self.bridge)
         self.monitoring_panel = MonitoringWidget(self.bridge)
 
-        # 3. 将控件添加到布局中
         splitter.addWidget(self.task_library)
         splitter.addWidget(self.execution_batch)
         splitter.addWidget(self.monitoring_panel)
 
-        # 4. 设置初始尺寸比例
         splitter.setSizes([300, 450, 650])
-        splitter.setStretchFactor(0, 0)  # 左栏固定宽度
-        splitter.setStretchFactor(1, 1)  # 中栏可伸缩
-        splitter.setStretchFactor(2, 2)  # 右栏伸缩比例更大
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 2)
 
-        # 5. 连接信号和槽，实现三栏之间的通信
         self.task_library.task_added.connect(self.execution_batch.add_task_to_batch)
         self.execution_batch.batch_run_requested.connect(self._on_batch_run)
         self.execution_batch.item_selected.connect(self.monitoring_panel.display_task_details)
-
-        # 将来自 bridge 的事件转发给监控面板
         self.bridge.runner_event_received.connect(self.monitoring_panel.handle_event)
-
-        # 将来自 bridge 的日志事件也转发给监控面板的日志视图
         self.bridge.raw_event_received.connect(self.monitoring_panel.handle_raw_log)
 
-    def _on_batch_run(self, tasks_to_run, mode, concurrency):
-        """处理来自中栏的批量运行请求"""
+    def _on_batch_run(self, tasks_to_run: List[Dict[str, Any]], mode: str, concurrency: int):
+        """
+        处理来自 `ExecutionBatchWidget` 的批量运行请求的槽函数。
+
+        Args:
+            tasks_to_run (List[Dict[str, Any]]): 要运行的任务信息列表。
+            mode (str): 执行模式（例如 "serial"）。
+            concurrency (int): 并发数。
+        """
         print(
-            f"RunnerWidget: Received batch run request. Mode: {mode}, Concurrency: {concurrency}, Tasks: {len(tasks_to_run)}")
-        # 在这里，你需要实现一个调度器逻辑，类似于之前 RunnerPage 中的 _dispatch_loop
-        # 这个调度器会根据 mode 和 concurrency，依次或并发地通过 bridge.run_ad_hoc 调用任务
-        # 为了简化，我们这里只做一个简单的串行调用示例
+            f"RunnerWidget: 收到批量运行请求。模式: {mode}, 并发数: {concurrency}, 任务数: {len(tasks_to_run)}")
+        # 简化示例：串行执行
         for task_item in tasks_to_run:
-            print(f"  -> Running task: {task_item['plan']}/{task_item['task_name']}")
+            print(f"  -> 正在运行任务: {task_item['plan']}/{task_item['task_name']}")
             self.bridge.run_ad_hoc(
                 task_item['plan'],
                 task_item['task_name'],
@@ -65,7 +82,11 @@ class RunnerWidget(QWidget):
             )
 
     def refresh_data(self):
-        """当面板被激活时调用，刷新任务库"""
+        """
+        刷新此控件及其子控件的数据。
+
+        当面板被激活时，此方法被调用，以确保任务库显示最新的任务列表。
+        """
         self.task_library.refresh_tasks()
 
 

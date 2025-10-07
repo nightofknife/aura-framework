@@ -1,5 +1,13 @@
-# plans/aura_base/services/config_service.py (v4.0 with Context Isolation)
+"""
+提供了一个分层的、具有上下文隔离能力的配置服务 `ConfigService`。
 
+该模块的核心是 `ConfigService` 类，它负责加载和管理来自不同来源的配置信息，
+包括环境变量、全局配置文件和特定于方案（Plan）的配置文件。
+
+一个关键特性是它使用 `contextvars.ContextVar` (`current_plan_name`) 来
+动态地感知当前正在执行的是哪个方案。这使得 `get` 方法能够构建一个
+正确的配置查找链，从而实现了方案间的配置隔离，避免了配置串扰问题。
+"""
 import os
 from collections import ChainMap
 from contextvars import ContextVar
@@ -11,33 +19,51 @@ import yaml
 from packages.aura_core.api import register_service
 from packages.aura_core.logger import logger
 
-# 【修复】引入 ContextVar，用于在任务执行期间隐式传递当前方案的名称。
 current_plan_name: ContextVar[Optional[str]] = ContextVar('current_plan_name', default=None)
+"""
+一个上下文变量，用于在任务执行期间隐式地传递当前方案的名称。
 
+这使得 `ConfigService` 可以在不知道具体任务的情况下，自动为 `get` 方法
+应用正确的方案配置。
+"""
 
 @register_service(alias="config", public=True)
 class ConfigService:
     """
-    【分层配置 v4.0 - 上下文隔离】
-    - 使用 ContextVar 来感知当前的执行方案，实现配置的自动隔离。
-    - 每个方案的配置现在存储在独立的命名空间下，解决了配置串扰问题。
-    - get() 方法会根据上下文动态构建配置查找链。
+    一个分层的、具有上下文隔离能力的配置服务。
+
+    它按以下优先级顺序聚合配置：
+    1.  环境变量 (及 `.env` 文件)，以 `AURA_` 开头。
+    2.  项目根目录下的全局 `config.yaml` 文件。
+    3.  当前正在执行的方案（Plan）目录下的 `config.yaml` 文件。
+
+    通过使用 `ContextVar`，它能够根据当前的执行上下文自动切换方案配置，
+    从而实现配置的隔离。
     """
 
     def __init__(self):
-        # 配置层级，优先级从高到低
-        self._env_config: Dict[str, Any] = {}  # 1. 来自 .env 和环境变量 (最高)
-        self._global_config: Dict[str, Any] = {}  # 2. 来自项目根目录的 config.yaml
+        """
+        初始化配置服务。
 
-        # 【修复】将 _plan_configs 改为字典的字典，按方案名隔离存储。
-        # 结构: { "plan_name_1": { ...config... }, "plan_name_2": { ...config... } }
+        此方法会设置用于存储不同层级配置的内部字典。
+        """
+        self._env_config: Dict[str, Any] = {}
+        self._global_config: Dict[str, Any] = {}
         self._plan_configs: Dict[str, Dict[str, Any]] = {}
-
-        # 【修复】不再使用固定的 ChainMap。将在 get() 方法中动态创建。
-        logger.info("ConfigService v4.0 (Context Isolation) 已初始化。")
+        logger.info("配置服务 v4.0 (上下文隔离) 已初始化。")
 
     def load_environment_configs(self, base_path: Path):
-        # ... 此方法内容不变 ...
+        """
+        加载环境变量和全局配置文件。
+
+        此方法会：
+        - 如果安装了 `python-dotenv`，则加载项目根目录下的 `.env` 文件。
+        - 读取所有以 `AURA_` 开头的环境变量。
+        - 加载项目根目录下的 `config.yaml` 文件。
+
+        Args:
+            base_path (Path): 项目的根目录路径。
+        """
         try:
             from dotenv import load_dotenv
             dotenv_path = base_path / '.env'
@@ -68,8 +94,13 @@ class ConfigService:
 
     def register_plan_config(self, plan_name: str, config_data: dict):
         """
-        【修复】注册方案包的配置到其独立的命名空间下。
-        不再进行合并，而是直接赋值。
+        为指定的方案注册其配置数据。
+
+        这些配置数据会被存储在以方案名称为键的独立命名空间下。
+
+        Args:
+            plan_name (str): 方案的名称。
+            config_data (dict): 从该方案的 `config.yaml` 文件中解析出的数据。
         """
         if isinstance(config_data, dict):
             self._plan_configs[plan_name] = config_data
@@ -77,23 +108,27 @@ class ConfigService:
 
     def get(self, key_path: str, default: Any = None) -> Any:
         """
-        【修复】从动态构建的配置链中获取值。
-        查找顺序: 环境变量 -> 全局 config -> 当前方案的 config
+        从动态构建的配置链中获取一个配置项的值。
+
+        它会根据 `current_plan_name` 上下文变量来决定是否包含特定方案的配置，
+        然后按照“环境 -> 全局 -> 方案”的优先级顺序进行查找。
+
+        Args:
+            key_path (str): 要获取的配置项的路径，使用点（.）分隔，例如 `logging.level`。
+            default (Any): 如果找不到对应的配置项，则返回此默认值。
+
+        Returns:
+            Any: 查找到的配置值，或指定的默认值。
         """
-        # 1. 从 contextvar 获取当前正在执行的方案名称
         plan_name = current_plan_name.get()
-        # print(f"% {plan_name}")
-        # print(f"% {self._env_config} {self._global_config}")
-        # 2. 根据 plan_name 动态构建查找链
         maps_to_chain = [self._env_config, self._global_config]
         if plan_name and plan_name in self._plan_configs:
             maps_to_chain.append(self._plan_configs[plan_name])
-        # print(f"% {maps_to_chain}")
+
         config_chain = ChainMap(*maps_to_chain)
 
-        # 3. 在动态链中查找值
         keys = key_path.split('.')
-        current_level = config_chain
+        current_level: Any = config_chain
         try:
             for key in keys:
                 if not isinstance(current_level, (dict, ChainMap)):
@@ -103,14 +138,15 @@ class ConfigService:
         except KeyError:
             return default
 
-    # ... _set_nested_key 和 _deep_merge 方法保持不变，尽管 _deep_merge 不再被 register_plan_config 使用 ...
     def _set_nested_key(self, d: dict, key_path: str, value: Any):
+        """一个辅助方法，用于将点分隔的键路径设置到嵌套字典中。"""
         keys = key_path.split('.')
         for key in keys[:-1]:
             d = d.setdefault(key, {})
         d[keys[-1]] = value
 
     def _deep_merge(self, destination: dict, source: dict):
+        """一个辅助方法，用于深度合并两个字典。"""
         for key, value in source.items():
             if isinstance(value, dict) and key in destination and isinstance(destination[key], dict):
                 self._deep_merge(destination[key], value)
@@ -119,7 +155,9 @@ class ConfigService:
 
     def get_state_store_config(self) -> Dict[str, Any]:
         """
-        [NEW] 获取长期状态存储的配置。
+        获取长期状态存储（StateStore）的特定配置。
+
+        Returns:
+            Dict[str, Any]: 包含 `type` 和 `path` 的状态存储配置字典。
         """
-        # 从全局配置中查找 state_store 部分
         return self.get('state_store', {'type': 'file', 'path': './project_state.json'})

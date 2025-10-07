@@ -1,10 +1,23 @@
-# aura_cli_interactive.py (Version 3 with Robust Startup Synchronization)
+"""
+Aura 框架的交互式命令行界面（CLI）主程序。
 
+该脚本提供了一个基于文本菜单的界面，允许用户与 Aura 核心框架进行交互。
+用户可以通过此界面执行以下操作：
+- 启动和停止核心调度器（Scheduler），从而控制后台任务的执行。
+- 查看所有已加载的方案（Plans）和已注册的行为（Actions）。
+- 手动将预定义的计划任务或任意任务（Ad-hoc）添加到执行队列中。
+- 监控调度器的运行状态。
+
+这是用于开发、调试和手动管理 Aura 任务的便捷工具。
+
+要启动此交互式控制台，请直接运行此脚本：
+    python main.py
+"""
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 # --- 核心初始化 ---
 try:
@@ -59,7 +72,6 @@ def wait_for_enter():
 # --- 功能实现 ---
 
 def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
-    # ... 此函数内容不变 ...
     if ad_hoc_mode:
         all_tasks = []
         # 遍历所有方案的Orchestrator来收集任务定义
@@ -145,16 +157,13 @@ def manage_scheduler_lifecycle(scheduler: Scheduler):
         print("✅ 调度器已停止。所有后台任务已结束。")
     else:
         print("正在启动调度器...")
-        scheduler.start_scheduler()  # 后台线程在这里启动
+        scheduler.start_scheduler()
 
-        # 【高级方案】使用事件等待，而不是固定时间的 sleep
         print("   正在等待核心服务初始化...")
 
-        # 等待事件被设置，最长等待15秒（超时以防万一）
         completed = scheduler.startup_complete_event.wait(timeout=15)
 
         if completed:
-            # 【高级方案】如果成功等到事件，将 scheduler_is_running 设为 True
             scheduler_is_running = True
             print("✅ 核心服务已就绪！")
             print("✅ 调度器已在后台启动。")
@@ -162,19 +171,16 @@ def manage_scheduler_lifecycle(scheduler: Scheduler):
             print("   你现在可以返回主菜单添加更多任务，或随时停止调度器。")
             print("\n   👇 你将在下方看到任务的实时日志输出 👇")
         else:
-            # 如果超时，说明后台可能出了问题。
-            # 停止调度器以恢复到安全状态，并通知用户。
             print("\n⚠️ 警告：核心服务启动超时。后台可能出现严重错误。")
             print("   正在尝试自动停止调度器以进行恢复...")
             scheduler.stop_scheduler()
-            scheduler_is_running = False  # 确保状态标志被重置
+            scheduler_is_running = False
             print("   调度器已停止。请检查日志文件以诊断问题。")
 
     wait_for_enter()
 
 
 def list_all_plans(scheduler: Scheduler):
-    # ... 此函数内容不变 ...
     clear_screen()
     print_header("所有已加载的方案 (Plans)")
     registry = scheduler.plan_manager.plugin_manager.plugin_registry
@@ -190,7 +196,6 @@ def list_all_plans(scheduler: Scheduler):
 
 
 def list_all_actions(scheduler: Scheduler):
-    # ... 此函数内容不变 ...
     clear_screen()
     print_header("所有已注册的动作 (Actions)")
     action_defs = scheduler.actions.get_all_action_definitions()
@@ -206,7 +211,6 @@ def list_all_actions(scheduler: Scheduler):
 
 
 def display_menu():
-    # ... 此函数内容不变 ...
     global scheduler_is_running
 
     print_header("Aura 交互式控制台")
@@ -227,7 +231,6 @@ def display_menu():
 
 
 def main():
-    # ... 此函数内容不变 ...
     scheduler = get_scheduler()
 
     while True:

@@ -1,10 +1,23 @@
-# packages/aura_base/services/screen_service.py (异步升级版)
+"""
+提供一个用于屏幕和窗口交互的底层服务。
 
+该模块的核心是 `ScreenService`，它封装了与操作系统桌面环境交互的
+功能，主要包括：
+- 捕获全屏或特定窗口的图像。
+- 获取窗口的位置和尺寸信息。
+- 激活（聚焦）指定窗口。
+- 获取屏幕上任意点的像素颜色。
+
+`CaptureResult` 是一个用于封装截图结果的数据类。
+
+此服务同样采用了同步接口、异步核心的设计模式，将所有可能阻塞的
+`win32api` 调用都放在后台线程中执行，以保证主事件循环的流畅运行。
+"""
 import asyncio
 import threading
 from ctypes import windll
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -20,20 +33,45 @@ from .config_service import ConfigService
 
 @dataclass
 class CaptureResult:
+    """
+    封装一次屏幕捕获操作的结果。
+
+    Attributes:
+        success (bool): 操作是否成功。
+        image (Optional[np.ndarray]): 捕获到的图像，格式为 NumPy 数组 (RGB)。
+            如果操作失败，则为 None。
+        window_rect (Optional[Tuple[int, int, int, int]]): 目标窗口在屏幕上的
+            绝对位置和尺寸 `(x, y, width, height)`。
+        relative_rect (Optional[Tuple[int, int, int, int]]): 捕获区域相对于
+            目标窗口客户区的相对位置和尺寸 `(x, y, width, height)`。
+        error_message (str): 如果操作失败，则包含错误信息。
+    """
     success: bool
-    image: np.ndarray | None = None
-    window_rect: tuple[int, int, int, int] | None = None
-    relative_rect: tuple[int, int, int, int] | None = None
+    image: Optional[np.ndarray] = None
+    window_rect: Optional[tuple[int, int, int, int]] = None
+    relative_rect: Optional[tuple[int, int, int, int]] = None
     error_message: str = field(default="", repr=False)
 
     @property
-    def image_size(self) -> tuple[int, int] | None:
+    def image_size(self) -> Optional[tuple[int, int]]:
+        """
+        返回捕获图像的尺寸（宽度, 高度）。
+
+        Returns:
+            Optional[tuple[int, int]]: 如果图像存在，则返回尺寸元组，否则返回 None。
+        """
         if self.image is not None:
             # shape is (height, width, channels)
             return self.image.shape[1], self.image.shape[0]
         return None
 
     def save(self, filepath: str):
+        """
+        将捕获的图像保存到指定的文件路径。
+
+        Args:
+            filepath (str): 要保存到的文件路径。
+        """
         if self.success and self.image is not None:
             try:
                 # OpenCV expects BGR format for imwrite
@@ -50,28 +88,43 @@ class CaptureResult:
 @register_service(alias="screen", public=True)
 class ScreenService:
     """
-    【异步升级版】屏幕截图服务。
-    - 对外保持同步接口。
-    - 内部将阻塞的截图API调用移至后台线程执行，避免阻塞事件循环。
+    屏幕服务，负责处理屏幕和窗口的截图及信息获取。
+
+    它通过 `ConfigService` 获取目标窗口标题，并提供捕获全屏或
+    特定窗口客户区的功能。
     """
 
     def __init__(self, config: ConfigService):
+        """
+        初始化屏幕服务。
+
+        Args:
+            config (ConfigService): 注入的配置服务实例。
+        """
         self.target_title = config.get('app.target_window_title', None)
         self.hwnd = None
         self._update_hwnd()
         logger.info(
             f"截图服务已初始化。当前目标: {'全屏' if self.target_title is None else f'窗口<{self.target_title}>'}")
 
-        # --- 桥接器组件 ---
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_lock = threading.Lock()
 
     # =========================================================================
     # Section 1: 公共同步接口
     # =========================================================================
 
-    def get_client_rect(self) -> tuple[int, int, int, int] | None:
-        # 这是一个快速的同步调用，无需异步化
+    def get_client_rect(self) -> Optional[tuple[int, int, int, int]]:
+        """
+        获取目标窗口的客户区矩形。
+
+        这是一个快速的同步调用，因为它不涉及耗时操作。
+
+        Returns:
+            Optional[tuple[int, int, int, int]]: 一个包含窗口客户区在屏幕上的
+                绝对坐标 `(x, y)` 及其 `(width, height)` 的元组。如果找不到窗口，
+                则返回 None。
+        """
         if not self.hwnd or not win32gui.IsWindow(self.hwnd):
             self._update_hwnd()
         if self.hwnd:
@@ -84,7 +137,16 @@ class ScreenService:
         return None
 
     def get_pixel_color_at(self, global_x: int, global_y: int) -> tuple[int, int, int]:
-        # 这是一个快速的同步调用
+        """
+        获取屏幕上指定全局坐标点的像素颜色。
+
+        Args:
+            global_x (int): 屏幕的 x 坐标。
+            global_y (int): 屏幕的 y 坐标。
+
+        Returns:
+            tuple[int, int, int]: 一个包含 `(R, G, B)` 颜色值的元组。
+        """
         h_win_dc = win32gui.GetWindowDC(0)
         try:
             long_color = win32gui.GetPixel(h_win_dc, global_x, global_y)
@@ -93,9 +155,28 @@ class ScreenService:
             win32gui.ReleaseDC(0, h_win_dc)
 
     def focus(self) -> bool:
+        """
+        尝试将目标窗口带到前台并设置为焦点。
+
+        Returns:
+            bool: 如果成功，则返回 True。
+        """
         return self._submit_to_loop_and_wait(self.focus_async())
 
-    def capture(self, rect: tuple[int, int, int, int] | None = None) -> CaptureResult:
+    def capture(self, rect: Optional[tuple[int, int, int, int]] = None) -> CaptureResult:
+        """
+        捕获屏幕或目标窗口的图像。
+
+        如果设置了目标窗口，则捕获该窗口的客户区。如果提供了 `rect` 参数，
+        则从客户区中裁剪出指定区域。如果未设置目标窗口，则进行全屏截图。
+
+        Args:
+            rect (Optional[tuple[int, int, int, int]]): 要从窗口客户区中裁剪的
+                相对区域 `(x, y, width, height)`。
+
+        Returns:
+            CaptureResult: 包含截图结果的对象。
+        """
         return self._submit_to_loop_and_wait(self.capture_async(rect))
 
     # =========================================================================
@@ -103,6 +184,7 @@ class ScreenService:
     # =========================================================================
 
     async def focus_async(self) -> bool:
+        """异步地激活目标窗口。"""
         await asyncio.to_thread(self._update_hwnd)
         if self.hwnd:
             try:
@@ -115,7 +197,8 @@ class ScreenService:
         logger.warning(f"无法找到窗口 '{self.target_title}' 来进行聚焦。")
         return False
 
-    async def capture_async(self, rect: tuple[int, int, int, int] | None = None) -> CaptureResult:
+    async def capture_async(self, rect: Optional[tuple[int, int, int, int]] = None) -> CaptureResult:
+        """异步地执行截图的核心逻辑。"""
         if not self.target_title:
             if rect:
                 logger.warning("提供了截图区域 rect，但在全屏模式下将被忽略。")
@@ -132,10 +215,8 @@ class ScreenService:
                                         win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
                 await asyncio.sleep(0.2)
 
-            # 将阻塞的截图操作放入线程池
             result = await asyncio.to_thread(self._capture_window_sync, self.hwnd, sub_rect=rect)
 
-            # 如果失败，再尝试一次（这部分逻辑保持）
             if not result.success:
                 await asyncio.to_thread(self._update_hwnd)
                 if self.hwnd:
@@ -150,7 +231,7 @@ class ScreenService:
     # =========================================================================
 
     def _update_hwnd(self):
-        # 这是同步方法，因为它会被 to_thread 调用
+        """更新目标窗口的句柄（HWND）。这是一个同步方法，因为它会被 `to_thread` 调用。"""
         if self.target_title:
             try:
                 self.hwnd = win32gui.FindWindow(None, self.target_title)
@@ -162,8 +243,8 @@ class ScreenService:
             self.hwnd = None
 
     @staticmethod
-    def _bitmap_to_numpy(bitmap) -> np.ndarray | None:
-        # 省略了内部实现，与你提供的代码完全相同
+    def _bitmap_to_numpy(bitmap: Any) -> Optional[np.ndarray]:
+        """将 Windows GDI 位图对象转换为 NumPy 数组 (RGB格式)。"""
         try:
             info = bitmap.GetInfo()
             w, h, bpp = info['bmWidth'], info['bmHeight'], info['bmBitsPixel']
@@ -176,7 +257,7 @@ class ScreenService:
             elif bpp == 24:
                 img = cv2.cvtColor(arr.reshape((h, w, 3)), cv2.COLOR_BGR2RGB)
             else:
-                raise ValueError(f"Unsupported bpp: {bpp}")
+                raise ValueError(f"不支持的像素深度: {bpp}")
             return img.copy()
         except Exception as e:
             logger.error(f"错误: 位图转换失败 - {e}")
@@ -186,7 +267,7 @@ class ScreenService:
                 win32gui.DeleteObject(bitmap.GetHandle())
 
     def _capture_fullscreen_sync(self) -> CaptureResult:
-        # 省略了内部实现，与你提供的 _capture_fullscreen 代码完全相同
+        """执行全屏截图的同步阻塞操作。"""
         try:
             primary_screen = screeninfo.get_monitors()[0]
             rect = (primary_screen.x, primary_screen.y, primary_screen.width, primary_screen.height)
@@ -210,8 +291,8 @@ class ScreenService:
             logger.error(f"错误: 全屏截图失败 - {e}")
             return CaptureResult(success=False, error_message=str(e))
 
-    def _capture_window_sync(self, hwnd: int, sub_rect: tuple[int, int, int, int] | None = None) -> CaptureResult:
-        # 省略了内部实现，与你提供的 _capture_window 代码完全相同
+    def _capture_window_sync(self, hwnd: int, sub_rect: Optional[tuple[int, int, int, int]] = None) -> CaptureResult:
+        """执行窗口截图的同步阻塞操作。"""
         window_rect = None
         try:
             left, top, right, bot = win32gui.GetWindowRect(hwnd)
@@ -229,10 +310,9 @@ class ScreenService:
             bitmap = win32ui.CreateBitmap()
             bitmap.CreateCompatibleBitmap(src_dc, client_width, client_height)
             mem_dc.SelectObject(bitmap)
-            # 使用 PRINTWINDOW_CLIENTONLY (3) 以获得最佳效果
             result = windll.user32.PrintWindow(hwnd, mem_dc.GetSafeHdc(), 3)
             if result != 1:
-                logger.warning(f"PrintWindow for hwnd {hwnd} returned {result}, might indicate partial capture.")
+                logger.warning(f"PrintWindow (hwnd: {hwnd}) 返回 {result}, 可能导致截图不完整。")
 
             full_image = self._bitmap_to_numpy(bitmap)
 
@@ -255,7 +335,7 @@ class ScreenService:
 
             return CaptureResult(image=final_image, window_rect=window_rect, relative_rect=relative_rect, success=True)
         except Exception as e:
-            logger.error(f"错误: 窗口截图失败 - {e}", exc_info=False)  # exc_info=False避免在日志中打印过多win32 api错误
+            logger.error(f"错误: 窗口截图失败 - {e}", exc_info=False)
             return CaptureResult(success=False, window_rect=window_rect, error_message=str(e))
 
     # =========================================================================
@@ -263,7 +343,7 @@ class ScreenService:
     # =========================================================================
 
     def _get_running_loop(self) -> asyncio.AbstractEventLoop:
-        """线程安全地获取正在运行的事件循环。"""
+        """线程安全地获取正在运行的 asyncio 事件循环。"""
         with self._loop_lock:
             if self._loop is None or self._loop.is_closed():
                 from packages.aura_core.api import service_registry
@@ -271,11 +351,11 @@ class ScreenService:
                 if scheduler and scheduler._loop and scheduler._loop.is_running():
                     self._loop = scheduler._loop
                 else:
-                    raise RuntimeError("ScreenService无法找到正在运行的asyncio事件循环。")
+                    raise RuntimeError("ScreenService 无法找到正在运行的 asyncio 事件循环。")
             return self._loop
 
     def _submit_to_loop_and_wait(self, coro: asyncio.Future) -> Any:
-        """将一个协程从同步代码提交到事件循环，并阻塞等待其结果。"""
+        """将一个协程从同步代码提交到事件循环，并阻塞地等待其结果。"""
         loop = self._get_running_loop()
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result()

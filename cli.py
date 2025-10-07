@@ -1,5 +1,31 @@
-# cli.py (Aura 3.0 - 阶段四)
+"""
+Aura 框架的命令行接口（CLI）。
 
+该脚本使用 `click` 库构建，为用户提供了一套通过命令行与 Aura 框架
+进行交互的工具。它允许用户在不启动完整图形界面的情况下，执行关键的
+开发和管理任务。
+
+主要功能通过命令组（`@click.group()`）来组织：
+- **`package`**: 用于管理 Aura 包（插件），例如，强制从源码重新构建
+  一个包的 `api.yaml` 清单文件。
+- **`task`**: 用于运行和管理任务，例如，以“临时”（ad-hoc）模式运行
+  任何已定义的任务。
+- **`service`**: 用于检查和管理核心服务，例如，列出所有已注册的服务
+  及其当前状态。
+
+在执行任何命令之前，脚本会确保全局的 `Scheduler` 实例被初始化，
+从而加载整个框架，使其处于可用状态。
+
+使用示例:
+    # 列出所有已注册的服务
+    python cli.py service list
+
+    # 运行一个指定的任务
+    python cli.py task run my_plan/my_task
+
+    # 强制重新构建一个包
+    python cli.py package build ./packages/my_package
+"""
 import click
 import sys
 from pathlib import Path

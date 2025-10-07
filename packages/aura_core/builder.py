@@ -1,4 +1,16 @@
 # packages/aura_core/builder.py (多任务格式支持版)
+"""
+负责从插件源码构建静态 API 定义文件（api.yaml）。
+
+此模块的核心功能是扫描插件目录中的 Python 源代码（用于服务和行为）和
+YAML 文件（用于任务），通过静态分析和动态导入的方式，提取出所有公开的
+API 定义。然后，它将这些信息序列化成一个名为 `api.yaml` 的文件，
+存放在插件的根目录下。
+
+这个 `api.yaml` 文件作为插件的“清单”，使得 Aura 框架可以在不实际加载
+插件代码的情况下，预先了解其提供的所有能力（服务、行为、任务入口点）。
+这对于实现插件的懒加载、依赖解析和高效启动至关重要。
+"""
 
 import importlib.util
 import inspect
@@ -15,16 +27,43 @@ from packages.aura_core.plugin_definition import PluginDefinition
 from packages.aura_core.logger import logger
 
 _PROCESSED_MODULES: Set[str] = set()
+"""一个内部集合，用于跟踪已处理过的模块，防止重复加载。"""
+
 PROJECT_BASE_PATH: Optional[Path] = None
+"""项目的根目录路径，用于将文件绝对路径转换为模块名。"""
+
 API_FILE_NAME = "api.yaml"
+"""生成的 API 定义文件的标准名称。"""
 
 
 def set_project_base_path(base_path: Path):
+    """
+    设置构建器使用的项目根路径。
+
+    这个路径是计算模块导入名称所必需的。必须在调用任何构建函数之前设置。
+
+    Args:
+        base_path (Path): 项目的绝对根路径。
+    """
     global PROJECT_BASE_PATH
     PROJECT_BASE_PATH = base_path
 
 
 def build_package_from_source(plugin_def: PluginDefinition):
+    """
+    从插件的源代码构建其 `api.yaml` 文件。
+
+    这是构建过程的主函数。它会：
+    1. 清理构建缓存。
+    2. 遍历插件目录下的所有 `.py` 文件。
+    3. 加载每个文件作为 Python 模块。
+    4. 从模块中提取由 `@register_service` 和 `@register_action` 装饰的定义。
+    5. 扫描 `tasks` 子目录，查找并解析作为入口点的任务。
+    6. 将所有收集到的公开 API 信息写入插件根目录下的 `api.yaml` 文件。
+
+    Args:
+        plugin_def (PluginDefinition): 需要构建的插件的定义对象。
+    """
     logger.debug(f"从源码构建包: {plugin_def.canonical_id}")
     clear_build_cache()
     package_path = plugin_def.path
@@ -65,10 +104,16 @@ def build_package_from_source(plugin_def: PluginDefinition):
 
 
 def clear_build_cache():
+    """
+    清空已处理模块的缓存。
+
+    在每次执行新的构建任务前调用，以确保所有模块都被重新检查。
+    """
     _PROCESSED_MODULES.clear()
 
 
 def _process_service_file(module: Any, plugin_def: PluginDefinition) -> List[Dict]:
+    """在单个模块中扫描并注册服务定义。"""
     public_services_info = []
     _PROCESSED_MODULES.add(module.__name__)
     for _, class_obj in inspect.getmembers(module, inspect.isclass):
@@ -91,6 +136,7 @@ def _process_service_file(module: Any, plugin_def: PluginDefinition) -> List[Dic
 
 
 def _process_action_file(module: Any, plugin_def: PluginDefinition) -> List[Dict]:
+    """在单个模块中扫描并注册行为定义。"""
     public_actions_info = []
     _PROCESSED_MODULES.add(module.__name__)
     for _, func_obj in inspect.getmembers(module, inspect.isfunction):
@@ -110,11 +156,15 @@ def _process_action_file(module: Any, plugin_def: PluginDefinition) -> List[Dict
     return public_actions_info
 
 
-# 【【【核心修改】】】
 def _process_task_entry_points(tasks_dir: Path, plugin_def: PluginDefinition) -> List[Dict]:
     """
-    【修改版】扫描tasks目录，查找并返回公开的任务入口点信息。
-    支持新旧两种任务格式。
+    扫描 tasks 目录，查找并返回公开的任务入口点信息。
+
+    此函数支持两种任务文件格式：
+    1.  旧格式：一个 YAML 文件只包含一个任务。
+    2.  新格式：一个 YAML 文件可以包含多个命名的任务。
+
+    它通过检查任务定义中的 `meta.entry_point: true` 标志来识别公开任务。
     """
     public_tasks_info = []
     for task_path in tasks_dir.rglob("*.yaml"):
@@ -125,7 +175,7 @@ def _process_task_entry_points(tasks_dir: Path, plugin_def: PluginDefinition) ->
                 continue
 
             def process_single_task(task_id_in_plan: str, task_def: dict):
-                """辅助函数，处理单个任务定义"""
+                """辅助函数，处理单个任务定义。"""
                 if isinstance(task_def, dict) and 'meta' in task_def:
                     meta = task_def['meta']
                     if meta.get('entry_point') is True:
@@ -153,6 +203,7 @@ def _process_task_entry_points(tasks_dir: Path, plugin_def: PluginDefinition) ->
 
 
 def _get_module_name_from_path(file_path: Path) -> str:
+    """根据文件路径和已设置的根路径计算出 Python 模块名。"""
     if PROJECT_BASE_PATH is None: raise RuntimeError("Builder的PROJECT_BASE_PATH未被初始化。")
     try:
         relative_path = file_path.relative_to(PROJECT_BASE_PATH)
@@ -162,6 +213,7 @@ def _get_module_name_from_path(file_path: Path) -> str:
 
 
 def _load_module_from_path(file_path: Path, module_name: str) -> Optional[Any]:
+    """从给定的文件路径动态加载一个 Python 模块。"""
     if module_name in sys.modules:
         logger.debug(f"模块 '{module_name}' 已在 sys.modules 中，直接返回。")
         return sys.modules[module_name]
