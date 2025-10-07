@@ -263,7 +263,6 @@ class Scheduler:
         self.is_running.set()
         self._loop = asyncio.get_running_loop()
         self._main_task = asyncio.current_task()
-        # 【修改】原 with self.shared_data_lock: 替换为 async with（因为 run 是 async）
         async with self.async_data_lock:
             if self._pre_start_task_buffer:
                 logger.info(f"正在将 {len(self._pre_start_task_buffer)} 个缓冲任务移入执行队列...")
@@ -273,6 +272,9 @@ class Scheduler:
         logger.info("调度器异步核心 (Commander) 已启动...")
         try:
             await self._async_reload_subscriptions()
+            await self.event_bus.publish(
+                Event(name="scheduler.started", payload={"message": "Scheduler has started."})
+            )
             async with TaskGroup() as tg:
                 tg.create_task(self._log_consumer_loop())
                 tg.create_task(self._consume_interrupt_queue())
@@ -287,6 +289,9 @@ class Scheduler:
             logger.info("调度器主任务被取消，正在优雅关闭...")
         finally:
             self.is_running.clear()
+            await self.event_bus.publish(
+                Event(name="scheduler.stopped", payload={"message": "Scheduler has been stopped."})
+            )
             self._loop = None
             self._main_task = None
             logger.info("调度器主循环 (Commander) 已安全退出。")
@@ -570,6 +575,10 @@ class Scheduler:
                 return {"status": "success"}
 
     def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None):
+        """
+            【MODIFIED】执行一个临时的、一次性的任务，增加了对新 meta.inputs 格式的验证和默认值处理。
+        """
+        params = params or {}
         async def async_run():
             async with self.async_data_lock:
                 orchestrator = self.plan_manager.get_plan(plan_name)
@@ -584,12 +593,49 @@ class Scheduler:
                 if not task_def:
                     task_def = orchestrator.task_loader.get_task_data(task_name)
 
+                    # --- NEW VALIDATION AND DEFAULT HANDLING ---
+                    inputs_meta = task_def.get('meta', {}).get('inputs', [])
+                    if not isinstance(inputs_meta, list):
+                        msg = f"Task '{full_task_id}' has malformed meta.inputs (must be a list)."
+                        logger.error(msg)
+                        return {"status": "error", "message": msg}
+
+                    expected_input_names = {item['name'] for item in inputs_meta if
+                                            isinstance(item, dict) and 'name' in item}
+
+                    # 1. 检查是否有多余的、未在meta中定义的参数
+                    extra_params = set(params.keys()) - expected_input_names
+                    if extra_params:
+                        msg = f"Unexpected inputs provided for task '{full_task_id}': {', '.join(extra_params)}"
+                        logger.warning(msg)
+                        return {"status": "error", "message": msg}
+
+                    # 2. 构建最终参数，应用默认值
+                    full_params = {}
+                    for item in inputs_meta:
+                        if not isinstance(item, dict) or 'name' not in item: continue
+                        name = item['name']
+                        if name in params:
+                            full_params[name] = params[name]
+                        elif 'default' in item:
+                            full_params[name] = item['default']
+
+                    # 3. 检查是否缺少必需的参数 (那些没有默认值的)
+                    required_inputs = {item['name'] for item in inputs_meta if
+                                       isinstance(item, dict) and 'name' in item and 'default' not in item}
+                    missing_params = required_inputs - set(full_params.keys())
+                    if missing_params:
+                        msg = f"Missing required inputs for task '{full_task_id}': {', '.join(missing_params)}"
+                        logger.error(msg)
+                        return {"status": "error", "message": msg}
+                    # --- END OF NEW LOGIC ---
+
                 tasklet = Tasklet(
                     task_name=full_task_id,
                     is_ad_hoc=True,
                     payload={'plan_name': plan_name, 'task_name': task_name},
                     execution_mode=task_def.get('execution_mode', 'sync'),
-                    initial_context=params or {}
+                    initial_context=full_params
                 )
 
             if self.task_queue:
