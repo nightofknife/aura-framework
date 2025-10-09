@@ -46,23 +46,18 @@ class Scheduler:
 
         # --- 异步组件 (将在每次启动时初始化，先置为None) ---
         self.is_running: Optional[asyncio.Event] = None
-        # self.pause_event: Optional[asyncio.Event] = None  <- [MOVED]
         self.task_queue: Optional[TaskQueue] = None
         self.event_task_queue: Optional[TaskQueue] = None
         self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
-        self.api_log_queue: Optional[asyncio.Queue] = None
         self.async_data_lock: Optional[asyncio.Lock] = None
 
+        # --- MODIFIED: 使用线程安全的 queue.Queue ---
+        self.api_log_queue: queue.Queue = queue.Queue(maxsize=500)
+
         # --- [FIX] 核心服务实例化顺序调整 ---
-        # 1. 首先创建无依赖或基础依赖的服务
         self.config_service = ConfigService()
         self.event_bus = EventBus()
-
-        # 2. 创建依赖于ConfigService的服务
         self.state_store = StateStoreService(config=self.config_service)
-
-        # 3. 创建依赖于Scheduler自身的服务 (self)
-        # [CORE FIX] 将 self.pause_event 传递给 PlanManager
         self.plan_manager = PlanManager(str(self.base_path), self.pause_event)
         self.execution_manager = ExecutionManager(self)
         self.scheduling_service = SchedulingService(self)
@@ -79,9 +74,11 @@ class Scheduler:
         self.ui_update_queue: Optional[queue.Queue] = None
 
         # --- 首次初始化流程 ---
-        logger.setup(log_dir='logs', task_name='aura_session', api_log_queue=None)
+        # --- MODIFIED: 在 setup 时直接传入线程安全的队列 ---
+        logger.setup(log_dir='logs', task_name='aura_session', api_log_queue=self.api_log_queue)
         self._register_core_services()
         self.reload_plans()
+
 
     def _initialize_async_components(self):
         logger.debug("Scheduler: 正在事件循环内初始化/重置异步组件...")
@@ -90,13 +87,11 @@ class Scheduler:
         if self.async_data_lock is None:
             self.async_data_lock = asyncio.Lock()
 
-
         self.task_queue = TaskQueue(maxsize=1000)
         self.event_task_queue = TaskQueue(maxsize=2000)
         self.interrupt_queue = asyncio.Queue(maxsize=100)
-        self.api_log_queue = asyncio.Queue(maxsize=500)
-        if hasattr(logger, 'update_api_queue'):
-            logger.update_api_queue(self.api_log_queue)
+
+
     def get_async_lock(self) -> asyncio.Lock:
         """
         【新增】获取异步数据锁。如果未初始化（非异步环境），fallback 到线程锁或 raise 错误。
@@ -272,11 +267,11 @@ class Scheduler:
         logger.info("调度器异步核心 (Commander) 已启动...")
         try:
             await self._async_reload_subscriptions()
+
             await self.event_bus.publish(
                 Event(name="scheduler.started", payload={"message": "Scheduler has started."})
             )
             async with TaskGroup() as tg:
-                tg.create_task(self._log_consumer_loop())
                 tg.create_task(self._consume_interrupt_queue())
                 tg.create_task(self._consume_main_task_queue())
                 for i in range(self.num_event_workers):
@@ -289,9 +284,11 @@ class Scheduler:
             logger.info("调度器主任务被取消，正在优雅关闭...")
         finally:
             self.is_running.clear()
+
             await self.event_bus.publish(
                 Event(name="scheduler.stopped", payload={"message": "Scheduler has been stopped."})
             )
+
             self._loop = None
             self._main_task = None
             logger.info("调度器主循环 (Commander) 已安全退出。")
@@ -589,46 +586,49 @@ class Scheduler:
                     return {"status": "error", "message": f"Task '{task_name}' not found in plan '{plan_name}'."}
 
                 full_task_id = f"{plan_name}/{task_name}"
-                task_def = self.all_tasks_definitions.get(full_task_id)
+
+                # 1) 统一拿 task_def（优先缓存，没有就从 loader 拿）
+                task_def = self.all_tasks_definitions.get(full_task_id) or \
+                           orchestrator.task_loader.get_task_data(task_name)
                 if not task_def:
-                    task_def = orchestrator.task_loader.get_task_data(task_name)
+                    return {"status": "error", "message": f"Task '{task_name}' not found in plan '{plan_name}'."}
 
-                    # --- NEW VALIDATION AND DEFAULT HANDLING ---
-                    inputs_meta = task_def.get('meta', {}).get('inputs', [])
-                    if not isinstance(inputs_meta, list):
-                        msg = f"Task '{full_task_id}' has malformed meta.inputs (must be a list)."
-                        logger.error(msg)
-                        return {"status": "error", "message": msg}
+                # 2) 一律执行 inputs 校验与参数合并（不再受 if 分支限制）
+                inputs_meta = task_def.get('meta', {}).get('inputs', [])
+                if not isinstance(inputs_meta, list):
+                    msg = f"Task '{full_task_id}' has malformed meta.inputs (must be a list)."
+                    logger.error(msg)
+                    return {"status": "error", "message": msg}
 
-                    expected_input_names = {item['name'] for item in inputs_meta if
-                                            isinstance(item, dict) and 'name' in item}
+                expected_input_names = {item['name'] for item in inputs_meta
+                                        if isinstance(item, dict) and 'name' in item}
 
-                    # 1. 检查是否有多余的、未在meta中定义的参数
-                    extra_params = set(params.keys()) - expected_input_names
-                    if extra_params:
-                        msg = f"Unexpected inputs provided for task '{full_task_id}': {', '.join(extra_params)}"
-                        logger.warning(msg)
-                        return {"status": "error", "message": msg}
+                # 多余参数拦截（也可改成忽略）
+                extra_params = set(params.keys()) - expected_input_names
+                if extra_params:
+                    msg = f"Unexpected inputs provided for task '{full_task_id}': {', '.join(extra_params)}"
+                    logger.warning(msg)
+                    return {"status": "error", "message": msg}
 
-                    # 2. 构建最终参数，应用默认值
-                    full_params = {}
-                    for item in inputs_meta:
-                        if not isinstance(item, dict) or 'name' not in item: continue
-                        name = item['name']
-                        if name in params:
-                            full_params[name] = params[name]
-                        elif 'default' in item:
-                            full_params[name] = item['default']
+                # 构造 full_params（应用默认值）
+                full_params = {}
+                for item in inputs_meta:
+                    if not isinstance(item, dict) or 'name' not in item:
+                        continue
+                    name = item['name']
+                    if name in params:
+                        full_params[name] = params[name]
+                    elif 'default' in item:
+                        full_params[name] = item['default']
 
-                    # 3. 检查是否缺少必需的参数 (那些没有默认值的)
-                    required_inputs = {item['name'] for item in inputs_meta if
-                                       isinstance(item, dict) and 'name' in item and 'default' not in item}
-                    missing_params = required_inputs - set(full_params.keys())
-                    if missing_params:
-                        msg = f"Missing required inputs for task '{full_task_id}': {', '.join(missing_params)}"
-                        logger.error(msg)
-                        return {"status": "error", "message": msg}
-                    # --- END OF NEW LOGIC ---
+                # 必填缺失检查（没有默认值的）
+                required_inputs = {item['name'] for item in inputs_meta
+                                   if isinstance(item, dict) and 'name' in item and 'default' not in item}
+                missing_params = required_inputs - set(full_params.keys())
+                if missing_params:
+                    msg = f"Missing required inputs for task '{full_task_id}': {', '.join(missing_params)}"
+                    logger.error(msg)
+                    return {"status": "error", "message": msg}
 
                 tasklet = Tasklet(
                     task_name=full_task_id,
@@ -648,8 +648,11 @@ class Scheduler:
             try:
                 return future.result(timeout=5)
             except Exception as e:
-                logger.warning(f"Ad-hoc task failed for '{task_name}': {e}")
-                return {"status": "error", "message": "Task queue is full or unresponsive."}
+                # 用 plan/task 组合构造 id，避免引用协程内部变量
+                full_id = f"{plan_name}/{task_name}"
+                logger.warning(f"Ad-hoc task failed for '{full_id}': {e}")
+                # 直接把异常文本透传回前端更利于定位（也可以保留你的通用提示）
+                return {"status": "error", "message": str(e)}
         else:
             with self.fallback_lock:
                 logger.info(f"调度器未运行，临时任务 '{plan_name}/{task_name}' 已加入启动前缓冲区。")
@@ -935,30 +938,6 @@ class Scheduler:
         }
         self._push_ui_update('full_status_update', payload)
 
-    async def _log_consumer_loop(self):
-        # A 方案：不回放到处理器，避免与 emit 阶段的 console/file/ui 形成双写
-        logger.info("日志消费者服务已启动（A 方案：不回放到处理器）。")
-
-        # 【保持原有的优雅关闭逻辑：依赖 is_running 事件 + 超时 get】
-        while self.is_running.is_set():
-            try:
-                # 取出日志（dict 或其它），但不再回放给任何 handler
-                _ = await asyncio.wait_for(self.api_log_queue.get(), timeout=1.0)
-
-                # 如果你以后需要转发给 WebSocket/远端订阅者，可在这里处理 _
-                # 例如：await self._broadcast_log(_)
-
-                self.api_log_queue.task_done()
-
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                logger.info("日志消费者服务已收到取消信号，正在关闭。")
-                break
-            except Exception as e:
-                # 用 print 避免 logger 自身问题导致死循环
-                print(f"CRITICAL: 日志消费者循环出现严重错误: {e}")
-                await asyncio.sleep(1)
 
     async def create_directory(self, plan_name: str, relative_path: str):
         """【新增】委托给Orchestrator创建目录。"""

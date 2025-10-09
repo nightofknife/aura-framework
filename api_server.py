@@ -66,21 +66,29 @@ async def event_bus_listener(event: Event):
     这是一个回调函数，它将被订阅到Aura的EventBus。
     每当框架内部发布一个事件，此函数就会被调用，并将事件广播到所有WebSocket客户端。
     """
+
     await manager.broadcast({"type": "event", "payload": event.to_dict()})
 
 
 async def log_queue_listener():
     """
     这是一个长时运行的任务，它会持续地从Aura的日志队列中消费日志记录。
-    这完美地利用了你设计的AsyncioQueueHandler，实现了日志的实时流式传输。
+    它使用 run_in_executor 来安全地桥接线程安全的 queue 和 asyncio 事件循环。
     """
     logger.info("Log queue listener started. Awaiting logs...")
+    loop = asyncio.get_running_loop()
     while True:
         try:
-            # 从Scheduler持有的队列中异步获取日志条目
-            log_entry = await scheduler.api_log_queue.get()
+            # 在一个单独的线程中执行阻塞的 get() 方法，然后 await 它的结果
+            # 这可以防止阻塞 FastAPI 的主事件循环
+            log_entry = await loop.run_in_executor(
+                None,  # 使用默认的线程池
+                scheduler.api_log_queue.get
+            )
+
             await manager.broadcast({"type": "log", "payload": log_entry})
-            scheduler.api_log_queue.task_done()
+            # 注意：由于 get() 是阻塞的，task_done() 必须在它成功返回后调用
+            loop.run_in_executor(None, scheduler.api_log_queue.task_done)
         except Exception as e:
             # 使用print以防日志系统本身出问题
             print(f"CRITICAL: Log listener background task failed: {e}")
@@ -93,12 +101,22 @@ async def startup_event():
     FastAPI应用启动时执行的钩子函数。
     我们在这里启动后台监听任务，将Aura核心与WebSocket世界连接起来。
     """
+    # 获取当前（FastAPI的）事件循环
+    current_loop = asyncio.get_running_loop()
+
     # 启动日志监听器
     asyncio.create_task(log_queue_listener())
-    # 将我们的WebSocket广播回调订阅到EventBus
-    await scheduler.event_bus.subscribe(event_pattern='*', callback=event_bus_listener, channel='*')
-    logger.info("Aura API server started. WebSocket listeners are active.")
 
+    # 将我们的WebSocket广播回调订阅到EventBus
+    # 订阅时，传入当前循环，以便EventBus知道如何安全地调用它
+    await scheduler.event_bus.subscribe(
+        event_pattern='*',
+        callback=event_bus_listener,
+        channel='*',
+        loop=current_loop,
+        persistent = True,
+    )
+    logger.info("Aura API server started. WebSocket listeners are active.")
 
 # --- 5. Pydantic API 模型 ---
 # 使用Pydantic模型能让FastAPI自动进行数据验证和生成API文档，非常强大。
