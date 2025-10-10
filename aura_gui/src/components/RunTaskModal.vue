@@ -15,11 +15,11 @@
           <label :for="input.name">{{ input.label || input.name }}</label>
           <!-- v-model 将表单输入的值与我们的 anputsData ref 双向绑定 -->
           <input
-            :type="input.type || 'text'"
-            :id="input.name"
-            v-model="inputsData[input.name]"
-            :placeholder="input.placeholder || ''"
-            :required="input.required || false"
+              :type="input.type || 'text'"
+              :id="input.name"
+              v-model="inputsData[input.name]"
+              :placeholder="input.placeholder || ''"
+              :required="input.required || false"
           />
           <small v-if="input.description">{{ input.description }}</small>
         </div>
@@ -34,7 +34,7 @@
 </template>
 
 <script setup>
-import { ref, watchEffect } from 'vue';
+import {ref, watchEffect} from 'vue';
 
 // 定义组件可以接收的属性
 const props = defineProps({
@@ -87,22 +87,26 @@ const submit = () => {
   align-items: center;
   z-index: 1000;
 }
+
 .modal-content {
   background: white;
   padding: 25px;
   border-radius: 8px;
   width: 500px;
   max-width: 90%;
-  box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
 }
+
 .form-group {
   margin-bottom: 15px;
 }
+
 .form-group label {
   display: block;
   margin-bottom: 5px;
   font-weight: bold;
 }
+
 .form-group input {
   width: 100%;
   padding: 8px;
@@ -110,20 +114,24 @@ const submit = () => {
   border-radius: 4px;
   box-sizing: border-box;
 }
+
 .form-group small {
   display: block;
   margin-top: 4px;
   color: #777;
 }
+
 .no-inputs {
   margin: 20px 0;
   text-align: center;
   color: #888;
 }
+
 .modal-actions {
   margin-top: 20px;
   text-align: right;
 }
+
 .modal-actions button {
   padding: 10px 20px;
   border: none;
@@ -131,10 +139,12 @@ const submit = () => {
   cursor: pointer;
   margin-left: 10px;
 }
+
 .btn-primary {
   background-color: #007bff;
   color: white;
 }
+
 .btn-secondary {
   background-color: #6c757d;
   color: white;

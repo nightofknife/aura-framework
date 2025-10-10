@@ -155,6 +155,53 @@ class AdHocTaskResponse(BaseModel):
 class ActiveRunResponse(BaseModel):
     task_id: str
 
+class QueuePlanCount(BaseModel):
+    plan: str
+    count: int
+
+class QueuePriorityCount(BaseModel):
+    priority: int
+    count: int
+
+class QueueOverviewResponse(BaseModel):
+    ready_length: int
+    delayed_length: int
+    by_plan: List[QueuePlanCount]
+    by_priority: List[QueuePriorityCount]
+    avg_wait_sec: float
+    p95_wait_sec: float
+    oldest_age_sec: float
+    throughput: Dict[str, int]  # e.g. {"m5":0,"m15":0,"m60":0}
+
+class QueueItem(BaseModel):
+    run_id: str | None = None
+    plan_name: str | None = None
+    task_name: str | None = None
+    priority: int | None = None
+    enqueued_at: float | None = None
+    delay_until: float | None = None
+    __key: str | None = None
+
+class QueueListResponse(BaseModel):
+    items: List[QueueItem]
+    next_cursor: str | None = None
+
+class TimelineNode(BaseModel):
+    node_id: str
+    startMs: int | None = None
+    endMs: int | None = None
+    status: str | None = None
+
+class RunTimelineResponse(BaseModel):
+    run_id: str
+    plan_name: str | None = None
+    task_name: str | None = None
+    started_at: int | None = None
+    finished_at: int | None = None
+    status: str | None = None
+    nodes: List[TimelineNode] = Field(default_factory=list)
+
+
 
 # --- 6. WebSocket Endpoint ---
 @app.websocket("/ws/events")
@@ -247,3 +294,43 @@ async def get_active_runs():
         active_task_ids = list(scheduler.running_tasks.keys())
     return [{"task_id": task_id} for task_id in active_task_ids]
 
+# --- Queue Overview ---
+@app.get("/api/queue/overview", response_model=QueueOverviewResponse, tags=["Observability"])
+def api_queue_overview():
+    try:
+        data = scheduler.get_queue_overview()
+        return data
+    except Exception as e:
+        logging.exception("queue overview failed")
+        # 返回空也行，前端会优雅处理
+        return QueueOverviewResponse(
+            ready_length=0, delayed_length=0,
+            by_plan=[], by_priority=[],
+            avg_wait_sec=0.0, p95_wait_sec=0.0, oldest_age_sec=0.0,
+            throughput={'m5':0,'m15':0,'m60':0}
+        )
+
+# --- Queue List ---
+@app.get("/api/queue/list", response_model=QueueListResponse, tags=["Observability"])
+def api_queue_list(state: str, limit: int = 200):
+    """
+    state: 'ready' | 'delayed'
+    """
+    state = (state or 'ready').lower()
+    if state not in ('ready','delayed'):
+        raise HTTPException(status_code=400, detail="state must be 'ready' or 'delayed'")
+    try:
+        data = scheduler.list_queue(state=state, limit=limit)
+        return data
+    except Exception as e:
+        logging.exception("queue list failed")
+        return QueueListResponse(items=[], next_cursor=None)
+
+# --- Run Timeline ---
+@app.get("/api/run/{run_id}/timeline", response_model=RunTimelineResponse, tags=["Observability"])
+def api_run_timeline(run_id: str):
+    data = scheduler.get_run_timeline(run_id)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"run_id '{run_id}' not found.")
+    # Pydantic 会自动校验/转换
+    return data

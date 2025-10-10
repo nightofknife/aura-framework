@@ -336,6 +336,16 @@ class ExecutionEngine:
             final_node_output = {"run_state": run_state, **node_result}
             node_context.add_node_result(node_id, final_node_output)
             self.root_context.add_node_result(node_id, final_node_output)
+            # === NEW: emit node.finished ===
+            if self.event_callback:
+                # 若有异常细节则认为 error，否则 success
+                status = 'error' if error_details else 'success'
+                await self.event_callback('node.finished', {
+                    'node_id': node_id,
+                    'end_time': time.time(),
+                    'status': status
+                })
+
 
     # [NEW] 执行单次 action 的逻辑
     async def _execute_single_action(self, node_data: Dict, node_context: ExecutionContext) -> Any:

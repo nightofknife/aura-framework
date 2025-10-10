@@ -47,11 +47,18 @@ class Orchestrator:
         logger.debug(f"Configuration context set to: '{self.plan_name}'")
 
         task_start_time = time.time()
+        _run_ms = int(task_start_time * 1000)
+        run_id = f"{self.plan_name}/{task_name_in_plan}:{_run_ms}"
+
         await self.event_bus.publish(Event(
             name='task.started',
-            # [MODIFIED] 更新 payload key
-            payload={'plan_name': self.plan_name, 'task_name': task_name_in_plan, 'start_time': task_start_time,
-                     'inputs': inputs or {}}
+            payload={
+                'run_id': run_id,
+                'plan_name': self.plan_name,
+                'task_name': task_name_in_plan,
+                'start_time': task_start_time,
+                'inputs': inputs or {}
+            }
         ))
 
         # 初始化TFR的各个部分
@@ -71,6 +78,8 @@ class Orchestrator:
             root_context = ExecutionContext(inputs=inputs)
 
             async def step_event_callback(event_name: str, payload: Dict):
+                # 附加 run_id / plan / task，便于聚合
+                payload['run_id'] = run_id
                 payload['plan_name'] = self.plan_name
                 payload['task_name'] = task_name_in_plan
                 await self.event_bus.publish(Event(name=event_name, payload=payload))
@@ -130,8 +139,11 @@ class Orchestrator:
             await self.event_bus.publish(Event(
                 name='task.finished',
                 payload={
-                    'plan_name': self.plan_name, 'task_name': task_name_in_plan, 'end_time': time.time(),
-                    'duration': time.time() - task_start_time, 'final_status': final_status,
+                    'run_id': run_id,
+                    'plan_name': self.plan_name, 'task_name': task_name_in_plan,
+                    'end_time': time.time(),
+                    'duration': time.time() - task_start_time,
+                    'final_status': final_status,
                     'final_result': tfr_object
                 }
             ))
