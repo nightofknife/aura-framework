@@ -56,7 +56,12 @@
             <table>
               <thead>
               <tr>
-                <th>Status</th><th>Plan</th><th>Task</th><th>Started</th><th>Finished</th><th>Duration</th>
+                <th>Status</th>
+                <th>Plan</th>
+                <th>Task</th>
+                <th>Started</th>
+                <th>Finished</th>
+                <th>Duration</th>
               </tr>
               </thead>
               <tbody>
@@ -68,7 +73,9 @@
                 <td>{{ fmt(r.finishedAt) }}</td>
                 <td>{{ duration(r.startedAt, r.finishedAt) }}</td>
               </tr>
-              <tr v-if="!recentShown.length"><td :colspan="6" style="color:var(--text-3);">No recent runs.</td></tr>
+              <tr v-if="!recentShown.length">
+                <td :colspan="6" style="color:var(--text-3);">No recent runs.</td>
+              </tr>
               </tbody>
             </table>
           </div>
@@ -82,7 +89,8 @@
           <div style="color:var(--text-3); font-size:12px;">Placeholder — hook your chart lib later</div>
         </div>
         <div class="panel-body">
-          <div style="height:160px; background:#F9FAFB; border:1px dashed var(--border); border-radius:12px; display:flex; align-items:center; justify-content:center; color:var(--text-3);">
+          <div
+              style="height:160px; background:#F9FAFB; border:1px dashed var(--border); border-radius:12px; display:flex; align-items:center; justify-content:center; color:var(--text-3);">
             Add charts here when ready
           </div>
         </div>
@@ -102,46 +110,65 @@ const {isConnected} = useAuraSocket();
 const {activeRuns, recentRuns} = useRuns();
 const {overview, fetchOverview} = useQueueStore();
 
-onMounted(()=>{ fetchOverview?.(); });
+onMounted(() => {
+  fetchOverview?.();
+});
 
-const activeCount = computed(()=> activeRuns.value.length);
-const todayCount = computed(()=>{
-  const start = new Date(); start.setHours(0,0,0,0);
+const activeCount = computed(() => activeRuns.value.length);
+const todayCount = computed(() => {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
   return recentRuns.value.filter(r => r.finishedAt && r.finishedAt >= start.getTime()).length;
 });
-const successRate24h = computed(()=>{
-  const since = Date.now() - 24*3600*1000;
-  const win = recentRuns.value.filter(r => (r.finishedAt||0) >= since);
+const successRate24h = computed(() => {
+  const since = Date.now() - 24 * 3600 * 1000;
+  const win = recentRuns.value.filter(r => (r.finishedAt || 0) >= since);
   if (!win.length) return '—';
-  const ok = win.filter(r => String(r.status).toLowerCase()==='success').length;
-  return Math.round(ok*100/win.length) + '%';
+  const ok = win.filter(r => String(r.status).toLowerCase() === 'success').length;
+  return Math.round(ok * 100 / win.length) + '%';
 });
-const p95Duration = computed(()=>{
-  const since = Date.now() - 24*3600*1000;
+const p95Duration = computed(() => {
+  const since = Date.now() - 24 * 3600 * 1000;
   const durs = recentRuns.value
       .filter(r => r.startedAt && r.finishedAt && r.finishedAt >= since)
       .map(r => r.finishedAt - r.startedAt)
-      .sort((a,b)=>a-b);
+      .sort((a, b) => a - b);
   if (!durs.length) return '—';
-  const idx = Math.min(durs.length-1, Math.floor(durs.length*0.95));
+  const idx = Math.min(durs.length - 1, Math.floor(durs.length * 0.95));
   return humanMs(durs[idx]);
 });
-const avgWait = computed(()=> '—'); // 没有后端等待时长数据时就先占位
+const avgWait = computed(() => '—'); // 没有后端等待时长数据时就先占位
 
-const recentShown = computed(()=>{
+const recentShown = computed(() => {
   // 取最近 30 条
   return recentRuns.value.slice(0, 30);
 });
 
-function statusClass(s){ s=(s||'queued').toLowerCase();
-  if (s==='running') return 'pill-blue';
-  if (s==='success') return 'pill-green';
-  if (s==='error'||s==='failed') return 'pill-red';
+function statusClass(s) {
+  s = (s || 'queued').toLowerCase();
+  if (s === 'running') return 'pill-blue';
+  if (s === 'success') return 'pill-green';
+  if (s === 'error' || s === 'failed') return 'pill-red';
   return 'pill-gray';
 }
-function pad(n){return String(n).padStart(2,'0');}
-function fmt(ts){ if(!ts) return '—'; const d=new Date(ts); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
-function duration(a,b){ if(!a||!b) return '—'; return humanMs(b-a); }
-function humanMs(ms){ const s=Math.floor(ms/1000), h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
-  return h?`${h}h ${m}m ${sec}s`: (m?`${m}m ${sec}s`:`${sec}s`); }
+
+function pad(n) {
+  return String(n).padStart(2, '0');
+}
+
+function fmt(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function duration(a, b) {
+  if (!a || !b) return '—';
+  return humanMs(b - a);
+}
+
+function humanMs(ms) {
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}h ${m}m ${sec}s` : (m ? `${m}m ${sec}s` : `${sec}s`);
+}
 </script>

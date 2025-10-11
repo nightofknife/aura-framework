@@ -1,5 +1,18 @@
-import {createApp} from 'vue'
-import './style.css'
+// src/main.js
+import { createApp } from 'vue'
 import App from './App.vue'
 
-createApp(App).mount('#app')
+// directives
+import ripple from './directives/ripple.js'
+import tilt   from './directives/tilt.js'
+import reveal from './directives/reveal.js'
+
+// styles
+import './styles/aetherium-theme.css'
+
+const app = createApp(App)
+app.directive('ripple', ripple)
+app.directive('tilt', tilt)
+app.directive('reveal', reveal)
+
+app.mount('#app')

@@ -1,9 +1,10 @@
+<!-- === src/components/TaskMiniCard.vue === -->
 <template>
-  <div class="card" @click="$emit('select')">
+  <div class="task-card" v-tilt :class="{ starred }" @click="$emit('select')">
+    <div class="color-stripe"></div>
     <div class="hd">
       <div class="title" v-if="titleHtml" v-html="titleHtml"></div>
       <div class="title" v-else>{{ title }}</div>
-
       <button
           class="star"
           :class="{ on: starred }"
@@ -14,12 +15,10 @@
         {{ starred ? '★' : '☆' }}
       </button>
     </div>
-
     <div class="desc" v-if="descHtml" v-html="descHtml"></div>
     <div class="desc" v-else-if="description">{{ description }}</div>
-
     <div class="meta">
-      <span class="pill pill-gray">{{ plan }}</span>
+      <span class="pill">{{ plan }}</span>
       <span class="pill pill-blue" v-if="tag">{{ tag }}</span>
     </div>
   </div>
@@ -27,52 +26,54 @@
 
 <script setup>
 defineProps({
-  title: String,
-  description: String,
-  plan: String,
-  tag: String,
-  starred: Boolean,
-  /** 新增：可选的 HTML 高亮字段（包含 <mark>） */
-  titleHtml: String,
-  descHtml: String,
+  title: String, description: String, plan: String, tag: String,
+  starred: Boolean, titleHtml: String, descHtml: String,
 });
 </script>
 
 <style scoped>
-.card{
-  border:1px solid var(--border);
-  border-radius:10px;
-  padding:10px;
-  background:#fff;
-  cursor:pointer;
-  display:flex;
-  flex-direction:column;
-  gap:6px;
-  transition: box-shadow .18s ease, transform .12s ease;
+.task-card {
+  position: relative;
+  backdrop-filter: blur(12px);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-frosted);
+  border-radius: var(--radius);
+  padding: 12px 12px 12px 24px; /* 左侧留出彩带空间 */
+  cursor: pointer;
+  display: flex; flex-direction: column; gap: 6px;
+  transition: all var(--dur) var(--ease);
+  overflow: hidden;
 }
-.card:hover{ box-shadow:0 0 0 2px #e5e7ff; transform: translateY(-1px); }
-
-.hd{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.title{ font-weight:700; }
-.desc{ color:var(--text-3); font-size:12px; min-height:34px; overflow:hidden; }
-.meta{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-
-.star{
-  background:transparent;
-  border:none;
-  cursor:pointer;
-  font-size:18px;       /* 放大，保证可见性 */
-  line-height:1;
-  color:#9CA3AF;        /* 默认灰 */
-  padding:2px;
+.task-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--primary-accent);
+  box-shadow: var(--shadow-glow);
 }
-.star.on{ color:#F59E0B; } /* 橙色高亮 */
-.star:focus{ outline:2px solid #dbeafe; outline-offset:2px; }
+.color-stripe {
+  position: absolute;
+  left: 6px; top: 10px; bottom: 10px; width: 4px;
+  border-radius: 4px;
+  background: var(--border-frosted);
+  transition: background var(--dur) var(--ease);
+}
+.task-card.starred .color-stripe {
+  background: var(--primary-accent);
+}
 
-/* 高亮 mark 的样式更柔和一些 */
-:deep(mark){
-  background: #FFF4CC;
-  padding: 0 2px;
-  border-radius: 3px;
+.hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.title { font-weight: 700; color: var(--text-primary); }
+.desc { color: var(--text-secondary); font-size: 13px; min-height: 38px; overflow: hidden; }
+.meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+.star { transition: transform .15s var(--ease), color .15s var(--ease); }
+.star:active { transform: scale(0.9); }
+.star.on { color: #F59E0B; text-shadow: 0 0 8px rgba(245,158,11,.35); }
+
+
+:deep(mark) {
+  background: color-mix(in oklab, var(--primary-accent) 20%, transparent);
+  padding: 0 2px; border-radius: 3px;
+  color: var(--text-primary);
 }
 </style>
+<!-- === END src/components/TaskMiniCard.vue === -->
