@@ -1,4 +1,3 @@
-<!-- === ExecuteView.vue === -->
 <template>
   <div class="execute-view">
     <div class="header-bar">
@@ -30,7 +29,8 @@
     </div>
 
     <div class="content-grid">
-      <SchemePanel v-reveal v-model:open="open.byPlan" title="按计划（含搜索）" description="优先展示当前 Plan 的匹配任务">
+      <SchemePanel v-reveal v-model:open="open.byPlan" title="按计划（含搜索）"
+                   description="优先展示当前 Plan 的匹配任务">
         <div class="controls">
           <select class="select" v-model="ui.planSelected">
             <option disabled value="">选择 Plan…</option>
@@ -40,11 +40,15 @@
         </div>
         <TransitionGroup name="fade" tag="div" class="task-grid">
           <div v-if="showGroupHeaders" key="grp-in" class="grid-header">当前 Plan</div>
-          <TaskMiniCard v-for="t in grouped.inPlan" :key="t.__key" v-bind="t"
-                        @select="openConfig(t.plan, t.task, t.meta)" @toggle-fav="toggleFav(t.plan, t.task)"/>
+          <TaskMiniCard
+              v-for="t in grouped.inPlan" :key="t.__key" v-bind="t"
+              @select="openConfig(t.plan, t.task, t.meta)" @toggle-fav="toggleFav(t.plan, t.task)"
+          />
           <div v-if="showGroupHeaders && grouped.other.length" key="grp-out" class="grid-header">其他 Plan</div>
-          <TaskMiniCard v-for="t in grouped.other" :key="t.__key" v-bind="t"
-                        @select="openConfig(t.plan, t.task, t.meta)" @toggle-fav="toggleFav(t.plan, t.task)"/>
+          <TaskMiniCard
+              v-for="t in grouped.other" :key="t.__key" v-bind="t"
+              @select="openConfig(t.plan, t.task, t.meta)" @toggle-fav="toggleFav(t.plan, t.task)"
+          />
           <div v-if="!grouped.inPlan.length && !grouped.other.length" key="empty" class="empty-state">暂无匹配结果。
           </div>
         </TransitionGroup>
@@ -52,14 +56,17 @@
 
       <SchemePanel v-reveal v-model:open="open.favs" title="收藏" description="常用任务快速进入">
         <TransitionGroup name="fade" tag="div" class="task-grid">
-          <TaskMiniCard v-for="t in favTasksView" :key="t.__key" v-bind="t" @select="openConfig(t.plan, t.task, t.meta)"
-                        @toggle-fav="toggleFav(t.plan, t.task)"/>
+          <TaskMiniCard
+              v-for="t in favTasksView" :key="t.__key" v-bind="t"
+              @select="openConfig(t.plan, t.task, t.meta)" @toggle-fav="toggleFav(t.plan, t.task)"
+          />
           <div v-if="!favTasksView.length" key="emptyfav" class="empty-state">还没有收藏任务。</div>
         </TransitionGroup>
       </SchemePanel>
     </div>
 
-    <div class="panel queue-panel">
+    <!-- 队列面板：接入拟物玻璃 -->
+    <div class="panel queue-panel glass glass-thick glass-refract glass-shimmer">
       <div class="panel-header">
         <strong>Staging ({{ stagingList.length }})</strong>
         <div class="controls">
@@ -115,7 +122,7 @@
       </div>
     </div>
 
-    <!-- ... [Completed Table and ProContextPanel remain largely the same logic-wise] ... -->
+    <!-- 右侧配置抽屉 -->
     <ProContextPanel :open="cfg.open" :title="cfg.title" @close="cfg.open=false">
       <div style="color:var(--text-secondary); font-size:12px;">
         {{ cfg.plan }} / {{ cfg.task }}
@@ -163,15 +170,11 @@
         <button class="btn btn-ghost" @click="cfg.open=false">Cancel</button>
       </div>
     </ProContextPanel>
-
-
   </div>
 </template>
 
 <script setup>
-// ... [The entire <script setup> block from your original ExecuteView.vue can be pasted here, it's compatible] ...
-// I'm omitting it for brevity, but you should copy it over.
-import {computed, reactive, ref, onMounted, watch, onUnmounted } from 'vue';
+import {computed, reactive, ref, onMounted, watch, onUnmounted} from 'vue';
 import axios from 'axios';
 import SchemePanel from '../components/SchemePanel.vue';
 import TaskMiniCard from '../components/TaskMiniCard.vue';
@@ -197,27 +200,64 @@ function onHoldStart(target) {
   hold._timer = setInterval(() => {
     const p = Math.min(100, Math.round((Date.now() - t0) / HOLD_MS * 100));
     if (target === 'run') hold.run = p; else hold.pause = p;
+
     if (p >= 100) {
       clearInterval(hold._timer);
+
       if (target === 'run') {
-        setAuto(!autoMode.value);
-        toast({type: 'success', title: `Auto mode ${autoMode.value ? 'ON' : 'OFF'}`});
+        // 长按：切换全局 auto，并在需要时立即开跑
+        const next = !autoMode.value;
+        setAuto(next);
+        if (next) {
+          // 如果刚切到 ON 且当前未运行，并且有任务，则立即开始批量
+          if (!running.value && stagingList.value.length > 0) {
+            startBatch();
+          }
+        }
       } else {
+        // 长按暂停键：强制停止
         forceStop();
       }
     }
   }, 16);
 }
 
+
 function onHoldEnd(target) {
   clearInterval(hold._timer);
   const p = target === 'run' ? hold.run : hold.pause;
-  if (p < 100) {
-    target === 'run' ? startBatch() : pause();
+
+  if (target === 'run') {
+    if (p < 100) {
+      // 短按：临时开启 auto，把队列跑空后还原先前状态
+      const wasAuto = autoMode.value;
+      if (!wasAuto) setAuto(true);
+
+      // 开始批量
+      startBatch();
+
+      // 监听“队列清空或停止”，然后还原 auto
+      if (!wasAuto) {
+        const stopWatch = watch(
+            [stagingList, running],
+            ([list, run]) => {
+              if ((!list || list.length === 0) || !run) {
+                setAuto(wasAuto);       // 还原到进入前的 auto 状态
+                stopWatch();            // 解除监听
+              }
+            }
+        );
+      }
+    }
+  } else {
+    // 短按暂停：仅暂停
+    if (p < 100) pause();
   }
+
   hold.run = 0;
   hold.pause = 0;
 }
+
 
 function onHoldCancel() {
   clearInterval(hold._timer);
@@ -227,7 +267,8 @@ function onHoldCancel() {
 
 // Plans & Tasks
 const plans = ref([]);
-const allTasks = ref([]); // { __key, plan, task, title, desc, meta }
+const allTasks = ref([]);
+
 async function loadPlans() {
   try {
     const {data} = await api.get('/plans');
@@ -279,7 +320,7 @@ function highlight(s) {
   return escHtml(String(s || '')).replace(rx, '<mark>$1</mark>');
 }
 
-// 组合/排序（收藏置顶 & 稳定排序）
+// 收藏
 const FAV_KEY = 'exec.favs';
 const favSet = ref(new Set(JSON.parse(localStorage.getItem(FAV_KEY) || '[]')));
 
@@ -291,11 +332,11 @@ function toggleFav(plan, task) {
   const k = `${plan}::${task}`;
   const next = new Set(favSet.value);
   next.has(k) ? next.delete(k) : next.add(k);
-  favSet.value = next; // 触发响应
+  favSet.value = next;
   localStorage.setItem(FAV_KEY, JSON.stringify([...next]));
 }
 
-
+// 分组视图
 const grouped = computed(() => {
   const ps = ui.planSelected || (plans.value[0]?.name || '');
   const q = (ui.query || '').trim().toLowerCase();
@@ -313,20 +354,14 @@ const grouped = computed(() => {
     if (ap) return ap;
     return a.task.localeCompare(b.task);
   };
-
-  const decorate = (arr) => arr.map(t => ({
+  const deco = arr => arr.map(t => ({
     ...t,
     titleHtml: highlight(t.title),
     descHtml: highlight(t.desc),
-    starred: isFav(t.plan, t.task),     // ← 关键：传给卡片
+    starred: isFav(t.plan, t.task)
   }));
-
-  return {
-    inPlan: decorate([...inPlan].sort(cmp)),
-    other: decorate([...other].sort(cmp)),
-  };
+  return {inPlan: deco([...inPlan].sort(cmp)), other: deco([...other].sort(cmp))};
 });
-
 const showGroupHeaders = computed(() => (ui.query || '').trim().length > 0);
 
 // 收藏视图
@@ -335,22 +370,14 @@ const favTasksView = computed(() => {
   const list = [...favSet.value.values()].map(k => map.get(k)).filter(Boolean);
   return list
       .sort((a, b) => a.title.localeCompare(b.title) || a.plan.localeCompare(b.plan) || a.task.localeCompare(b.task))
-      .map(t => ({
-        ...t,
-        titleHtml: highlight(t.title),
-        descHtml: highlight(t.desc),
-        starred: true,                  // ← 收藏列表内恒为已收藏
-      }));
+      .map(t => ({...t, titleHtml: highlight(t.title), descHtml: highlight(t.desc), starred: true}));
 });
-
 
 // 初始化
 onMounted(async () => {
   await loadPlans();
   if (!ui.planSelected && plans.value.length) ui.planSelected = plans.value[0].name;
   await loadAllTasks();
-
-  // 快捷键：/ 聚焦搜索
   window.addEventListener('keydown', onGlobalKey);
 });
 
@@ -501,7 +528,7 @@ function clearAll() {
   staging.clear();
 }
 
-// —— 拖拽排序（用现有 move 循环实现） —— //
+// —— 拖拽排序 —— //
 const dragId = ref(null);
 const dragOverId = ref(null);
 
@@ -529,8 +556,6 @@ function onDrop(targetId) {
   const from = list.findIndex(x => x.id === fromId);
   const to = list.findIndex(x => x.id === toId);
   if (from < 0 || to < 0) return;
-
-  // 用 move(id, delta) 循环到位（避免改动 composable）
   const dir = to > from ? +1 : -1;
   let cur = from;
   while (cur !== to) {
@@ -544,7 +569,7 @@ function onDragEnd() {
   dragOverId.value = null;
 }
 
-// Completed
+// 历史
 const qHist = ref('');
 const filteredHistory = computed(() => {
   const q = qHist.value.trim().toLowerCase();
@@ -560,7 +585,6 @@ function requeue(h) {
     priority: h.priority,
     note: h.note
   });
-  toast({type: 'success', title: 'Requeued', message: `${h.plan_name} / ${h.task_name}`});
 }
 
 function clearHistory() {
@@ -606,14 +630,12 @@ function fmt(ts) {
   const pad = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
-
 </script>
 
-/* === ExecuteView.vue (FIXED STYLE) === */
 <style scoped>
 .execute-view {
   width: 100%;
-  min-width: 0; /* ← 关键兜底 */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -643,13 +665,13 @@ function fmt(ts) {
   align-items: center;
 }
 
-/* 响应式两列：空间足够两列，不够自动单列 */
+/* 两列自适应 */
 .content-grid {
   width: 100%;
-  min-width: 0; /* ← 关键兜底 */
+  min-width: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
   gap: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
 }
 
 .controls {
@@ -664,14 +686,12 @@ function fmt(ts) {
   min-width: 0;
 }
 
-/* 输入框可拉伸 */
-
 .task-grid {
   width: 100%;
-  min-width: 0; /* ← 关键兜底 */
+  min-width: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
 }
 
 .grid-header {
@@ -722,6 +742,3 @@ function fmt(ts) {
   transform: translateY(-4px);
 }
 </style>
-
-
-

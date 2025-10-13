@@ -1,116 +1,145 @@
-// src/composables/useStagingRunner.js
-import {ref, watch, nextTick, effectScope} from 'vue';
+import { ref, watch, nextTick, effectScope } from 'vue';
 import axios from 'axios';
-import {useStagingQueue} from './useStagingQueue.js';
-import {useAuraSocket} from './useAuraSocket.js';
-import {useToasts} from './useToasts.js';
+import { useStagingQueue, GUI_STATUS } from './useStagingQueue.js';
+import { useAuraSocket } from './useAuraSocket.js';
+import { useToasts } from './useToasts.js';
 
-const api = axios.create({baseURL: 'http://127.0.0.1:8000/api', timeout: 5000});
+const api = axios.create({ baseURL: 'http://127.0.0.1:8000/api', timeout: 8000 });
 
-// —— 单例状态 —— //
+// 运行器内部状态
 const running = ref(false);
 const autoMode = ref(false);
-const batchId = ref(null);
+
+const batchEpoch = ref(null);
 const snapshotIds = ref([]);
 const pointer = ref(0);
+
 const currentId = ref(null);
 
+// 等待表 + 早到缓存
+const waitMap = new Map();   // 'run:<rid>' | 'task:<id>' -> { resolve, timer, promise }
+const earlyFinish = new Set();
+
 const AUTO_LS = 'aura_runner_auto';
-try {
-    autoMode.value = JSON.parse(localStorage.getItem(AUTO_LS) || 'false');
-} catch {
-}
+try { autoMode.value = JSON.parse(localStorage.getItem(AUTO_LS) || 'false'); } catch {}
 
 let booted = false;
 let scope = null;
 
-function toMs(v) {
-    if (v == null) return 0;
-    return v > 1e12 ? v : Math.floor(v * 1000);
-}
+function toMs(v){ if(v==null) return 0; return v>1e12 ? v : Math.floor(v*1000); }
+function createDeferred(ms=30*60*1000){ let resolve; const p = new Promise(r => resolve = r); const timer = setTimeout(()=>{ try{ resolve(); }catch{} }, ms); return {promise:p, resolve, timer}; }
 
-export function useStagingRunner() {
-    const {items, updateTask, removeTask, pushHistory} = useStagingQueue();
-    const {lastMessage, connect} = useAuraSocket();
-    const {push: toast} = useToasts();
+export function useStagingRunner(){
+    const { items, updateTask, removeTask, pushHistory, batchUpdate, setGuiStatus } = useStagingQueue();
+    const { lastMessage, connect } = useAuraSocket();
+    const { push: toast } = useToasts();
 
-    function markSnapshot() {
-        batchId.value = 'b_' + Date.now();
+    // ---------- 批次：一次性打标 + 快照 ----------
+    function markSnapshotAndTagAll(){
+        const epoch = Date.now();
+        batchEpoch.value = epoch;
         snapshotIds.value = items.value.map(x => x.id);
         pointer.value = 0;
-        for (const id of snapshotIds.value) {
-            updateTask(id, {toDispatch: true, status: 'pending'});
-        }
+
+        batchUpdate((it, set) => {
+            const s = (it.status || 'pending').toLowerCase();
+            if (!(s === 'pending' || !it.status)) return false;
+
+            let c = false;
+            c = set(it, 'toDispatch', true) || c;
+            c = set(it, 'toDispatchEpoch', epoch) || c;
+            c = set(it, 'status', 'pending') || c;
+
+            if (it.gui_status === GUI_STATUS.IDLE) {
+                c = set(it, 'gui_status', GUI_STATUS.SELECTED) || c;
+                if (!it.selectedAt) { it.selectedAt = Date.now(); c = true; }
+            }
+            return c;
+        });
     }
 
-    async function startBatch() {
+    async function startBatch(){
         if (running.value) return;
-        markSnapshot();
         running.value = true;
+        markSnapshotAndTagAll();
         processNext();
     }
 
-    function pause() {
+    function pause(){
         running.value = false;
+        const cur = currentId.value;
+        batchUpdate((it, set) => {
+            if (it.id === cur || !it.toDispatch) return false;
+            let c = false;
+            c = set(it, 'toDispatch', false) || c;
+            c = set(it, 'toDispatchEpoch', null) || c;
+            if (!it.handoff && it.gui_status !== GUI_STATUS.IDLE) {
+                c = set(it, 'gui_status', GUI_STATUS.SELECTED) || c;
+            }
+            return c;
+        });
     }
 
-    function setAuto(v) {
+    function setAuto(v){
         autoMode.value = !!v;
-        try {
-            localStorage.setItem(AUTO_LS, JSON.stringify(autoMode.value));
-        } catch {
+        try { localStorage.setItem(AUTO_LS, JSON.stringify(autoMode.value)); } catch {}
+        if (autoMode.value) {
+            batchUpdate((it, set) => {
+                const s = (it.status || 'pending').toLowerCase();
+                if (it.toDispatch || !(s === 'pending' || !it.status)) return false;
+
+                let c = false;
+                c = set(it, 'toDispatch', true) || c;
+                c = set(it, 'status', 'pending') || c;
+                if (it.gui_status === GUI_STATUS.IDLE) {
+                    c = set(it, 'gui_status', GUI_STATUS.SELECTED) || c;
+                    if (!it.selectedAt) { it.selectedAt = Date.now(); c = true; }
+                }
+                return c;
+            });
+
+            if (!running.value) processAutoIfIdle();
         }
-        if (autoMode.value && !running.value) processAutoIfIdle();
     }
 
-    function forceStop() {
+    function forceStop(){
         pause();
-        toast({type: 'info', title: 'Force stop', message: 'Paused queue dispatch.'});
+        toast({ type: 'info', title: 'Paused', message: 'Queue dispatch paused.' });
     }
 
-    function processAutoIfIdle() {
+    function processAutoIfIdle(){
         if (running.value) return;
-        const next = items.value.find(x => !x.toDispatch && (x.status === 'pending' || !x.status));
-        if (!next) return;
-        batchId.value = null;
-        snapshotIds.value = [next.id];
-        pointer.value = 0;
+        const nxt = items.value.find(x => x.toDispatch && ((x.status || 'pending').toLowerCase()==='pending' || !x.status));
+        if (!nxt) return;
+        batchEpoch.value = null; snapshotIds.value = []; pointer.value = 0;
         running.value = true;
         processNext();
     }
 
-    async function processNext() {
+    // ---------- 主推进 ----------
+    async function processNext(){
         if (!running.value) return;
 
         let nextId = null;
-        if (batchId.value) {
-            // 批量：在 snapshotIds 中找需要投递或仍在进行中的项
+
+        if (batchEpoch.value) {
             for (; pointer.value < snapshotIds.value.length; pointer.value++) {
                 const id = snapshotIds.value[pointer.value];
                 const it = items.value.find(x => x.id === id);
                 if (!it) continue;
+                if (it.toDispatchEpoch !== batchEpoch.value) continue;
                 const s = (it.status || 'pending').toLowerCase();
-                if (it.toDispatch && !['running', 'dispatching', 'dispatched', 'success', 'error'].includes(s)) {
-                    nextId = id;
-                    break;
-                }
-                if (it.toDispatch && (s === 'dispatching' || s === 'dispatched' || s === 'running')) {
-                    nextId = id;
-                    break;
-                }
+                if (['running', 'dispatching', 'dispatched'].includes(s)) { nextId = id; break; }
+                if (!['success','error'].includes(s)) { nextId = id; break; }
             }
         } else {
-            // 自动：挑第一条 pending 且未标记 toDispatch 的
-            const it = items.value.find(x => !x.toDispatch && (x.status === 'pending' || !x.status));
+            const it = items.value.find(x => x.toDispatch && ((x.status || 'pending').toLowerCase()==='pending' || !x.status));
             if (it) nextId = it.id;
         }
 
         if (!nextId) {
             running.value = false;
-            if (!autoMode.value) {
-                batchId.value = null;
-                snapshotIds.value = [];
-            }
+            if (batchEpoch.value) { batchEpoch.value = null; snapshotIds.value = []; }
             return;
         }
 
@@ -119,119 +148,223 @@ export function useStagingRunner() {
         if (!item) return stepDone();
 
         const cur = (item.status || '').toLowerCase();
-        if (['dispatching', 'dispatched', 'running'].includes(cur)) {
+        if (['dispatching','dispatched','running'].includes(cur)) {
             await waitForFinish(item);
             return stepDone();
         }
 
-        updateTask(item.id, {status: 'dispatching'});
+        // 进入 DISPATCHING（GUI）
+        setGuiStatus(item.id, GUI_STATUS.DISPATCHING);
+
+        // 派发前建立等待（避免完成事件先到）
+        const localKey = `task:${item.id}`;
+        if (!waitMap.has(localKey)) waitMap.set(localKey, createDeferred());
+
+        updateTask(item.id, { status: 'dispatching' });
         try {
-            await api.post('/tasks/run', {
-                plan_name: item.plan_name,
-                task_name: item.task_name,
-                inputs: item.inputs || {}
+            const resp = await api.post('/tasks/run', {
+                plan_name: item.plan_name, task_name: item.task_name, inputs: item.inputs || {}
             });
-            updateTask(item.id, {status: 'dispatched', dispatchedAt: Date.now()});
+
+            // 有些实现返回 200 但 ok=false（比如引擎未启动）
+            if (resp && resp.data && resp.data.ok === false) {
+                const msg = String(resp.data.message || '').toLowerCase();
+                if (msg.includes('scheduler is not running')) {
+                    setGuiStatus(item.id, GUI_STATUS.WAITING_ENGINE, { toDispatch: true });
+                } else {
+                    setGuiStatus(item.id, GUI_STATUS.ENQUEUE_FAILED);
+                }
+                updateTask(item.id, { status: 'pending' });
+                return stepDone();
+            }
+
+            // 入队成功（等待 queue.enqueued 驱动到 QUEUED）
+            updateTask(item.id, { dispatchedAt: Date.now(), status: 'dispatched' });
+
             await waitForFinish(item);
         } catch (e) {
-            updateTask(item.id, {status: 'error'});
-            toast({type: 'error', title: 'Failed to enqueue', message: `${item.plan_name} / ${item.task_name}`});
+            // 网络/HTTP 错误
+            const msg = String(e?.response?.data?.message || e?.message || '').toLowerCase();
+            if (msg.includes('scheduler is not running')) {
+                setGuiStatus(item.id, GUI_STATUS.WAITING_ENGINE, { toDispatch: true });
+            } else {
+                setGuiStatus(item.id, GUI_STATUS.ENQUEUE_FAILED);
+            }
+            updateTask(item.id, { status: 'pending' });
         }
+
         stepDone();
 
-        function stepDone() {
-            if (batchId.value) pointer.value++;
+        function stepDone(){
+            if (batchEpoch.value) pointer.value++;
             nextTick(() => processNext());
         }
     }
 
-    function waitForFinish(item) {
-        return new Promise(resolve => {
-            item._awaiting = resolve;
-            item._awaitingTimer = setTimeout(() => resolve(), 30 * 60 * 1000); // 兜底 30min
-        });
+    function waitForFinish(item){
+        const k = item.run_id ? `run:${item.run_id}` : `task:${item.id}`;
+        if (earlyFinish.has(k)) { earlyFinish.delete(k); return Promise.resolve(); }
+        if (!waitMap.has(k)) waitMap.set(k, createDeferred());
+        return waitMap.get(k).promise;
     }
 
-    // —— 只注册一次 —— //
-    function bootOnce() {
-        if (booted) return;
-        booted = true;
+    function resolveKey(key){
+        const d = waitMap.get(key);
+        if (d) { clearTimeout(d.timer); try{ d.resolve(); }catch{} waitMap.delete(key); }
+        else { earlyFinish.add(key); }
+    }
+
+    // ---------- 事件桥 ----------
+    function onQueueEnqueued(p){
+        // 仅影响 GUI（进入 QUEUED / 交付完成），无 run_id，只能按当前派发项近似匹配
+        const plan = p.plan_name, task = p.task_name;
+        const enqMs = toMs(p.enqueued_at ?? p.start_time ?? Date.now());
+
+        // 候选：DISPATCHING/DISPATCHED 的项
+        const candidates = items.value.filter(x =>
+            (x.status === 'dispatching' || x.status === 'dispatched') &&
+            (plan ? x.plan_name === plan : true) &&
+            (task ? x.task_name === task : true)
+        );
+        if (!candidates.length) return;
+        let best = candidates[0], bestDiff = 1e15;
+        for (const it of candidates) {
+            const d = Math.abs((it.dispatchedAt || 0) - (enqMs || Date.now()));
+            if (d < bestDiff) { best = it; bestDiff = d; }
+        }
+        setGuiStatus(best.id, GUI_STATUS.QUEUED, { enqueuedAt: enqMs, handoff: true });
+    }
+
+    function onQueueDequeued(p){
+        const plan = p.plan_name, task = p.task_name;
+        const dqMs = toMs(p.start_time ?? Date.now());
+
+        // 候选：已交付（QUEUED/派发中）但未 RUNNING 的项
+        const candidates = items.value.filter(x =>
+            (x.gui_status === GUI_STATUS.QUEUED || x.status === 'dispatched' || x.status === 'dispatching') &&
+            (plan ? x.plan_name === plan : true) &&
+            (task ? x.task_name === task : true)
+        );
+        if (!candidates.length) return;
+        let best = candidates[0], bestDiff = 1e15;
+        for (const it of candidates) {
+            const d = Math.abs((it.enqueuedAt || it.dispatchedAt || 0) - (dqMs || Date.now()));
+            if (d < bestDiff) { best = it; bestDiff = d; }
+        }
+        setGuiStatus(best.id, GUI_STATUS.DEQUEUED, { dequeuedAt: dqMs, handoff: true });
+    }
+
+    function onStarted(p){
+        const plan = p.plan_name, task = p.task_name;
+        const runId = p.run_id || null;
+        const startMs = toMs(p.start_time ?? p.started_at ?? p.timestamp);
+
+        let candidates = items.value.filter(x =>
+            (x.status === 'dispatched' || x.status === 'dispatching') &&
+            (plan ? x.plan_name === plan : true) &&
+            (task ? x.task_name === task : true)
+        );
+        if (!candidates.length && currentId.value) {
+            const cur = items.value.find(x => x.id === currentId.value);
+            if (cur) candidates = [cur];
+        }
+        if (!candidates.length) return;
+
+        let best = candidates[0], bestDiff = 1e15;
+        for (const it of candidates) {
+            const d = Math.abs((it.dispatchedAt || 0) - (startMs || Date.now()));
+            if (d < bestDiff) { best = it; bestDiff = d; }
+        }
+
+        const beforeKey = `task:${best.id}`;
+        const afterKey  = runId ? `run:${runId}` : beforeKey;
+
+        updateTask(best.id, { status: 'running', run_id: runId || best.run_id || null, startedAt: startMs || Date.now() });
+        setGuiStatus(best.id, GUI_STATUS.RUNNING, { handoff: true });
+
+        if (waitMap.has(beforeKey) && runId) {
+            const d = waitMap.get(beforeKey); waitMap.delete(beforeKey);
+            if (earlyFinish.has(afterKey)) { clearTimeout(d.timer); try{ d.resolve(); }catch{} earlyFinish.delete(afterKey); }
+            else waitMap.set(afterKey, d);
+        }
+    }
+
+    function onFinished(p){
+        const runId = p.run_id || null;
+        if (!runId) return;
+        const key = `run:${runId}`;
+
+        const target = items.value.find(x => x.run_id === runId);
+        const statusRaw = String(p.final_status ?? p.status ?? '').toLowerCase();
+        const ok = ['success','succeeded','completed','ok'].includes(statusRaw);
+
+        resolveKey(key);
+
+        if (!target) return; // 子任务或非当前 GUI 条目
+
+        const finishedAt = toMs(p.end_time ?? p.finished_at) || Date.now();
+
+        if (ok) {
+            setGuiStatus(target.id, GUI_STATUS.SUCCESS, { finishedAt });
+            pushHistory({ ...target, status:'success', run_id: runId, finishedAt });
+            removeTask(target.id);                // ✅ 成功后立刻从队列移除
+        } else {
+            setGuiStatus(target.id, GUI_STATUS.ERROR, {
+                finishedAt, toDispatch: false, toDispatchEpoch: null
+            });
+            updateTask(target.id, { status: 'error' });
+        }
+    }
+
+    // ---------- 启动一次 ----------
+    function bootOnce(){
+        if (booted) return; booted = true;
         connect?.();
 
         scope = effectScope();
         scope.run(() => {
             watch(lastMessage, evt => {
                 if (!evt) return;
-                const name = (evt.name || '').toLowerCase();
+                const name = String(evt.name || '').toLowerCase();
                 const p = evt.payload || {};
 
-                if (name === 'task.started') {
-                    const candidates = items.value.filter(x =>
-                        (x.status === 'dispatched' || x.status === 'dispatching') &&
-                        x.plan_name === p.plan_name && x.task_name === p.task_name
-                    );
-                    if (candidates.length) {
-                        let best = null, bestDiff = 1e15;
-                        const startMs = toMs(p.start_time);
-                        for (const it of candidates) {
-                            const d = Math.abs((it.dispatchedAt || 0) - startMs);
-                            if (d < bestDiff) {
-                                best = it;
-                                bestDiff = d;
-                            }
-                        }
-                        if (best) updateTask(best.id, {status: 'running', run_id: p.run_id || null});
-                    }
+                // 队列事件（GUI 可见）
+                if (name === 'queue.enqueued') return onQueueEnqueued(p);
+                if (name === 'queue.dequeued') return onQueueDequeued(p);
 
-                } else if (name === 'task.finished') {
-                    let target = null;
-                    if (p.run_id) target = items.value.find(x => x.run_id === p.run_id);
-                    if (!target) {
-                        const c = items.value.filter(x =>
-                            (x.status === 'running' || x.status === 'dispatched' || x.status === 'dispatching') &&
-                            x.plan_name === p.plan_name && x.task_name === p.task_name
-                        );
-                        if (c.length) target = c[0];
-                    }
-                    if (!target) return;
+                // 引擎事件（严格用 run_id）
+                const isStart = (name.startsWith('task') || name.startsWith('run')) && name.endsWith('.started');
+                const isFinish = (name.startsWith('task') || name.startsWith('run')) &&
+                    (name.endsWith('.finished') || name.endsWith('.completed') || name.endsWith('.succeeded') || name.endsWith('.failed'));
 
-                    const ok = String(p.final_status || '').toUpperCase() === 'SUCCESS';
-                    const finishedAt = toMs(p.end_time) || Date.now();
-
-                    // ✅ 先 resolve，再改状态/移除 —— 保证 Promise 一定被释放
-                    const resolver = target._awaiting;
-                    const timer = target._awaitingTimer;
-                    if (timer) clearTimeout(timer);
-                    if (resolver) {
-                        target._awaiting = null;
-                        resolver();
-                    }
-
-                    if (ok) {
-                        pushHistory({
-                            ...target,
-                            status: 'success',
-                            run_id: p.run_id || target.run_id || null,
-                            finishedAt
-                        });
-                        removeTask(target.id); // 成功：从 Staging 移除
-                    } else {
-                        updateTask(target.id, {status: 'error'}); // 失败：留在 Staging 方便重试
-                    }
-                }
+                if (isStart) return onStarted(p);
+                if (isFinish) return onFinished(p);
             });
 
-            // Auto：有新 pending 且空闲时自动启动
+            // Auto：始终保持“可执行项被选中”，空闲时自动推进
             watch([autoMode, items], () => {
-                if (autoMode.value && !running.value) {
-                    const hasPending = items.value.some(x => !x.toDispatch && (x.status === 'pending' || !x.status));
-                    if (hasPending) processAutoIfIdle();
+                if (autoMode.value) {
+                    batchUpdate(it => {
+                        const s = (it.status || 'pending').toLowerCase();
+                        if (!it.toDispatch && (s==='pending' || !it.status)) {
+                            it.toDispatch = true;
+                            it.status = 'pending';
+                            if (it.gui_status === GUI_STATUS.IDLE) {
+                                it.gui_status = GUI_STATUS.SELECTED;
+                                it.selectedAt = it.selectedAt || Date.now();
+                            }
+                        }
+                    });
+                    if (!running.value) processAutoIfIdle();
                 }
-            }, {deep: true});
+            }, { deep: true });
         });
     }
 
     bootOnce();
 
-    return {running, autoMode, currentId, startBatch, pause, setAuto, forceStop, batchId};
+    return {
+        running, autoMode, currentId, batchEpoch,
+        startBatch, pause, setAuto, forceStop,
+    };
 }

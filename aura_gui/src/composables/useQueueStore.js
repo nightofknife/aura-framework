@@ -9,11 +9,16 @@ function keyOf(p) {
     return `${p.plan_name || ''}/${p.task_name || ''}:${t}`;
 }
 
+// src/composables/useQueueStore.js
 function normalizeItem(p) {
     const it = {...p};
     it.__key = keyOf(p);
+    // 新增：入队时就确定一个初始状态（用于 UI 展示）
+    it.status = p.status
+        || (p.delay_until ? 'DELAYED' : 'READY');
     return it;
 }
+
 
 const overview = ref({});
 const ready = ref([]);
@@ -57,7 +62,7 @@ function ingest(evt) {
     if (!evt || !evt.name) return;
     const p = evt.payload || {};
 
-    // batch 合并
+    // 批合并
     if (evt.name === 'queue.batch' && Array.isArray(p.events)) {
         p.events.forEach(e => ingest(e));
         return;
@@ -65,28 +70,39 @@ function ingest(evt) {
 
     if (evt.name === 'queue.enqueued') {
         const it = normalizeItem(p);
+        it.status = it.delay_until ? 'DELAYED' : 'READY';
         if (p.delay_until) upsert(delayed, it);
         else upsert(ready, it);
+
     } else if (evt.name === 'queue.promoted') {
         const k = keyOf(p);
         removeByKey(delayed, k);
-        upsert(ready, normalizeItem(p));
+        const it = normalizeItem(p);
+        it.status = 'READY';
+        upsert(ready, it);
+
     } else if (evt.name === 'queue.dequeued') {
         const k = keyOf(p);
+        // 可选：瞬时展示一下 DEQUEUED 再移除（UI 复杂度会高一点）
         removeByKey(ready, k);
+
     } else if (evt.name === 'queue.requeued') {
-        upsert(ready, normalizeItem(p));
+        const it = normalizeItem(p);
+        it.status = 'READY';
+        upsert(ready, it);
+
     } else if (evt.name === 'queue.dropped') {
         const k = keyOf(p);
         removeByKey(ready, k);
         removeByKey(delayed, k);
-    }
-    // 任务开始也可以认为 ready -> dequeue
-    else if (evt.name === 'task.started') {
+
+    } else if (evt.name === 'task.started') {
+        // 任务真正开始执行时，从 Ready 移除即可；如需，也可以标记 RUNNING 然后在 UI 的“运行中”区显示
         const k = keyOf(p);
         removeByKey(ready, k);
     }
 }
+
 
 export function useQueueStore() {
     return {overview, ready, delayed, fetchOverview, fetchList, ingest};

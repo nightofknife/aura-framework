@@ -1,52 +1,52 @@
 <template>
-  <div class="panel">
+  <div class="panel glass glass-thick glass-refract glass-shimmer">
     <div class="panel-header">
       <strong>Dashboard</strong>
-      <div style="color:var(--text-3); font-size:13px;">Current engine & queue health</div>
+      <div style="color:var(--text-3); font-size:13px;">Current engine &amp; queue health</div>
     </div>
 
     <div class="panel-body">
       <!-- KPI -->
       <div class="kpi">
-        <div class="card">
+        <div class="card glass glass-thin glass-shimmer" v-tilt>
           <div class="title">Active Runs</div>
           <div class="num">{{ activeCount }}</div>
         </div>
-        <div class="card">
+        <div class="card glass glass-thin glass-shimmer" v-tilt>
           <div class="title">Today Throughput</div>
           <div class="num">{{ todayCount }}</div>
         </div>
-        <div class="card">
+        <div class="card glass glass-thin glass-shimmer" v-tilt>
           <div class="title">Success Rate (24h)</div>
           <div class="num">{{ successRate24h }}</div>
         </div>
-        <div class="card">
+        <div class="card glass glass-thin glass-shimmer" v-tilt>
           <div class="title">P95 Duration (24h)</div>
           <div class="num">{{ p95Duration }}</div>
         </div>
       </div>
 
       <div class="kpi" style="margin-top:12px;">
-        <div class="card">
+        <div class="card glass glass-thin glass-shimmer" v-tilt>
           <div class="title">Queue Ready</div>
           <div class="num">{{ overview?.ready ?? '—' }}</div>
         </div>
-        <div class="card">
+        <div class="card glass glass-thin glass-shimmer" v-tilt>
           <div class="title">Queue Delayed</div>
           <div class="num">{{ overview?.delayed ?? '—' }}</div>
         </div>
-        <div class="card">
+        <div class="card glass glass-thin glass-shimmer" v-tilt>
           <div class="title">Avg Wait (est)</div>
           <div class="num">{{ avgWait }}</div>
         </div>
-        <div class="card">
+        <div class="card glass glass-thin glass-shimmer" v-tilt>
           <div class="title">Engine</div>
           <div class="num"><span class="dot" :class="isConnected ? 'ok':'bad'"></span></div>
         </div>
       </div>
 
       <!-- Recent Activity -->
-      <div class="panel" style="margin-top:12px;">
+      <div class="panel glass glass-thick glass-refract glass-shimmer" style="margin-top:12px;">
         <div class="panel-header">
           <strong>Recent Activity</strong>
           <div style="color:var(--text-3); font-size:12px;">Last {{ recentShown.length }} runs</div>
@@ -82,20 +82,19 @@
         </div>
       </div>
 
-      <!-- (Optional) Trend placeholder -->
-      <div class="panel" style="margin-top:12px;">
+      <!-- Trends -->
+      <div class="panel glass glass-thick glass-refract glass-shimmer" style="margin-top:12px;">
         <div class="panel-header">
           <strong>Trends (24h)</strong>
           <div style="color:var(--text-3); font-size:12px;">Placeholder — hook your chart lib later</div>
         </div>
         <div class="panel-body">
           <div
-              style="height:160px; background:#F9FAFB; border:1px dashed var(--border); border-radius:12px; display:flex; align-items:center; justify-content:center; color:var(--text-3);">
+              style="height:160px; border:1px dashed var(--border-frosted); border-radius:12px; display:flex; align-items:center; justify-content:center; color:var(--text-3);">
             Add charts here when ready
           </div>
         </div>
       </div>
-
     </div>
   </div>
 </template>
@@ -110,14 +109,11 @@ const {isConnected} = useAuraSocket();
 const {activeRuns, recentRuns} = useRuns();
 const {overview, fetchOverview} = useQueueStore();
 
-onMounted(() => {
-  fetchOverview?.();
-});
+onMounted(() => { fetchOverview?.(); });
 
 const activeCount = computed(() => activeRuns.value.length);
 const todayCount = computed(() => {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
+  const start = new Date(); start.setHours(0, 0, 0, 0);
   return recentRuns.value.filter(r => r.finishedAt && r.finishedAt >= start.getTime()).length;
 });
 const successRate24h = computed(() => {
@@ -137,12 +133,9 @@ const p95Duration = computed(() => {
   const idx = Math.min(durs.length - 1, Math.floor(durs.length * 0.95));
   return humanMs(durs[idx]);
 });
-const avgWait = computed(() => '—'); // 没有后端等待时长数据时就先占位
+const avgWait = computed(() => '—');
 
-const recentShown = computed(() => {
-  // 取最近 30 条
-  return recentRuns.value.slice(0, 30);
-});
+const recentShown = computed(() => recentRuns.value.slice(0, 30));
 
 function statusClass(s) {
   s = (s || 'queued').toLowerCase();
@@ -151,24 +144,19 @@ function statusClass(s) {
   if (s === 'error' || s === 'failed') return 'pill-red';
   return 'pill-gray';
 }
-
-function pad(n) {
-  return String(n).padStart(2, '0');
-}
-
-function fmt(ts) {
-  if (!ts) return '—';
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function duration(a, b) {
-  if (!a || !b) return '—';
-  return humanMs(b - a);
-}
-
-function humanMs(ms) {
-  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  return h ? `${h}h ${m}m ${sec}s` : (m ? `${m}m ${sec}s` : `${sec}s`);
-}
+function pad(n){ return String(n).padStart(2,'0'); }
+function fmt(ts){ if(!ts) return '—'; const d=new Date(ts); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; }
+function duration(a,b){ if(!a||!b) return '—'; return humanMs(b-a); }
+function humanMs(ms){ const s=Math.floor(ms/1000), h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60; return h?`${h}h ${m}m ${sec}s`:(m?`${m}m ${sec}s`:`${sec}s`); }
 </script>
+
+<style scoped>
+.kpi {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.card { padding: 14px; border-radius: var(--radius-lg); }
+.card .title { color: var(--text-secondary); font-size: 12px; }
+.card .num { font-size: 24px; font-weight: 700; margin-top: 4px; }
+</style>

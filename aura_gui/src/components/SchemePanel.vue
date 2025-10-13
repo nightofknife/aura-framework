@@ -1,6 +1,5 @@
-<!-- === src/components/SchemePanel.vue === -->
 <template>
-  <div class="scheme-panel">
+  <div class="scheme-panel glass glass-thick glass-refract glass-shimmer glass-clear">
     <button class="scheme-head" @click="toggle" :aria-expanded="openLocal ? 'true' : 'false'">
       <div class="title">
         <span class="chev" :class="{ open: openLocal }" aria-hidden="true">▸</span>
@@ -43,9 +42,9 @@ function toggle() {
 // 高度过渡动画
 function onEnter(el) {
   el.style.height = 'auto';
-  const height = getComputedStyle(el).height;
+  const h = getComputedStyle(el).height;
   el.style.height = '0';
-  requestAnimationFrame(() => { el.style.height = height; });
+  requestAnimationFrame(() => { el.style.height = h; });
 }
 function onAfterEnter(el) { el.style.height = 'auto'; }
 function onLeave(el) {
@@ -55,28 +54,18 @@ function onLeave(el) {
 </script>
 
 <style scoped>
-.scheme-panel {
-  backdrop-filter: blur(12px);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-frosted);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-panel);
-  transition: all var(--dur) var(--ease);
-}
-.scheme-panel:hover {
-  border-color: var(--primary-accent);
-  box-shadow: var(--shadow-glow), var(--shadow-panel);
-}
+/* 玻璃质感来自全局 .glass 类，这里只保留排版与交互 */
+.scheme-panel { transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease); }
+
 .scheme-head {
-  width: 100%; display: flex; gap: 12px; align-items: center;
-  padding: 12px 16px; cursor: pointer; background: transparent; border: none; text-align: left;
+  width: 100%;
+  display: flex; gap: 12px; align-items: center;
+  padding: 12px 16px;
+  cursor: pointer; background: transparent; border: none; text-align: left;
   color: var(--text-primary);
 }
 .title { display: flex; gap: 8px; align-items: center; }
-.chev {
-  width: 14px; display: inline-block; color: var(--text-secondary);
-  transition: transform var(--dur) var(--ease);
-}
+.chev { width: 14px; display: inline-block; color: var(--text-secondary); transition: transform var(--dur) var(--ease); }
 .chev.open { transform: rotate(90deg); }
 .desc { color: var(--text-secondary); font-size: 12px; flex: 1; margin-left: 8px; }
 .actions { display: flex; gap: 6px; }
@@ -88,4 +77,3 @@ function onLeave(el) {
   transition: height var(--dur) var(--ease);
 }
 </style>
-<!-- === END src/components/SchemePanel.vue === -->

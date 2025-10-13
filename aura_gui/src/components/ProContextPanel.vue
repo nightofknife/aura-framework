@@ -7,7 +7,7 @@
     <Transition name="drawer-slide" @after-leave="$emit('closed')">
       <aside
           v-if="openLocal"
-          class="aether-drawer"
+          class="aether-drawer glass glass-thick glass-refract glass-shimmer"
           :style="{ width }"
           role="dialog"
           aria-modal="true"
@@ -23,7 +23,6 @@
         </header>
 
         <div class="drawer-body">
-          <!-- 插槽内容自动继承主题输入样式 -->
           <slot/>
         </div>
       </aside>
@@ -67,27 +66,12 @@ onUnmounted(() => lockScroll(false));
   z-index: 1000;
 }
 
-/* Drawer shell (Aetherium glass) */
+/* Drawer 只保留定位与圆角，玻璃质感由 .glass 类提供 */
 .aether-drawer {
   position: fixed; top: 0; right: 0; height: 100vh;
   display: flex; flex-direction: column;
   z-index: 1001;
-
-  /* 玻璃质感 + 轻发光 */
-  background:
-      radial-gradient(1200px 600px at 100% -10%, rgba(88,101,242,0.14), transparent 60%),
-      linear-gradient(180deg, rgba(255,255,255,0.65), rgba(255,255,255,0.35));
-  border-left: 1px solid var(--border-frosted);
-  backdrop-filter: blur(18px) saturate(1.15);
-  box-shadow: -12px 0 28px rgba(0,0,0,0.08), 0 0 0 1px rgba(255,255,255,0.12) inset;
   border-top-left-radius: 16px; border-bottom-left-radius: 16px;
-}
-
-/* Dark mode override (自动套主题变量，无需 JS) */
-:global(.theme-dark) .aether-drawer {
-  background:
-      radial-gradient(1200px 600px at 100% -10%, rgba(88,101,242,0.18), transparent 60%),
-      linear-gradient(180deg, rgba(18,25,42,0.85), rgba(18,25,42,0.65));
 }
 
 /* Header */

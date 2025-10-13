@@ -243,3 +243,84 @@ pre.json { padding: 12px; border-radius: var(--radius-sm); }
     .btn-primary.pulse, .pill-green.pulse, .pill-blue.pulse { animation: none !important; }
     .reveal { transition: none !important; opacity: 1 !important; transform: none !important; }
 }
+
+
+/* === Aetherium Glass Surfaces Pack === */
+
+/* 设计令牌 */
+:root {
+    --glass-blur: 18px;
+    --glass-bg-1: rgba(255,255,255,0.58);
+    --glass-bg-2: rgba(255,255,255,0.32);
+    --glass-stroke: rgba(255,255,255,0.38);
+    --glass-shadow: 0 10px 28px rgba(30,35,48,0.12);
+    --glass-glow-1: rgba(88,101,242,0.14);
+    --glass-glow-2: rgba(8,217,214,0.12);
+}
+.theme-dark {
+    --glass-blur: 20px;
+    --glass-bg-1: rgba(18,25,42,0.82);
+    --glass-bg-2: rgba(18,25,42,0.54);
+    --glass-stroke: rgba(120,135,170,0.22);
+    --glass-shadow: 0 16px 32px rgba(0,0,0,0.36);
+    --glass-glow-1: rgba(88,101,242,0.18);
+    --glass-glow-2: rgba(8,217,214,0.16);
+}
+
+/* 通用玻璃面板 */
+.glass {
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    background:
+            radial-gradient(1200px 600px at 100% -10%, var(--glass-glow-1), transparent 60%),
+            radial-gradient(600px 260px at -10% 110%, var(--glass-glow-2), transparent 60%),
+            linear-gradient(180deg, var(--glass-bg-1), var(--glass-bg-2));
+    border: 1px solid var(--border-frosted);
+    box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+}
+
+/* 折射边缘（拟物厚度） */
+.glass.glass-refract::before{
+    content:"";
+    position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+    padding:1px;
+    background: conic-gradient(from 180deg at 50% 50%,
+    rgba(255,255,255,.65), rgba(255,255,255,.2), rgba(255,255,255,.65)) border-box;
+    /* 只显示“边框环”的遮罩（有兼容降级） */
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    opacity:.85;
+}
+
+/* 内部高光与厚度阴影（更像玻璃块） */
+.glass::after{
+    content:"";
+    position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+    box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.45),    /* 顶部内高光 */
+            inset 0 -1px 0 rgba(0,0,0,0.08);         /* 底部内暗边 */
+}
+
+/* 交互状态：悬停微发光 */
+.glass.glass-shimmer{ transition: box-shadow .25s var(--ease), transform .25s var(--ease); }
+.glass.glass-shimmer:hover{
+    box-shadow:
+            0 16px 40px rgba(0,0,0,.16),
+            0 0 0 1px rgba(255,255,255,0.10) inset,
+            0 0 40px rgba(88,101,242,0.12);
+    transform: translateY(-2px);
+}
+
+/* 尺寸/圆角预设 */
+.glass-thin { border-radius: 12px; }
+.glass-thick{ border-radius: 18px; }
+
+/* 面板区块内边距（可选工具类） */
+.glass-pad { padding: 16px; }
+
+
