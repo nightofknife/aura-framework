@@ -51,8 +51,17 @@ class ActionRegistry:
         self._actions[action_def.name] = action_def
         logger.debug(f"已定义行为: '{action_def.fqid}' (公开: {action_def.public}, 异步: {action_def.is_async})")
 
-    def get_all_action_definitions(self) -> List[ActionDefinition]: return sorted(list(self._actions.values()),
-                                                                                  key=lambda a: a.fqid)
+    def get_all_action_definitions(self) -> List[ActionDefinition]:
+        return sorted(list(self._actions.values()), key=lambda a: a.fqid)
+
+    def remove_actions_by_plugin(self, plugin_id: str):
+        """移除所有属于特定插件的Action定义。"""
+        actions_to_remove = [name for name, action_def in self._actions.items() if
+                             action_def.plugin.canonical_id == plugin_id]
+        if actions_to_remove:
+            logger.info(f"正在为插件 '{plugin_id}' 移除 {len(actions_to_remove)} 个 Action...")
+            for name in actions_to_remove:
+                del self._actions[name]
 
     def __len__(self) -> int: return len(self._actions)
 

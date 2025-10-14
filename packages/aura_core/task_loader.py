@@ -62,6 +62,8 @@ class TaskLoader:
         logger.warning(f"在方案 '{self.plan_name}' 中找不到任务定义: '{task_name_in_plan}' (尝试路径: {file_path})")
         return None
 
+
+
     def get_all_task_definitions(self) -> Dict[str, Any]:
         # ... (此方法逻辑不变) ...
         all_definitions = {}
@@ -78,3 +80,17 @@ class TaskLoader:
                     all_definitions[task_id] = task_definition
 
         return all_definitions
+
+    def reload_task_file(self, file_path: Path):
+        """
+        重新加载或更新单个任务YAML文件中的定义。
+        核心是清除该文件的缓存，让下一次访问重新加载。
+        """
+        key = hashkey(file_path)
+        if key in self.cache:
+            logger.info(f"[TaskLoader] 清除任务文件缓存: {file_path.name}")
+            del self.cache[key]
+
+        # 预热缓存，立即加载新内容
+        self._load_and_parse_file(file_path)
+        logger.info(f"[TaskLoader] 任务文件已重载: {file_path.name}")
