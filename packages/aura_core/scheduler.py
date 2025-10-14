@@ -9,15 +9,19 @@ from asyncio import TaskGroup
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Any, List, Optional, Callable
-
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 import yaml
+import sys
+import importlib
 
-from packages.aura_core.api import service_registry, ACTION_REGISTRY
 from packages.aura_core.event_bus import EventBus, Event
 from packages.aura_core.state_store_service import StateStoreService
 from packages.aura_core.task_queue import TaskQueue, Tasklet
 from packages.aura_core.logger import logger
 from plans.aura_base.services.config_service import ConfigService
+from packages.aura_core.builder import build_package_from_source, clear_build_cache
+from packages.aura_core.api import ACTION_REGISTRY, service_registry, hook_manager
 from .execution_manager import ExecutionManager
 from .interrupt_service import InterruptService
 from .plan_manager import PlanManager
@@ -28,6 +32,39 @@ from .asynccontext import plan_context
 if TYPE_CHECKING:
     from packages.aura_core.orchestrator import Orchestrator
 
+
+class HotReloadHandler(FileSystemEventHandler):
+    """一个响应式处理器，用于监控文件变动并触发重载。"""
+
+    def __init__(self, scheduler: 'Scheduler'):
+        self.scheduler = scheduler
+        # 获取主事件循环，以便在 watchdog 线程中安全地调度任务
+        self.loop = scheduler._loop  # 假设 scheduler._loop 在启动后可用
+
+    def on_modified(self, event):
+        if not self.loop or not self.loop.is_running():
+            logger.warning("事件循环不可用，跳过热重载。")
+            return
+
+        if event.is_directory:
+            return
+
+        file_path = Path(event.src_path)
+        if file_path.name.startswith('.') or '__pycache__' in file_path.parts:
+            return
+
+        if file_path.suffix == '.yaml' and 'tasks' in file_path.parts:
+            logger.info(f"[Hot Reload] 检测到任务文件变动: {file_path.name}")
+            asyncio.run_coroutine_threadsafe(
+                self.scheduler.reload_task_file(file_path),
+                self.loop
+            )
+        elif file_path.suffix == '.py':
+            logger.info(f"[Hot Reload] 检测到Python代码变动: {file_path.name}")
+            asyncio.run_coroutine_threadsafe(
+                self.scheduler.reload_plugin_from_py_file(file_path),
+                self.loop
+            )
 
 class Scheduler:
     def __init__(self):
@@ -1237,3 +1274,120 @@ class Scheduler:
         if not orchestrator:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
         return await orchestrator.delete_path(relative_path)
+
+    async def reload_all(self):
+        """
+        执行一次完整的、破坏性的全量重载。
+        """
+        logger.warning("======= 开始执行全量重载 =======")
+        async with self.get_async_lock():
+            if self.running_tasks:
+                active_tasks = list(self.running_tasks.keys())
+                msg = f"Cannot reload: {len(active_tasks)} tasks are running: {active_tasks}"
+                logger.error(msg)
+                return {"status": "error", "message": msg}
+
+            try:
+                # 1. 清理所有注册表和缓存
+                logger.info("--> 正在清理注册表和缓存...")
+                ACTION_REGISTRY.clear()
+                service_registry.clear()
+                hook_manager.clear()
+                clear_build_cache()
+
+                # 2. 调用现有的 reload_plans 方法，它会重新初始化所有东西
+                logger.info("--> 正在重新加载所有 Plans...")
+                # reload_plans 是同步的，但在异步锁下调用是安全的
+                self.reload_plans()
+
+                logger.info("======= 全量重载成功 =======")
+                return {"status": "success", "message": "Full reload completed successfully."}
+            except Exception as e:
+                logger.critical(f"全量重载期间发生严重错误: {e}", exc_info=True)
+                return {"status": "error", "message": f"A critical error occurred during reload: {e}"}
+
+    # --- 变动重载 (热重载) ---
+    def enable_hot_reload(self):
+        """启用文件系统监控以实现自动热重载。"""
+        if not self._loop or not self._loop.is_running():
+            return {"status": "error", "message": "Scheduler is not running, cannot enable hot reload."}
+
+        if self._hot_reload_observer and self._hot_reload_observer.is_alive():
+            return {"status": "already_enabled", "message": "Hot reloading is already active."}
+
+        logger.info("正在启用热重载功能...")
+        event_handler = HotReloadHandler(self)
+        self._hot_reload_observer = Observer()
+        plans_path = str(self.base_path / 'plans')
+        self._hot_reload_observer.schedule(event_handler, plans_path, recursive=True)
+        self._hot_reload_observer.start()
+        logger.info(f"热重载已启动，正在监控目录: {plans_path}")
+        return {"status": "enabled", "message": "Hot reloading has been enabled."}
+
+    def disable_hot_reload(self):
+        """禁用文件系统监控。"""
+        if self._hot_reload_observer and self._hot_reload_observer.is_alive():
+            logger.info("正在禁用热重载功能...")
+            self._hot_reload_observer.stop()
+            self._hot_reload_observer.join()
+            self._hot_reload_observer = None
+            logger.info("热重载已禁用。")
+            return {"status": "disabled", "message": "Hot reloading has been disabled."}
+
+        return {"status": "not_active", "message": "Hot reloading was not active."}
+
+    async def reload_task_file(self, file_path: Path):
+        """热重载单个任务文件。"""
+        async with self.get_async_lock():
+            try:
+                plan_name = file_path.relative_to(self.base_path / 'plans').parts[0]
+                orchestrator = self.plan_manager.get_plan(plan_name)
+                if orchestrator:
+                    # 1. 让 TaskLoader 清除缓存并重载文件
+                    orchestrator.task_loader.reload_task_file(file_path)
+                    # 2. 重新同步 Scheduler 的主任务定义列表
+                    self._load_all_tasks_definitions()
+                    logger.info(f"任务文件 '{file_path.name}' 在方案 '{plan_name}' 中已成功热重载。")
+                else:
+                    logger.error(f"热重载失败：找不到与文件 '{file_path.name}' 关联的方案 '{plan_name}'。")
+            except Exception as e:
+                logger.error(f"热重载任务文件 '{file_path.name}' 时出错: {e}", exc_info=True)
+
+    async def reload_plugin_from_py_file(self, file_path: Path):
+        """根据变动的 Python 文件热重载其所属的整个插件。"""
+        async with self.get_async_lock():
+            try:
+                plan_name = file_path.relative_to(self.base_path / 'plans').parts[0]
+                plugin_def = self.plan_manager.plugin_manager.plugin_registry.get(plan_name)
+                if not plugin_def:
+                    logger.error(f"热重载失败：找不到与文件 '{file_path.name}' 关联的插件 '{plan_name}'。")
+                    return
+
+                plugin_id = plugin_def.canonical_id
+
+                if any(task_id.startswith(f"{plugin_id}/") for task_id in self.running_tasks):
+                    logger.warning(f"跳过热重载：插件 '{plugin_id}' 有任务正在运行。")
+                    return
+
+                logger.info(f"开始热重载插件: '{plugin_id}'...")
+
+                ACTION_REGISTRY.remove_actions_by_plugin(plugin_id)
+                service_registry.remove_services_by_prefix(f"{plugin_id}/")
+
+                module_prefix = ".".join(plugin_def.path.relative_to(self.base_path).parts)
+                modules_to_remove = [name for name in sys.modules if name.startswith(module_prefix)]
+                if modules_to_remove:
+                    logger.debug(
+                        f"--> 从 sys.modules 中移除 {len(modules_to_remove)} 个模块 (前缀: {module_prefix})...")
+                    for mod_name in modules_to_remove:
+                        del sys.modules[mod_name]
+
+                clear_build_cache()
+                build_package_from_source(plugin_def)
+
+                # 重新同步所有定义，因为服务可能影响其他计划
+                self._load_plan_specific_data()
+                logger.info(f"插件 '{plugin_id}' 已成功热重载。")
+
+            except Exception as e:
+                logger.error(f"热重载插件 '{plan_name}' 时出错: {e}", exc_info=True)

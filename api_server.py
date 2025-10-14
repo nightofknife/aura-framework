@@ -344,3 +344,30 @@ def api_run_timeline(run_id: str):
         raise HTTPException(status_code=404, detail=f"run_id '{run_id}' not found.")
     # Pydantic 会自动校验/转换
     return data
+
+
+@app.post("/api/system/reload", tags=["System"])
+async def system_reload():
+    """
+    执行一次完整的全量重载。
+    会清空所有注册表和定义并重新加载所有插件。
+    警告：这是一个破坏性操作，仅当没有任务在运行时才能成功。
+    """
+    result = await scheduler.reload_all()
+    if result.get("status") == "error":
+        raise HTTPException(status_code=409, detail=result.get("message")) # 409 Conflict
+    return result
+
+@app.post("/api/system/hot_reload/enable", tags=["System"])
+def enable_hot_reload():
+    """启用基于文件监控的自动热重载功能。"""
+    result = scheduler.enable_hot_reload()
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result
+
+@app.post("/api/system/hot_reload/disable", tags=["System"])
+def disable_hot_reload():
+    """禁用自动热重载功能。"""
+    result = scheduler.disable_hot_reload()
+    return result

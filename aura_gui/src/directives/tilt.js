@@ -25,6 +25,7 @@ export default {
         el.addEventListener('mousemove', onMove);
         el.addEventListener('mouseleave', onLeave);
     },
+
     unmounted(el) {
         el.removeEventListener('mousemove', el.__tiltMove);
         el.removeEventListener('mouseleave', el.__tiltLeave);
