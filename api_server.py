@@ -114,9 +114,10 @@ async def startup_event():
         callback=event_bus_listener,
         channel='*',
         loop=current_loop,
-        persistent = True,
+        persistent=True,
     )
     logger.info("Aura API server started. WebSocket listeners are active.")
+
 
 # --- 5. Pydantic API 模型 ---
 # 使用Pydantic模型能让FastAPI自动进行数据验证和生成API文档，非常强大。
@@ -155,13 +156,16 @@ class AdHocTaskResponse(BaseModel):
 class ActiveRunResponse(BaseModel):
     task_id: str
 
+
 class QueuePlanCount(BaseModel):
     plan: str
     count: int
 
+
 class QueuePriorityCount(BaseModel):
     priority: int
     count: int
+
 
 class QueueOverviewResponse(BaseModel):
     ready_length: int
@@ -173,6 +177,7 @@ class QueueOverviewResponse(BaseModel):
     oldest_age_sec: float
     throughput: Dict[str, int]  # e.g. {"m5":0,"m15":0,"m60":0}
 
+
 class QueueItem(BaseModel):
     run_id: str | None = None
     plan_name: str | None = None
@@ -182,15 +187,18 @@ class QueueItem(BaseModel):
     delay_until: float | None = None
     __key: str | None = None
 
+
 class QueueListResponse(BaseModel):
     items: List[QueueItem]
     next_cursor: str | None = None
+
 
 class TimelineNode(BaseModel):
     node_id: str
     startMs: int | None = None
     endMs: int | None = None
     status: str | None = None
+
 
 class RunTimelineResponse(BaseModel):
     run_id: str
@@ -200,7 +208,6 @@ class RunTimelineResponse(BaseModel):
     finished_at: int | None = None
     status: str | None = None
     nodes: List[TimelineNode] = Field(default_factory=list)
-
 
 
 # --- 6. WebSocket Endpoint ---
@@ -294,6 +301,7 @@ async def get_active_runs():
         active_task_ids = list(scheduler.running_tasks.keys())
     return [{"task_id": task_id} for task_id in active_task_ids]
 
+
 # --- Queue Overview ---
 @app.get("/api/queue/overview", response_model=QueueOverviewResponse, tags=["Observability"])
 def api_queue_overview():
@@ -307,8 +315,9 @@ def api_queue_overview():
             ready_length=0, delayed_length=0,
             by_plan=[], by_priority=[],
             avg_wait_sec=0.0, p95_wait_sec=0.0, oldest_age_sec=0.0,
-            throughput={'m5':0,'m15':0,'m60':0}
+            throughput={'m5': 0, 'm15': 0, 'm60': 0}
         )
+
 
 # --- Queue List ---
 @app.get("/api/queue/list", response_model=QueueListResponse, tags=["Observability"])
@@ -317,7 +326,7 @@ def api_queue_list(state: str, limit: int = 200):
     state: 'ready' | 'delayed'
     """
     state = (state or 'ready').lower()
-    if state not in ('ready','delayed'):
+    if state not in ('ready', 'delayed'):
         raise HTTPException(status_code=400, detail="state must be 'ready' or 'delayed'")
     try:
         data = scheduler.list_queue(state=state, limit=limit)
@@ -325,6 +334,7 @@ def api_queue_list(state: str, limit: int = 200):
     except Exception as e:
         logging.exception("queue list failed")
         return QueueListResponse(items=[], next_cursor=None)
+
 
 # --- Run Timeline ---
 @app.get("/api/run/{run_id}/timeline", response_model=RunTimelineResponse, tags=["Observability"])
