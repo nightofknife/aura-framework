@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""Aura 框架的时间基准调度服务。
+
+此模块定义了 `SchedulingService`，它像一个“闹钟”一样工作。
+它作为一个独立的后台异步任务运行，其核心职责是定期（每分钟）检查
+所有在 `schedule.yaml` 文件中定义的、基于时间的计划任务。
+"""
 import asyncio
 from datetime import datetime
 
@@ -5,21 +12,30 @@ from croniter import croniter
 
 from packages.aura_core.task_queue import Tasklet
 from packages.aura_core.logger import logger
-from plans.aura_base.services.config_service import current_plan_name
 from .asynccontext import plan_context
 
 class SchedulingService:
-    """
-    【Async Refactor】异步的时间基准调度服务 (闹钟)。
-    作为一个独立的后台异步任务运行，定期检查并提交到期的任务。
+    """异步的时间基准调度服务。
+
+    作为一个独立的后台异步任务运行，定期检查所有已启用的、基于时间的
+    计划任务，并将到期的任务提交到主任务队列中。
     """
 
     def __init__(self, scheduler):
+        """初始化调度服务。
+
+        Args:
+            scheduler: 调度器主实例的引用。
+        """
         self.scheduler = scheduler
         self.is_running = asyncio.Event()
 
     async def run(self):
-        """服务的主循环，每分钟检查一次所有定时任务。"""
+        """服务的主循环，每分钟检查一次所有定时任务。
+
+        此方法会无限循环，直到被取消。为了提高调度的准确性，它会计算
+        并等待到下一分钟的零秒时刻再执行检查。
+        """
         logger.info("时间基准调度服务 (SchedulingService) 正在启动...")
         self.is_running.set()
         try:
@@ -27,7 +43,6 @@ class SchedulingService:
                 if self.scheduler.is_running.is_set():
                     await self._check_and_enqueue_tasks(datetime.now())
 
-                # 等待直到下一分钟的开始，以提高准确性
                 now = datetime.now()
                 await asyncio.sleep(60 - now.second)
         except asyncio.CancelledError:
@@ -36,8 +51,8 @@ class SchedulingService:
             self.is_running.clear()
 
     async def _check_and_enqueue_tasks(self, now: datetime):
-        """检查所有调度项，并将到期的任务异步加入主任务队列。"""
-        async with self.scheduler.get_async_lock():  # 【修改】替换 with self.scheduler.shared_data_lock 为异步锁
+        """(私有) 检查所有调度项，并将到期的任务异步加入主任务队列。"""
+        async with self.scheduler.get_async_lock():
             schedule_items_copy = list(self.scheduler.schedule_items)
 
         for item in schedule_items_copy:
@@ -47,10 +62,9 @@ class SchedulingService:
             if not item_id or not plan_name or not item.get('enabled', False):
                 continue
 
-            # 【确认】用 async with plan_context 包裹整个检查
             async with plan_context(plan_name):
                 try:
-                    async with self.scheduler.get_async_lock():  # 【修改】替换 with shared_data_lock
+                    async with self.scheduler.get_async_lock():
                         status = self.scheduler.run_statuses.get(item_id, {})
                         if status.get('status') in ['queued', 'running']:
                             continue
@@ -68,18 +82,29 @@ class SchedulingService:
                         )
                         await self.scheduler.task_queue.put(tasklet)
 
-                        async with self.scheduler.get_async_lock():  # 【修改】替换最后 with shared_data_lock
+                        async with self.scheduler.get_async_lock():
                             self.scheduler.run_statuses.setdefault(item_id, {}).update({
                                 'status': 'queued',
                                 'queued_at': now
                             })
                 except Exception as e:
                     logger.error(f"在检查定时任务 '{item_id}' 时发生错误: {e}", exc_info=True)
-                    # 管理器确保 reset，即使异常
 
-    def _is_ready_to_run(self, item, now, status) -> bool:
-        # 这个方法本身不需要修改，但现在它在被调用时，已经处于正确的上下文中了。
-        # 这使得未来在这里添加配置依赖的检查成为可能和安全的。
+    def _is_ready_to_run(self, item: dict, now: datetime, status: dict) -> bool:
+        """(私有) 判断一个计划任务项当前是否应该运行。
+
+        判断逻辑包括：
+        1. 检查是否在冷却期（cooldown）内。
+        2. 解析 cron 表达式，判断是否到达了执行时间点。
+
+        Args:
+            item: 从 `schedule.yaml` 解析出的任务项字典。
+            now: 当前时间。
+            status: 该任务项的当前运行状态字典。
+
+        Returns:
+            bool: 如果应该运行则返回 True，否则返回 False。
+        """
         item_id = item['id']
         cooldown = item.get('run_options', {}).get('cooldown', 0)
         last_run = status.get('last_run')
@@ -94,7 +119,6 @@ class SchedulingService:
             if not schedule:
                 return False
             try:
-                # croniter 检查逻辑保持不变
                 iterator = croniter(schedule, now)
                 prev_scheduled_run = iterator.get_prev(datetime)
                 effective_last_run = last_run or datetime.min
@@ -102,11 +126,5 @@ class SchedulingService:
                     return True
             except Exception as e:
                 logger.error(f"任务 '{item_id}' 的 cron 表达式 '{schedule}' 无效: {e}")
-
-        # 在这里可以安全地添加其他 trigger_type 的检查，例如：
-        # elif trigger_type == 'condition_based':
-        #     orchestrator = self.scheduler.plans.get(item['plan_name'])
-        #     if orchestrator and await orchestrator.perform_condition_check(...):
-        #         return True
 
         return False

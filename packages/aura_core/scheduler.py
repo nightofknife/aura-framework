@@ -1,6 +1,23 @@
-# packages/aura_core/scheduler.py (REPLACED & FIXED)
+# -*- coding: utf-8 -*-
+"""Aura 框架的核心调度器。
+
+此模块定义了 `Scheduler` 类，它是整个 Aura 框架的“大脑”和主入口点。
+`Scheduler` 负责初始化和协调所有核心服务，管理主事件循环，处理任务的
+入队和执行，并提供一个统一的外部 API 来与框架交互。
+
+主要职责:
+- **生命周期管理**: 启动和停止主事件循环以及所有相关的后台服务。
+- **服务协调**: 初始化并持有对所有核心服务（如 `PlanManager`,
+  `ExecutionManager`, `EventBus` 等）的引用。
+- **资源加载**: 协调 `PlanManager` 加载所有插件、任务、配置、调度项和中断规则。
+- **任务队列**: 管理主任务队列、事件驱动任务队列和中断队列。
+- **主循环与消费者**: 运行多个异步消费者来处理不同队列中的任务。
+- **状态查询 API**: 提供一系列线程安全的方法来查询框架的内部状态，如
+  运行状态、计划任务、服务和中断等。
+- **热重载**: 实现 `HotReloadHandler` 来监控文件系统变动，并触发对
+  任务或整个插件的实时、动态重载。
+"""
 import asyncio
-import logging
 import queue
 import threading
 import time
@@ -13,7 +30,6 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import yaml
 import sys
-import importlib
 
 from packages.aura_core.event_bus import EventBus, Event
 from packages.aura_core.state_store_service import StateStoreService
@@ -26,22 +42,21 @@ from .execution_manager import ExecutionManager
 from .interrupt_service import InterruptService
 from .plan_manager import PlanManager
 from .scheduling_service import SchedulingService
-from .state_planner import StatePlanner
-from .asynccontext import plan_context
 
 if TYPE_CHECKING:
     from packages.aura_core.orchestrator import Orchestrator
 
 
 class HotReloadHandler(FileSystemEventHandler):
-    """一个响应式处理器，用于监控文件变动并触发重载。"""
+    """一个响应式的文件系统事件处理器，用于监控文件变动并触发相应的热重载。"""
 
     def __init__(self, scheduler: 'Scheduler'):
+        """初始化热重载处理器。"""
         self.scheduler = scheduler
-        # 获取主事件循环，以便在 watchdog 线程中安全地调度任务
-        self.loop = scheduler._loop  # 假设 scheduler._loop 在启动后可用
+        self.loop = scheduler._loop
 
     def on_modified(self, event):
+        """当文件被修改时调用此方法。"""
         if not self.loop or not self.loop.is_running():
             logger.warning("事件循环不可用，跳过热重载。")
             return
@@ -67,7 +82,12 @@ class HotReloadHandler(FileSystemEventHandler):
             )
 
 class Scheduler:
+    """Aura 框架的核心调度器和总协调器。"""
     def __init__(self):
+        """初始化 Scheduler 实例。
+
+        此构造函数会初始化所有核心服务和状态属性，并执行首次的资源加载。
+        """
         # --- 核心属性与状态 (非异步部分) ---
         self.base_path = Path(__file__).resolve().parents[2]
         self._main_task: Optional[asyncio.Task] = None
@@ -77,8 +97,6 @@ class Scheduler:
         self.startup_complete_event = threading.Event()
         self._pre_start_task_buffer: List[Tasklet] = []
         self.fallback_lock = threading.RLock()
-
-        # 提前创建 pause_event（若未来出现 loop 绑定错误，可移动到 _initialize_async_components）
         self.pause_event = asyncio.Event()
 
         # --- 异步组件 (运行时初始化) ---
@@ -88,7 +106,6 @@ class Scheduler:
         self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
         self.async_data_lock: Optional[asyncio.Lock] = None
 
-        # 用线程安全队列接 API 日志
         self.api_log_queue: queue.Queue = queue.Queue(maxsize=500)
 
         # --- 服务实例 ---
@@ -103,9 +120,7 @@ class Scheduler:
         # --- 运行/调度状态 ---
         self.run_statuses: Dict[str, Dict[str, Any]] = {}
         self.running_tasks: Dict[str, asyncio.Task] = {}
-
-        self.max_concurrency: int = 1 # 1 = 顺序执行；日后想并发跑，调大即可
-
+        self.max_concurrency: int = 1
         self.schedule_items: List[Dict[str, Any]] = []
         self.interrupt_definitions: Dict[str, Dict[str, Any]] = {}
         self.user_enabled_globals: set[str] = set()
@@ -113,7 +128,7 @@ class Scheduler:
         self.ui_event_queue = queue.Queue(maxsize=200)
         self.ui_update_queue: Optional[queue.Queue] = None
 
-        # --- Observability in-memory indexes (NEW) ---
+        # --- 可观测性内存索引 ---
         self._obs_runs: Dict[str, Dict[str, Any]] = {}
         self._obs_ready: Dict[str, Dict[str, Any]] = {}
         self._obs_delayed: Dict[str, Dict[str, Any]] = {}
@@ -139,10 +154,8 @@ class Scheduler:
         self._register_core_services()
         self.reload_plans()
 
-    # ------------------------------------------------------------------------------
-    # 初始化/锁
-    # ------------------------------------------------------------------------------
     def _initialize_async_components(self):
+        """(私有) 在事件循环内部初始化所有需要事件循环的组件。"""
         logger.debug("Scheduler: 正在事件循环内初始化/重置异步组件...")
         self.is_running = asyncio.Event()
         if self.async_data_lock is None:
@@ -153,16 +166,14 @@ class Scheduler:
         self.interrupt_queue = asyncio.Queue(maxsize=100)
 
     def get_async_lock(self) -> asyncio.Lock:
-        """
-        始终返回 asyncio.Lock（避免意外返回线程锁导致 async with 崩溃）
-        """
+        """获取一个线程安全的异步锁，用于保护共享状态。"""
         if self.async_data_lock is None:
             self.async_data_lock = asyncio.Lock()
             logger.debug("异步数据锁初始化。")
         return self.async_data_lock
 
-    # 通用异步更新帮助
     async def _async_update_run_status(self, item_id: str, status_update: Dict[str, Any]):
+        """(私有) 异步地更新一个计划任务的运行状态。"""
         async with self.get_async_lock():
             if item_id:
                 self.run_statuses.setdefault(item_id, {}).update(status_update)
@@ -175,6 +186,7 @@ class Scheduler:
                         logger.warning("UI更新队列已满，丢弃消息: run_status_single_update")
 
     async def _async_get_schedule_status(self):
+        """(私有) 异步地获取所有计划任务的状态列表。"""
         async with self.get_async_lock():
             schedule_items_copy = list(self.schedule_items)
             run_statuses_copy = dict(self.run_statuses)
@@ -186,6 +198,7 @@ class Scheduler:
         return status_list
 
     async def _async_update_shared_state(self, update_func: Callable[[], None], read_only: bool = False):
+        """(私有) 在异步锁的保护下执行一个对共享状态的更新操作。"""
         if read_only:
             async with self.get_async_lock():
                 update_func()
@@ -194,20 +207,20 @@ class Scheduler:
                 update_func()
 
     def set_ui_update_queue(self, q: queue.Queue):
+        """设置用于向 UI 发送更新的队列。"""
         self.ui_update_queue = q
         self.execution_manager.set_ui_update_queue(q)
 
     def _push_ui_update(self, msg_type: str, data: Any):
+        """(私有) 向 UI 更新队列中推送一条消息。"""
         if self.ui_update_queue:
             try:
                 self.ui_update_queue.put_nowait({'type': msg_type, 'data': data})
             except queue.Full:
                 logger.warning(f"UI更新队列已满，丢弃消息: {msg_type}")
 
-    # ------------------------------------------------------------------------------
-    # 服务注册/加载
-    # ------------------------------------------------------------------------------
     def _register_core_services(self):
+        """(私有) 向服务注册表注册所有框架核心服务。"""
         from packages.aura_core.builder import set_project_base_path
         set_project_base_path(self.base_path)
 
@@ -225,6 +238,7 @@ class Scheduler:
                                            fqid='core/interrupt_service')
 
     def reload_plans(self):
+        """重新加载所有 Plan 和相关配置。"""
         logger.info("======= Scheduler: 开始加载所有框架资源 =======")
         with self.fallback_lock:
             try:
@@ -251,18 +265,16 @@ class Scheduler:
         logger.info("======= 资源加载完毕 ... =======")
 
     async def _async_reload_subscriptions(self):
+        """(私有) 异步地重新加载所有事件总线的订阅。"""
         await self.event_bus.clear_subscriptions()
         await self.event_bus.subscribe(event_pattern='*', callback=self._mirror_event_to_ui_queue, channel='*')
         await self._subscribe_event_triggers()
-        # --- Observability subscriptions (NEW) ---
         await self.event_bus.subscribe(event_pattern='task.*', callback=self._obs_ingest_event, channel='*')
         await self.event_bus.subscribe(event_pattern='node.*', callback=self._obs_ingest_event, channel='*')
         await self.event_bus.subscribe(event_pattern='queue.*', callback=self._obs_ingest_event, channel='*')
 
-    # ------------------------------------------------------------------------------
-    # 启停/主循环
-    # ------------------------------------------------------------------------------
     def start_scheduler(self):
+        """启动调度器的主事件循环和所有后台服务。"""
         if self._scheduler_thread and self._scheduler_thread.is_alive():
             logger.warning("调度器已经在运行中。")
             return
@@ -275,6 +287,7 @@ class Scheduler:
         self._push_ui_update('master_status_update', {"is_running": True})
 
     def _run_scheduler_in_thread(self):
+        """(私有) 在一个单独的线程中运行主事件循环。"""
         try:
             asyncio.run(self.run())
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -286,6 +299,7 @@ class Scheduler:
             self.startup_complete_event.set()
 
     def stop_scheduler(self):
+        """优雅地停止调度器和所有后台服务。"""
         if not self._scheduler_thread or not self._scheduler_thread.is_alive() or not self._loop:
             logger.warning("调度器已经处于停止状态。")
             return
@@ -306,6 +320,7 @@ class Scheduler:
         self._push_ui_update('master_status_update', {"is_running": False})
 
     async def run(self):
+        """调度器的主异步运行方法，包含了所有后台消费者的逻辑。"""
         self._initialize_async_components()
         self.is_running.set()
         self._loop = asyncio.get_running_loop()
@@ -347,33 +362,21 @@ class Scheduler:
             self.startup_complete_event.set()
 
     async def _consume_main_task_queue(self):
-        """
-        从主任务队列取出 Tasklet 并提交到执行管理器。
-        - 严格控制并发：默认单并发（顺序执行）；如需并发，可把 self.max_concurrency 调大
-         （如果 __init__ 中尚未定义，getattr 会回退为 1）
-        - 每次真正取出任务时，镜像发布 queue.dequeued，便于前端刷新
-        - 任务完成后从 running_tasks 中移除并 task_done()
-        """
-        # 允许通过属性动态调整并发；未设置时默认为 1
+        """(私有) 主任务队列的消费者循环。"""
         max_cc = int(getattr(self, "max_concurrency", 1) or 1)
 
         while True:
             try:
-                # 若达到并发上限，稍等再看
                 if len(self.running_tasks) >= max_cc:
                     await asyncio.sleep(0.2)
                     continue
 
-                # 从队列取一个任务（阻塞直至有任务）
                 tasklet = await self.task_queue.get()
 
-                # —— 可选：发布“出队”事件，方便 UI 侧 Ready 列表立刻减少 ——
                 try:
                     payload = {}
-                    # 尽量从 tasklet 中取到关键信息（不同实现下字段名可能不同，这里做容错）
                     tname = getattr(tasklet, "task_name", None) or getattr(tasklet, "name", None)
                     if tname and isinstance(tname, str):
-                        # 常见命名：plan/task
                         if "/" in tname:
                             plan_name, task_name = tname.split("/", 1)
                         else:
@@ -389,19 +392,15 @@ class Scheduler:
                     })
                     await self.event_bus.publish(Event(name="queue.dequeued", payload=payload))
                 except Exception:
-                    # 出队事件失败不应影响主流程
                     pass
 
-                # 提交执行
                 submit_task = asyncio.create_task(self.execution_manager.submit(tasklet))
 
-                # 用一个可区分的 key 跟踪运行中任务
                 key = getattr(tasklet, "id", None) or getattr(tasklet, "task_name", None)
                 if not key:
                     key = f"task:{int(time.time() * 1000)}"
                 self.running_tasks[key] = submit_task
 
-                # 完成清理：从 running_tasks 移除，并标记队列完成
                 def _cleanup(_fut: asyncio.Task):
                     try:
                         self.running_tasks.pop(key, None)
@@ -414,13 +413,13 @@ class Scheduler:
                 submit_task.add_done_callback(_cleanup)
 
             except asyncio.CancelledError:
-                # 终止消费者循环
                 break
             except Exception:
                 logger.exception("Error consuming main task queue")
                 await asyncio.sleep(0.5)
 
     async def _consume_interrupt_queue(self):
+        """(私有) 中断队列的消费者循环。"""
         while self.is_running.is_set():
             try:
                 handler_rule = await asyncio.wait_for(self.interrupt_queue.get(), timeout=1.0)
@@ -445,6 +444,7 @@ class Scheduler:
                 break
 
     async def _event_worker_loop(self, worker_id: int):
+        """(私有) 事件驱动任务队列的消费者循环。"""
         while self.is_running.is_set():
             try:
                 tasklet = await asyncio.wait_for(self.event_task_queue.get(), timeout=1.0)
@@ -456,14 +456,13 @@ class Scheduler:
                 logger.info(f"事件工作者 #{worker_id} 被取消。")
                 break
 
-    # ------------------------------------------------------------------------------
-    # 计划/任务加载
-    # ------------------------------------------------------------------------------
     @property
     def plans(self) -> Dict[str, 'Orchestrator']:
+        """获取所有已加载 Plan 的 `Orchestrator` 实例字典。"""
         return self.plan_manager.plans
 
     def _load_plan_specific_data(self):
+        """(私有) 加载所有 Plan 特有的数据，如配置、调度项和中断规则。"""
         config_service = service_registry.get_service_instance('config')
 
         def load_core():
@@ -509,6 +508,7 @@ class Scheduler:
                 load_core()
 
     def _load_all_tasks_definitions(self):
+        """(私有) 从所有 Plan 的 `tasks` 目录中加载任务定义。"""
         logger.info("--- 加载所有任务定义 ---")
         self.all_tasks_definitions.clear()
         plans_dir = self.base_path / 'plans'
@@ -535,12 +535,12 @@ class Scheduler:
                                 full_task_id = f"{plan_name}/{base_id}/{task_key}".replace("//", "/")
                                 self.all_tasks_definitions[full_task_id] = task_definition
 
-                    if 'steps' in data:  # Old format
+                    if 'steps' in data:
                         task_name_from_file = task_file_path.relative_to(tasks_dir).with_suffix('').as_posix()
                         data.setdefault('execution_mode', 'sync')
                         full_task_id = f"{plan_name}/{task_name_from_file}"
                         self.all_tasks_definitions[full_task_id] = data
-                    else:  # New format
+                    else:
                         relative_path_str = task_file_path.relative_to(tasks_dir).with_suffix('').as_posix()
                         process_task_definitions(data, relative_path_str)
 
@@ -549,6 +549,7 @@ class Scheduler:
         logger.info(f"任务定义加载完毕，共找到 {len(self.all_tasks_definitions)} 个任务。")
 
     async def _subscribe_event_triggers(self):
+        """(私有) 订阅所有任务定义中声明的事件触发器。"""
         logger.info("--- 订阅事件触发器 ---")
         async with self.get_async_lock():
             subscribed_count = 0
@@ -578,6 +579,7 @@ class Scheduler:
         logger.info(f"事件触发器订阅完成，共 {subscribed_count} 个订阅。")
 
     async def _handle_event_triggered_task(self, event: Event, task_id: str):
+        """(私有) 当事件触发任务时，创建 Tasklet 并放入事件任务队列。"""
         logger.info(f"事件 '{event.name}' (频道: {event.channel}) 触发了任务 '{task_id}'")
         task_def = self.all_tasks_definitions.get(task_id, {})
         tasklet = Tasklet(task_name=task_id, triggering_event=event,
@@ -585,6 +587,7 @@ class Scheduler:
         await self.event_task_queue.put(tasklet)
 
     def _load_schedule_file(self, plan_dir: Path, plan_name: str):
+        """(私有) 从 Plan 的 `schedule.yaml` 文件中加载计划任务项。"""
         schedule_path = plan_dir / "schedule.yaml"
         if schedule_path.exists():
             try:
@@ -598,6 +601,7 @@ class Scheduler:
                 logger.error(f"加载调度文件 '{schedule_path}' 失败: {e}")
 
     def _load_interrupt_file(self, plan_dir: Path, plan_name: str):
+        """(私有) 从 Plan 的 `interrupts.yaml` 文件中加载中断规则。"""
         interrupt_path = plan_dir / "interrupts.yaml"
         if interrupt_path.exists():
             try:
@@ -610,10 +614,8 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"加载中断文件 '{interrupt_path}' 失败: {e}")
 
-    # ------------------------------------------------------------------------------
-    # 对外操作
-    # ------------------------------------------------------------------------------
     def update_run_status(self, item_id: str, status_update: Dict[str, Any]):
+        """线程安全地更新一个计划任务的运行状态。"""
         if self._loop and self._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(self._async_update_run_status(item_id, status_update), self._loop)
             try:
@@ -632,18 +634,10 @@ class Scheduler:
                             logger.warning("UI更新队列已满，丢弃消息: run_status_single_update")
 
     def run_manual_task(self, task_id: str):
-        """
-        将指定 task_id（来自 schedule_items 的一条）加入执行队列（而非立即运行）。
-        - 校验 task 是否存在、inputs 是否齐全（尽力根据定义合并默认值）
-        - 通过 event loop 将 Tasklet 入队：self.task_queue.put(tasklet)
-        - 发布 queue.enqueued，便于前端 Queue 页即时显示
-        返回 { "ok": bool, "message": str }
-        """
-        # 1) 运行状态检查（需要事件循环与 scheduler 已启动）
+        """将一个预定义的计划任务（通过其ID）手动加入执行队列。"""
         if not self.is_running or self._loop is None or not self._loop.is_running():
             return {"ok": False, "message": "Scheduler is not running."}
 
-        # 2) 在 schedule_items 里定位 task
         schedule_item = None
         for it in self.schedule_items:
             if it.get("id") == task_id:
@@ -659,21 +653,16 @@ class Scheduler:
 
         full_task_id = f"{plan_name}/{task_name}"
 
-        # 3) 合成 inputs：task 定义里的默认 + 本次提供的 inputs
-        #    说明：具体结构依你的定义而定，这里做了“尽力而为”的合并
         provided_inputs = schedule_item.get("inputs") or {}
         inputs_spec = {}
         task_def = None
 
-        # 尝试从不同字典中找到 task 定义
         try:
             if hasattr(self, "task_definitions") and isinstance(self.task_definitions, dict):
                 task_def = self.task_definitions.get(full_task_id)
             if task_def is None and hasattr(self, "plan_definitions"):
-                # 可能在 plan_definitions 里嵌套
                 plan_def = self.plan_definitions.get(plan_name) if isinstance(self.plan_definitions, dict) else None
                 if isinstance(plan_def, dict):
-                    # 常见结构：plan_def["tasks"][task_name] 或类似
                     tasks_map = plan_def.get("tasks") or {}
                     task_def = tasks_map.get(task_name)
             if isinstance(task_def, dict):
@@ -681,7 +670,6 @@ class Scheduler:
         except Exception:
             inputs_spec = {}
 
-        # 从 spec 里抽默认值与必填项
         defaults = {}
         required_keys = []
         for key, meta in (inputs_spec.items() if isinstance(inputs_spec, dict) else []):
@@ -693,12 +681,10 @@ class Scheduler:
 
         merged_inputs = {**defaults, **(provided_inputs or {})}
 
-        # 检查必填
         missing = [k for k in required_keys if (merged_inputs.get(k) is None or merged_inputs.get(k) == "")]
         if missing:
             return {"ok": False, "message": f"Missing required inputs: {', '.join(missing)}"}
 
-        # 4) 构造 Tasklet（签名因你的实现而异，这里采用常见参数名）
         try:
             tasklet = Tasklet(
                 task_name=full_task_id,
@@ -712,7 +698,6 @@ class Scheduler:
             logger.exception("Create Tasklet failed")
             return {"ok": False, "message": f"Create Tasklet failed: {e}"}
 
-        # 5) 通过事件循环把任务放入队列，同时发布 queue.enqueued
         async def _enqueue():
             try:
                 await self.event_bus.publish(Event(
@@ -720,13 +705,12 @@ class Scheduler:
                     payload={
                         "plan_name": plan_name,
                         "task_name": task_name,
-                        "priority": None,  # 如有优先级可填入
+                        "priority": None,
                         "enqueued_at": time.time(),
                         "delay_until": None
                     }
                 ))
             except Exception:
-                # 事件失败不影响入队
                 pass
             await self.task_queue.put(tasklet)
 
@@ -740,6 +724,7 @@ class Scheduler:
         return {"ok": True, "message": "Task enqueued."}
 
     def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None):
+        """临时（Ad-hoc）运行一个任何已定义的任务。"""
         params = params or {}
 
         async def async_run():
@@ -800,7 +785,6 @@ class Scheduler:
                 await self.task_queue.put(tasklet)
                 await self._async_update_run_status(full_task_id, {'status': 'queued'})
 
-                # 可选：镜像 queue.enqueued（提升 Queue 页体验）
                 try:
                     await self.event_bus.publish(Event(
                         name='queue.enqueued',
@@ -843,14 +827,13 @@ class Scheduler:
                 )
                 return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
 
-    # ------------------------------------------------------------------------------
-    # 只读状态查询（供 API）
-    # ------------------------------------------------------------------------------
     def get_master_status(self) -> dict:
+        """获取调度器的宏观运行状态。"""
         is_running = self._scheduler_thread is not None and self._scheduler_thread.is_alive()
         return {"is_running": is_running}
 
     def get_schedule_status(self):
+        """获取所有预定义计划任务的当前状态列表。"""
         if self._loop and self._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(self._async_get_schedule_status(), self._loop)
             try:
@@ -873,19 +856,19 @@ class Scheduler:
 
     @property
     def actions(self):
+        """获取对 Action 注册表的只读访问。"""
         return ACTION_REGISTRY
 
     async def _mirror_event_to_ui_queue(self, event: Event):
+        """(私有) 将事件总线中的事件镜像到一个同步队列，供 UI 使用。"""
         if self.ui_event_queue:
             try:
                 self.ui_event_queue.put_nowait(event.to_dict())
             except queue.Full:
                 pass
 
-    # ------------------------------------------------------------------------------
-    # Observability: ingestion & query
-    # ------------------------------------------------------------------------------
     async def _obs_ingest_event(self, event: Event):
+        """(私有) 内部可观测性事件的处理器。"""
         name = (event.name or '').lower()
         p = event.payload or {}
         rid = self._mk_run_id_from_payload(p)
@@ -980,6 +963,7 @@ class Scheduler:
                 self._obs_delayed.pop(rid, None)
 
     def get_queue_overview(self) -> Dict[str, Any]:
+        """获取任务队列的概览信息。"""
         import time
         now = time.time()
         with self.fallback_lock:
@@ -1023,6 +1007,7 @@ class Scheduler:
         }
 
     def list_queue(self, state: str, limit: int = 200) -> Dict[str, Any]:
+        """列出就绪或延迟队列中的任务。"""
         with self.fallback_lock:
             if state == 'ready':
                 items = list(self._obs_ready.values())
@@ -1037,6 +1022,7 @@ class Scheduler:
         return {'items': items, 'next_cursor': None}
 
     def get_run_timeline(self, run_id: str) -> Dict[str, Any]:
+        """获取一次任务运行的详细时间线数据。"""
         with self.fallback_lock:
             run = self._obs_runs.get(run_id)
             if not run:
@@ -1051,13 +1037,12 @@ class Scheduler:
                 'nodes': run.get('nodes') or []
             }
 
-    # ------------------------------------------------------------------------------
-    # 其余对前端有用的只读方法
-    # ------------------------------------------------------------------------------
     def get_ui_event_queue(self) -> queue.Queue:
+        """获取用于 UI 事件的同步队列。"""
         return self.ui_event_queue
 
     def get_all_plans(self) -> List[str]:
+        """获取所有已加载 Plan 的名称列表。"""
         async def async_get_plans():
             async with self.get_async_lock():
                 return self.plan_manager.list_plans()
@@ -1075,6 +1060,7 @@ class Scheduler:
                 return self.plan_manager.list_plans()
 
     def get_plan_files(self, plan_name: str) -> Dict[str, Any]:
+        """获取指定 Plan 的文件目录树结构。"""
         logger.debug(f"请求获取 '{plan_name}' 的文件树...")
         plan_path = self.base_path / 'plans' / plan_name
         if not plan_path.is_dir():
@@ -1099,6 +1085,7 @@ class Scheduler:
         return tree
 
     def get_tasks_for_plan(self, plan_name: str) -> List[str]:
+        """获取指定 Plan 下所有任务的名称列表。"""
         async def async_get_tasks():
             async with self.get_async_lock():
                 tasks = []
@@ -1131,6 +1118,7 @@ class Scheduler:
                 return sorted(tasks)
 
     def get_all_task_definitions_with_meta(self) -> List[Dict[str, Any]]:
+        """获取所有任务的详细定义，包括元数据。"""
         with self.fallback_lock:
             detailed_tasks = []
             for full_task_id, task_def in self.all_tasks_definitions.items():
@@ -1150,6 +1138,7 @@ class Scheduler:
             return detailed_tasks
 
     def get_all_services_status(self) -> List[Dict[str, Any]]:
+        """获取所有已注册服务的当前状态列表。"""
         async def async_get_services():
             async with self.get_async_lock():
                 service_defs = service_registry.get_all_service_definitions()
@@ -1170,6 +1159,7 @@ class Scheduler:
                 return [s.__dict__ for s in service_defs]
 
     def get_all_interrupts_status(self) -> List[Dict[str, Any]]:
+        """获取所有已定义中断规则的当前状态列表。"""
         async def async_get():
             async with self.get_async_lock():
                 status_list = []
@@ -1202,6 +1192,7 @@ class Scheduler:
                 return status_list
 
     def get_all_services_for_api(self) -> List[Dict[str, Any]]:
+        """获取一个对 API 安全的服务列表。"""
         with self.fallback_lock:
             original_services = service_registry.get_all_service_definitions()
         api_safe_services = []
@@ -1220,18 +1211,21 @@ class Scheduler:
         return api_safe_services
 
     async def get_file_content(self, plan_name: str, relative_path: str) -> str:
+        """异步、安全地读取指定 Plan 内的文件内容。"""
         orchestrator = self.plan_manager.get_plan(plan_name)
         if not orchestrator:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
         return await orchestrator.get_file_content(relative_path)
 
     async def get_file_content_bytes(self, plan_name: str, relative_path: str) -> bytes:
+        """异步、安全地读取指定 Plan 内的文件内容（二进制）。"""
         orchestrator = self.plan_manager.get_plan(plan_name)
         if not orchestrator:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
         return await orchestrator.get_file_content_bytes(relative_path)
 
     async def save_file_content(self, plan_name: str, relative_path: str, content: Any):
+        """异步、安全地向指定 Plan 内的文件写入内容。"""
         orchestrator = self.plan_manager.get_plan(plan_name)
         if not orchestrator:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
@@ -1239,6 +1233,7 @@ class Scheduler:
         logger.info(f"文件已通过Orchestrator异步保存: {relative_path}")
 
     def trigger_full_ui_update(self):
+        """手动触发一次向 UI 的全量状态更新。"""
         logger.debug("Scheduler: Triggering a full UI status update for new clients.")
         payload = {
             'schedule': self.get_schedule_status(),
@@ -1252,33 +1247,35 @@ class Scheduler:
         self._push_ui_update('full_status_update', payload)
 
     async def create_directory(self, plan_name: str, relative_path: str):
+        """异步、安全地在指定 Plan 内创建目录。"""
         orchestrator = self.plan_manager.get_plan(plan_name)
         if not orchestrator:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
         return await orchestrator.create_directory(relative_path)
 
     async def create_file(self, plan_name: str, relative_path: str, content: str = ""):
+        """异步、安全地在指定 Plan 内创建文件。"""
         orchestrator = self.plan_manager.get_plan(plan_name)
         if not orchestrator:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
         return await orchestrator.create_file(relative_path, content)
 
     async def rename_path(self, plan_name: str, old_relative_path: str, new_relative_path: str):
+        """异步、安全地在指定 Plan 内重命名路径。"""
         orchestrator = self.plan_manager.get_plan(plan_name)
         if not orchestrator:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
         return await orchestrator.rename_path(old_relative_path, new_relative_path)
 
     async def delete_path(self, plan_name: str, relative_path: str):
+        """异步、安全地删除指定 Plan 内的路径。"""
         orchestrator = self.plan_manager.get_plan(plan_name)
         if not orchestrator:
             raise FileNotFoundError(f"Plan '{plan_name}' not found or not loaded.")
         return await orchestrator.delete_path(relative_path)
 
     async def reload_all(self):
-        """
-        执行一次完整的、破坏性的全量重载。
-        """
+        """执行一次完整的、破坏性的全量重载。"""
         logger.warning("======= 开始执行全量重载 =======")
         async with self.get_async_lock():
             if self.running_tasks:
@@ -1288,16 +1285,13 @@ class Scheduler:
                 return {"status": "error", "message": msg}
 
             try:
-                # 1. 清理所有注册表和缓存
                 logger.info("--> 正在清理注册表和缓存...")
                 ACTION_REGISTRY.clear()
                 service_registry.clear()
                 hook_manager.clear()
                 clear_build_cache()
 
-                # 2. 调用现有的 reload_plans 方法，它会重新初始化所有东西
                 logger.info("--> 正在重新加载所有 Plans...")
-                # reload_plans 是同步的，但在异步锁下调用是安全的
                 self.reload_plans()
 
                 logger.info("======= 全量重载成功 =======")
@@ -1306,7 +1300,6 @@ class Scheduler:
                 logger.critical(f"全量重载期间发生严重错误: {e}", exc_info=True)
                 return {"status": "error", "message": f"A critical error occurred during reload: {e}"}
 
-    # --- 变动重载 (热重载) ---
     def enable_hot_reload(self):
         """启用文件系统监控以实现自动热重载。"""
         if not self._loop or not self._loop.is_running():
@@ -1343,9 +1336,7 @@ class Scheduler:
                 plan_name = file_path.relative_to(self.base_path / 'plans').parts[0]
                 orchestrator = self.plan_manager.get_plan(plan_name)
                 if orchestrator:
-                    # 1. 让 TaskLoader 清除缓存并重载文件
                     orchestrator.task_loader.reload_task_file(file_path)
-                    # 2. 重新同步 Scheduler 的主任务定义列表
                     self._load_all_tasks_definitions()
                     logger.info(f"任务文件 '{file_path.name}' 在方案 '{plan_name}' 中已成功热重载。")
                 else:
@@ -1385,7 +1376,6 @@ class Scheduler:
                 clear_build_cache()
                 build_package_from_source(plugin_def)
 
-                # 重新同步所有定义，因为服务可能影响其他计划
                 self._load_plan_specific_data()
                 logger.info(f"插件 '{plugin_id}' 已成功热重载。")
 

@@ -1,5 +1,21 @@
-# packages/aura_core/engine.py
+# -*- coding: utf-8 -*-
+"""Aura 框架的核心执行引擎。
 
+该模块定义了 `ExecutionEngine` 类，它负责管理单个任务（Task）的完整执行
+生命周期。引擎将任务的步骤（Steps）解析为一个有向无环图（DAG），并根据
+依赖关系、条件逻辑和循环配置来调度和执行图中的每个节点（Node）。
+
+主要职责:
+- **图构建**: 将任务定义中的 `steps` 解析成依赖关系图。
+- **DAG 调度**: 实现一个异步调度器，根据依赖满足情况来执行准备就绪的节点。
+- **上下文管理**: 为每个节点创建和管理其独立的执行上下文（`ExecutionContext`），
+  支持并行分支的上下文分叉（fork）和合并（merge）。
+- **节点执行**: 调用 `ActionInjector` 来执行每个节点中定义的 `action`。
+- **循环处理**: 支持 `for_each`, `times`, `while` 等多种循环模式。
+- **状态管理**: 跟踪每个节点（`StepState`）和整个任务的执行状态。
+- **事件与回调**: 在节点的生命周期事件（如开始、成功、失败）上触发回调。
+- **异常处理**: 捕获和处理执行过程中的各种异常，包括控制流异常。
+"""
 import asyncio
 import time
 import traceback
@@ -20,6 +36,7 @@ if TYPE_CHECKING:
     from .orchestrator import Orchestrator
 
 class StepState(Enum):
+    """表示任务中一个步骤（节点）的执行状态。"""
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     SUCCESS = "SUCCESS"
@@ -28,16 +45,24 @@ class StepState(Enum):
 
 
 class ExecutionEngine:
+    """负责单个任务的图构建、调度和执行的核心引擎。
+
+    每个任务在运行时都会创建一个独立的 `ExecutionEngine` 实例。
+    """
     def __init__(self, orchestrator: 'Orchestrator', pause_event: asyncio.Event,
                  event_callback: Optional[Callable] = None):
+        """初始化执行引擎。
+
+        Args:
+            orchestrator: 父级 Orchestrator 实例，用于访问共享资源。
+            pause_event: 一个全局的 `asyncio.Event`，用于暂停/恢复任务执行。
+            event_callback: 一个可选的回调函数，用于在引擎执行过程中发送事件。
+        """
         self.orchestrator = orchestrator
         self.pause_event = pause_event
         self.engine_id = str(uuid.uuid4())[:8]
         self.event_callback = event_callback
         self.debug_mode = getattr(orchestrator, 'debug_mode', True)
-
-        # [NEW] 从 Orchestrator 获取 services 字典
-        # 假设 Orchestrator 有一个名为 services 的属性
         self.services = getattr(orchestrator, 'services', {})
 
         # 核心状态
@@ -46,7 +71,7 @@ class ExecutionEngine:
         self.reverse_dependencies: Dict[str, Set[str]] = {}
         self.step_states: Dict[str, StepState] = {}
 
-        # 新的上下文管理
+        # 上下文管理
         self.root_context: Optional[ExecutionContext] = None
         self.node_contexts: Dict[str, ExecutionContext] = {}
 
@@ -56,11 +81,21 @@ class ExecutionEngine:
 
         # 依赖的服务
         self.state_store: StateStoreService = self.services.get('state_store')
-
-        # 定义所有合法的状态查询关键字
         self.VALID_DEPENDENCY_STATUSES = {'success', 'failed', 'running', 'skipped'}
 
     async def run(self, task_data: Dict[str, Any], task_name: str, root_context: ExecutionContext) -> ExecutionContext:
+        """执行一个任务的主入口点。
+
+        此方法会构建依赖图，启动 DAG 调度器，并等待所有节点执行完毕。
+
+        Args:
+            task_data: 任务的完整定义字典。
+            task_name: 任务的名称。
+            root_context: 本次任务运行的根执行上下文。
+
+        Returns:
+            执行完毕后，包含了所有节点结果的最终根执行上下文。
+        """
         task_display_name = task_data.get('meta', {}).get('title', task_name)
         logger.info(f"======= 开始执行任务: {task_display_name} =======")
 
@@ -74,11 +109,9 @@ class ExecutionEngine:
             self._build_graph(steps)
             await self._run_dag_scheduler()
         except (JumpSignal, StopTaskException):
-            # 这些异常由 _execute_dag_node 内部处理并标记节点状态，调度器会正常停止
             pass
         except Exception as e:
             logger.error(f"!! 任务 '{task_name}' 在图构建或调度时发生严重错误: {e}", exc_info=True)
-            # 标记所有 PENDING 节点为 FAILED
             for node_id, state in self.step_states.items():
                 if state == StepState.PENDING:
                     self.step_states[node_id] = StepState.FAILED
@@ -98,6 +131,7 @@ class ExecutionEngine:
         return self.root_context
 
     def _build_graph(self, steps_dict: Dict[str, Any]):
+        """(私有) 从任务步骤定义中构建依赖图。"""
         self.nodes = steps_dict
         all_node_ids = set(self.nodes.keys())
         for node_id, node_data in self.nodes.items():
@@ -117,33 +151,27 @@ class ExecutionEngine:
                 raise ValueError(f"检测到循环依赖: 节点 '{node_id}' 直接或间接依赖于自身。")
 
     def _get_all_deps_from_struct(self, struct: Any) -> Set[str]:
-        """
-        【MODIFIED】递归地从复杂的依赖结构中提取所有节点ID。
-        """
+        """(私有) 递归地从复杂的依赖结构中提取所有节点 ID。"""
         deps = set()
         if isinstance(struct, str):
-            # 简单依赖形式: "my_node"
-            # 条件依赖形式: "when: {{...}}" - 这种不包含节点ID，忽略
             if not struct.startswith("when:"):
                 deps.add(struct)
         elif isinstance(struct, list):
             for item in struct:
                 deps.update(self._get_all_deps_from_struct(item))
         elif isinstance(struct, dict):
-            # 逻辑组合器: and, or, not
             if 'and' in struct:
                 deps.update(self._get_all_deps_from_struct(struct['and']))
             elif 'or' in struct:
                 deps.update(self._get_all_deps_from_struct(struct['or']))
             elif 'not' in struct:
                 deps.update(self._get_all_deps_from_struct(struct['not']))
-            # 状态查询: {node_id: status}
             else:
-                # 假设字典是状态查询，key就是node_id
                 deps.update(struct.keys())
         return deps
 
     async def _run_dag_scheduler(self):
+        """(私有) 启动并管理 DAG 调度器，直到所有可达节点执行完毕。"""
         self.completion_event = asyncio.Event()
         await self._schedule_ready_nodes()
 
@@ -155,37 +183,32 @@ class ExecutionEngine:
             await self.completion_event.wait()
 
     async def _schedule_ready_nodes(self):
+        """(私有) 检查并调度所有当前满足依赖条件的节点。"""
         ready_nodes = []
         for node_id in self.nodes:
             if self.step_states[node_id] == StepState.PENDING and await self._are_dependencies_met(node_id):
                 ready_nodes.append(node_id)
 
         for node_id in ready_nodes:
-            # 准备该节点的上下文
             node_context = self._prepare_node_context(node_id)
             self.node_contexts[node_id] = node_context
 
-            # 创建执行任务
             task = asyncio.create_task(self._execute_dag_node(node_id, node_context))
             self.running_tasks.add(task)
             task.add_done_callback(self._on_task_completed)
 
     def _prepare_node_context(self, node_id: str) -> ExecutionContext:
-        """为即将执行的节点准备其执行上下文（通过分支和合并父上下文）。"""
+        """(私有) 为即将执行的节点准备其执行上下文（通过分支和合并父上下文）。"""
         parent_ids = self._get_all_deps_from_struct(self.dependencies.get(node_id, []))
 
         if not parent_ids:
-            # 根节点，从任务的root_context派生
             return self.root_context.fork()
 
         parent_contexts = [self.node_contexts[pid] for pid in parent_ids if pid in self.node_contexts]
 
         if not parent_contexts:
-            # 这种情况理论上不应发生，因为_are_dependencies_met已经通过
-            # 但作为保险，从root派生
             return self.root_context.fork()
 
-        # 以第一个父上下文为基础进行fork，然后合并其他父上下文
         new_context = parent_contexts[0].fork()
         if len(parent_contexts) > 1:
             new_context.merge(parent_contexts[1:])
@@ -193,6 +216,7 @@ class ExecutionEngine:
         return new_context
 
     def _on_task_completed(self, task: asyncio.Task):
+        """(私有) 一个节点执行任务完成后的回调。"""
         self.running_tasks.discard(task)
         try:
             task.result()
@@ -209,30 +233,24 @@ class ExecutionEngine:
         asyncio.create_task(reschedule_and_maybe_finish())
 
     async def _are_dependencies_met(self, node_id: str) -> bool:
+        """(私有) 检查指定节点的所有依赖是否已满足。"""
         dep_struct = self.dependencies.get(node_id)
         return await self._evaluate_dep_struct(dep_struct)
 
     async def _evaluate_dep_struct(self, struct: Any) -> bool:
-        """
-        【REWRITTEN】递归评估依赖结构。
-        支持逻辑组合 (and/or/not)、明确的状态查询以及'|'分隔的多状态。
-        """
-        # 0. 空依赖
+        """(私有) 递归地评估一个依赖结构是否为真。"""
         if struct is None:
             return True
 
-        # 1. 简单依赖 (语法糖 for success) 和 条件依赖
         if isinstance(struct, str):
             if struct.startswith("when:"):
                 expression = struct.replace("when:", "").strip()
-                # 注意：这里使用root_context，因为它包含了所有已完成节点的数据
                 renderer = TemplateRenderer(self.root_context, self.state_store)
                 return bool(await renderer.render(expression))
             else:
                 state = self.step_states.get(struct)
                 return state == StepState.SUCCESS
 
-        # 2. 列表隐含 AND 逻辑
         if isinstance(struct, list):
             if not struct: return True
             results = await asyncio.gather(*[self._evaluate_dep_struct(item) for item in struct])
@@ -241,7 +259,6 @@ class ExecutionEngine:
         if isinstance(struct, dict):
             if not struct: return True
 
-            # 3. 逻辑组合器 (and, or, not)
             if 'and' in struct:
                 return await self._evaluate_dep_struct(struct['and'])
             if 'or' in struct:
@@ -250,7 +267,6 @@ class ExecutionEngine:
             if 'not' in struct:
                 return not await self._evaluate_dep_struct(struct['not'])
 
-            # 4. 状态查询依赖
             if len(struct) != 1:
                 raise ValueError(f"依赖条件格式错误: {struct}。状态查询必须是单个键值对。")
 
@@ -270,10 +286,10 @@ class ExecutionEngine:
             current_state_str = current_state_enum.name.lower()
             return current_state_str in raw_statuses
 
-        # 对于其他无法解析的类型，也视为空依赖
         return True
 
     def _create_run_state(self, status: StepState, start_time: float, error: Optional[Dict] = None) -> Dict:
+        """(私有) 创建一个标准的节点运行状态字典。"""
         end_time = time.time()
         return {
             "status": status.name,
@@ -284,6 +300,7 @@ class ExecutionEngine:
         }
 
     async def _execute_dag_node(self, node_id: str, node_context: ExecutionContext):
+        """(私有) 执行 DAG 中的单个节点。"""
         self.step_states[node_id] = StepState.RUNNING
         start_time = time.time()
         node_result = {}
@@ -336,9 +353,7 @@ class ExecutionEngine:
             final_node_output = {"run_state": run_state, **node_result}
             node_context.add_node_result(node_id, final_node_output)
             self.root_context.add_node_result(node_id, final_node_output)
-            # === NEW: emit node.finished ===
             if self.event_callback:
-                # 若有异常细节则认为 error，否则 success
                 status = 'error' if error_details else 'success'
                 await self.event_callback('node.finished', {
                     'node_id': node_id,
@@ -346,9 +361,8 @@ class ExecutionEngine:
                     'status': status
                 })
 
-
-    # [NEW] 执行单次 action 的逻辑
     async def _execute_single_action(self, node_data: Dict, node_context: ExecutionContext) -> Any:
+        """(私有) 执行节点中定义的单个 action。"""
         renderer = TemplateRenderer(node_context, self.state_store)
         injector = ActionInjector(node_context, self, renderer, self.services)
 
@@ -359,9 +373,9 @@ class ExecutionEngine:
         raw_params = node_data.get('params', {})
         return await injector.execute(action_name, raw_params)
 
-    # [NEW] 执行循环的逻辑
     async def _execute_loop(self, node_id: str, node_data: Dict, node_context: ExecutionContext, loop_config: Dict) -> \
     List[Any]:
+        """(私有) 执行节点中定义的循环逻辑。"""
         renderer = TemplateRenderer(node_context, self.state_store)
         rendered_config = await renderer.render(loop_config)
 
@@ -389,15 +403,14 @@ class ExecutionEngine:
                 iter_context.set_loop_variables({'index': i})
                 tasks.append(self._execute_single_action(node_data, iter_context))
 
-        elif 'while' in loop_config:  # 'while' 条件在每次迭代前渲染
+        elif 'while' in loop_config:
             results = []
             index = 0
-            max_iterations = rendered_config.get('max_iterations', 1000)  # 防止死循环
+            max_iterations = rendered_config.get('max_iterations', 1000)
             while index < max_iterations:
                 iter_context = node_context.fork()
                 iter_context.set_loop_variables({'index': index})
 
-                # 'while' 条件在每次迭代的上下文中渲染
                 while_renderer = TemplateRenderer(iter_context, self.state_store)
                 condition = bool(await while_renderer.render(loop_config['while']))
 
@@ -412,7 +425,7 @@ class ExecutionEngine:
         else:
             raise ValueError(f"节点 '{node_id}' 的 loop 配置无效: {loop_config}")
 
-        parallelism = rendered_config.get('parallelism', len(tasks))  # 默认为完全并行
+        parallelism = rendered_config.get('parallelism', len(tasks))
         semaphore = asyncio.Semaphore(parallelism)
 
         async def run_with_semaphore(task: Coroutine) -> Any:
@@ -423,6 +436,7 @@ class ExecutionEngine:
         return results
 
     async def _check_pause(self):
+        """(私有) 检查是否需要暂停任务执行。"""
         if self.pause_event.is_set():
             logger.warning("接收到全局暂停信号，任务执行已暂停。等待恢复信号...")
             await self.pause_event.wait()
