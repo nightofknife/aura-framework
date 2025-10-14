@@ -1,18 +1,21 @@
-# packages/aura_core/plugin_manager.py (FIXED)
+# -*- coding: utf-8 -*-
+"""Aura 框架的插件管理器。
 
+此模块定义了 `PluginManager`，它是负责发现、解析、加载和管理 Aura 框架中
+所有插件的核心组件。它的主要职责是扫描指定目录，解析 `plugin.yaml` 文件，
+解决插件间的依赖关系，并最终按正确的顺序加载插件，填充全局的 Service、
+Action 和 Hook 注册表。
+"""
 import asyncio
 import importlib.util
 import inspect
 import sys
 from graphlib import TopologicalSorter, CycleError
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 import yaml
 from resolvelib import Resolver, BaseReporter
-
-# [MODIFIED] 导入 dataclasses.field 用于修复 api.py
-from dataclasses import field
 
 from .api import service_registry, ServiceDefinition, ACTION_REGISTRY, ActionDefinition, hook_manager
 from .builder import build_package_from_source, clear_build_cache, API_FILE_NAME
@@ -22,19 +25,30 @@ from .plugin_provider import PluginProvider
 
 
 class PluginManager:
-    """
-    【Refactored】负责发现、解析、加载和管理 Aura 框架中的所有插件。
+    """负责发现、解析、加载和管理 Aura 框架中的所有插件。
+
     它的核心职责是填充全局的 Service 和 Action 注册表。
-    它不再负责创建 Orchestrator 实例。
+    它不直接负责创建 `Orchestrator` 实例，而是为 `PlanManager` 提供
+    所有已加载的插件定义。
     """
 
     def __init__(self, base_path: Path):
+        """初始化插件管理器。
+
+        Args:
+            base_path (Path): 包含 `plans` 和 `packages` 目录的项目根路径。
+        """
         self.base_path = base_path
         self.plugin_registry: Dict[str, PluginDefinition] = {}
 
     def load_all_plugins(self):
-        """
-        同步执行完整的插件加载流程。此方法应在应用启动时调用。
+        """同步执行完整的插件加载流程。
+
+        此方法是插件管理器的主要入口点，应在应用启动时调用。
+        它按以下三个阶段执行：
+        1.  发现并解析所有 `plugin.yaml` 文件。
+        2.  解决插件间的依赖关系并进行拓扑排序。
+        3.  按排定的顺序加载每个插件的 Service、Action 和 Hook。
         """
         logger.info("======= PluginManager: 开始加载所有插件 =======")
         try:
@@ -53,6 +67,7 @@ class PluginManager:
             raise
 
     def _clear_plugin_registries(self):
+        """(私有) 清理所有与插件相关的全局注册表。"""
         logger.info("正在清理插件相关的注册表...")
         service_registry.remove_services_by_prefix(exclude_prefix="core/")
         ACTION_REGISTRY.clear()
@@ -62,6 +77,7 @@ class PluginManager:
         logger.info("插件注册表清理完毕。")
 
     def _discover_and_parse_plugins(self):
+        """(私有) 扫描插件目录，解析所有 `plugin.yaml` 文件。"""
         logger.info("--- 阶段1: 发现并解析所有插件定义 (plugin.yaml) ---")
         plugin_paths_to_scan = [self.base_path / 'plans', self.base_path / 'packages']
         for root_path in plugin_paths_to_scan:
@@ -82,22 +98,14 @@ class PluginManager:
                     raise
 
     def _resolve_dependencies_and_sort(self) -> List[str]:
-        """
-        【修正】使用 resolvelib 进行验证，然后手动构建一个兼容 graphlib 的字典来进行拓扑排序。
-        """
+        """(私有) 解析插件依赖并返回拓扑排序后的加载顺序。"""
         logger.info("--- 阶段2: 解析依赖关系并确定加载顺序 ---")
         provider = PluginProvider(self.plugin_registry)
         reporter = BaseReporter()
         resolver = Resolver(provider, reporter)
         try:
-            # 步骤 1: 使用 resolvelib 进行复杂的依赖验证（检查版本冲突等）
             resolver.resolve(self.plugin_registry.keys())
-
-            # 步骤 2: 手动构建一个 TopologicalSorter 兼容的、简单的图字典
-            # key 是插件ID，value 是该插件依赖的插件ID**
             graph = {pid: set(pdef.dependencies.keys()) for pid, pdef in self.plugin_registry.items()}
-
-            # 步骤 3: 使用标准库进行拓扑排序
             ts = TopologicalSorter(graph)
             return list(ts.static_order())
         except CycleError as e:
@@ -108,6 +116,7 @@ class PluginManager:
             raise RuntimeError("依赖解析失败，无法启动。") from e
 
     def _load_plugins_in_order(self, load_order: List[str]):
+        """(私有) 按照拓扑排序的结果，依次加载每个插件。"""
         logger.info("--- 阶段3: 按顺序加载/构建所有包 ---")
         for plugin_id in load_order:
             plugin_def = self.plugin_registry.get(plugin_id)
@@ -121,6 +130,7 @@ class PluginManager:
             self._load_hooks_for_package(plugin_def)
 
     def _load_package_from_api_file(self, plugin_def: PluginDefinition, api_file_path: Path):
+        """(私有) 从插件的 `api.yaml` 文件中加载其暴露的 Service 和 Action。"""
         with open(api_file_path, 'r', encoding='utf-8') as f:
             api_data = yaml.safe_load(f)
 
@@ -146,16 +156,13 @@ class PluginManager:
                 module = self._lazy_load_module(plugin_def.path / action_info['source_file'])
                 action_func = getattr(module, action_info['function_name'])
                 is_async_action = asyncio.iscoroutinefunction(action_func)
-
-                # [FIX] 从函数对象的元数据中读取所有信息
                 action_meta = getattr(action_func, '_aura_action_meta', {})
 
                 definition = ActionDefinition(
                     func=action_func,
-                    name=action_meta.get('name', action_info['name']),  # 优先使用元数据中的名字
+                    name=action_meta.get('name', action_info['name']),
                     read_only=action_meta.get('read_only', False),
                     public=action_meta.get('public', True),
-                    # [CORE FIX] 从函数元数据中获取服务依赖
                     service_deps=action_meta.get('services', {}),
                     plugin=plugin_def,
                     is_async=is_async_action
@@ -167,6 +174,7 @@ class PluginManager:
         logger.debug(f"包 '{plugin_def.canonical_id}' 已从 API 文件成功加载。")
 
     def _load_hooks_for_package(self, plugin_def: PluginDefinition):
+        """(私有) 从插件的 `hooks.py` 文件中加载钩子。"""
         hooks_file = plugin_def.path / 'hooks.py'
         if hooks_file.is_file():
             logger.debug(f"在包 '{plugin_def.canonical_id}' 中发现钩子文件，正在加载...")
@@ -180,6 +188,7 @@ class PluginManager:
                 logger.error(f"加载钩子文件 '{hooks_file}' 失败: {e}", exc_info=True)
 
     def _lazy_load_module(self, file_path: Path) -> Any:
+        """(私有) 延迟加载一个 Python 模块。"""
         try:
             relative_path = file_path.relative_to(self.base_path)
             module_name = str(relative_path).replace('/', '.').replace('\\', '.').removesuffix('.py')

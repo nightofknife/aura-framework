@@ -1,5 +1,19 @@
-# packages/aura_core/state_planner.py (最终修正版)
+# -*- coding: utf-8 -*-
+"""Aura 框架的智能状态规划器。
 
+此模块提供了 `StatePlanner` 类，它负责在任务执行前，确保系统处于
+一个预期的初始状态。它通过读取一个定义了系统所有可能状态及状态间
+转移路径的 `states_map.yaml` 文件来实现这一功能。
+
+核心功能:
+- **状态感知**: 通过执行与每个状态关联的 `check_task`，智能地确定系统
+  当前所处的状态。它会优先检查离目标状态最近的状态，并结合并行与串行
+  检查来提高效率。
+- **路径规划**: 使用 Dijkstra 算法在状态图中寻找从当前状态到目标状态的
+  成本最低的路径。
+- **状态转移验证**: 在执行一个状态转移任务后，带重试机制地验证系统是否
+  确实到达了预期的下一个状态。
+"""
 import asyncio
 import heapq
 from collections import deque
@@ -11,28 +25,39 @@ if TYPE_CHECKING:
     from .orchestrator import Orchestrator
 
 class StateMap:
-    """一个数据类，用于保存解析后的 states_map.yaml 内容。"""
+    """一个数据类，用于封装从 `states_map.yaml` 解析后的内容。"""
 
     def __init__(self, data: Dict[str, Any]):
+        """初始化状态地图。
+
+        Args:
+            data: 从 `states_map.yaml` 文件加载的原始字典数据。
+        """
         self.states: Dict[str, Any] = data.get('states', {})
         self.transitions: List[Dict[str, Any]] = data.get('transitions', [])
         logger.info(f"StateMap 加载完成: {len(self.states)} 个状态, {len(self.transitions)} 条转移路径。")
 
 
 class StatePlanner:
-    """
-    【集成版】智能状态规划器 v3.0
-    - 结合了高效的状态确定机制和基于Dijkstra算法的最低成本路径规划。
+    """智能状态规划器。
+
+    结合了高效的状态确定机制和基于 Dijkstra 算法的最低成本路径规划。
     """
 
     def __init__(self, state_map: StateMap, orchestrator: 'Orchestrator'):
+        """初始化状态规划器。
+
+        Args:
+            state_map: 包含状态和转移定义的 `StateMap` 实例。
+            orchestrator: 与当前 Plan 关联的 `Orchestrator` 实例，用于执行检查和转移任务。
+        """
         self.state_map = state_map
         self.orchestrator = orchestrator
         self.graph = self._build_graph()
         self._reverse_graph = self._build_reverse_graph()
 
     def _build_graph(self) -> Dict[str, List[tuple]]:
-        """将 transitions 列表预处理成邻接表格式的图，以提高寻路效率。"""
+        """(私有) 将 transitions 列表预处理成邻接表格式的图，以提高寻路效率。"""
         graph = {state: [] for state in self.state_map.states}
         for transition in self.state_map.transitions:
             from_state = transition.get('from')
@@ -44,7 +69,7 @@ class StatePlanner:
         return graph
 
     def _build_reverse_graph(self) -> Dict[str, Set[str]]:
-        """构建一个反向图，用于BFS距离计算。"""
+        """(私有) 构建一个反向图，用于广度优先搜索计算距离。"""
         reverse = {state: set() for state in self.state_map.states}
         for from_node, edges in self.graph.items():
             for to_node, _, _ in edges:
@@ -52,7 +77,7 @@ class StatePlanner:
         return reverse
 
     def _calculate_distances_to_target(self, target_state: str) -> Dict[str, int]:
-        """使用广度优先搜索(BFS)计算所有状态到目标状态的最短距离（无视权重）。"""
+        """(私有) 使用广度优先搜索(BFS)计算所有状态到目标状态的最短距离（无视权重）。"""
         if target_state not in self.state_map.states:
             return {}
 
@@ -69,8 +94,16 @@ class StatePlanner:
         return distances
 
     async def determine_current_state(self, target_state: str) -> Optional[str]:
-        """
-        【修正版】使用分阶段、有序、可中断的逻辑来确定当前状态。
+        """使用分阶段、有序、可中断的逻辑来确定当前系统状态。
+
+        此方法会智能地安排状态检查任务的顺序，优先检查离目标状态更近、
+        优先级更高、且可以并行执行的任务，以最快速度确定当前状态。
+
+        Args:
+            target_state: 期望达到的最终状态。
+
+        Returns:
+            如果成功确定，则返回当前状态的名称字符串；否则返回 None。
         """
         logger.info(f"智能状态规划：开始确定当前状态，目标是 '{target_state}'。")
 
@@ -113,10 +146,8 @@ class StatePlanner:
                             check_info = async_tasks[task]
                             try:
                                 result = task.result()
-                                # 【新增】添加详细日志，便于调试
                                 logger.debug(f"并行状态检查任务 '{check_info['task_name']}' 返回结果: {result}")
 
-                                # 【修复】使用 bool() 放宽检查，将任何 "truthy" 值（如 "True", 1, 非空对象）视为成功
                                 if isinstance(result, dict) and result.get('status').upper() == 'SUCCESS' and bool(
                                         result.get('user_data', False)):
                                     current_state = check_info['state_name']
@@ -131,7 +162,7 @@ class StatePlanner:
                     for task in pending_tasks:
                         task.cancel()
 
-        # 阶段二：串行检查 (仅当并行检查未找到状态时执行)
+        # 阶段二：串行检查
         if current_state is None and sequential_checks:
             logger.debug(f"规划阶段二：串行执行 {len(sequential_checks)} 个检查任务。")
             for check in sequential_checks:
@@ -140,15 +171,13 @@ class StatePlanner:
                 logger.info(f"  -> 正在串行检查状态: '{check['state_name']}'...")
                 try:
                     result = await self.orchestrator.execute_task(check['task_name'])
-                    # 【新增】添加详细日志
                     logger.debug(f"串行状态检查任务 '{check['task_name']}' 返回结果: {result}")
 
-                    # 【修复】同样，使用 bool() 放宽检查
                     if isinstance(result, dict) and result.get('status').upper() == 'SUCCESS' and bool(
                             result.get('user_data', False)):
                         current_state = check['state_name']
                         logger.info(f"✅ 状态确认: 当前状态是 '{current_state}'。")
-                        break  # 找到即停
+                        break
                 except Exception as e:
                     logger.warning(f"状态检查任务 '{check['task_name']}' 执行时发生异常: {e}")
 
@@ -158,8 +187,15 @@ class StatePlanner:
         return current_state
 
     def find_path(self, start_node: str, end_node: str) -> Optional[List[str]]:
-        """
-        使用 Dijkstra 算法寻找从 start_node 到 end_node 的成本最低路径。
+        """使用 Dijkstra 算法寻找从 `start_node` 到 `end_node` 的成本最低的路径。
+
+        Args:
+            start_node: 起始状态的名称。
+            end_node: 目标状态的名称。
+
+        Returns:
+            一个包含一系列任务名称的列表，代表了成本最低的转移路径。
+            如果找不到路径，则返回 None。
         """
         if start_node not in self.graph or end_node not in self.graph:
             logger.error(f"路径规划失败: 起点 '{start_node}' 或终点 '{end_node}' 不在状态图中。")
@@ -190,8 +226,14 @@ class StatePlanner:
         return None
 
     def get_expected_state_after_transition(self, from_state: str, transition_task: str) -> Optional[str]:
-        """
-        辅助方法：从 state_map 中查找一个转移任务执行后应该到达的状态。
+        """从状态地图中查找一个转移任务执行后应该到达的状态。
+
+        Args:
+            from_state: 转移前的起始状态。
+            transition_task: 执行的转移任务的名称。
+
+        Returns:
+            预期的目标状态名称，如果找不到对应的转移规则则返回 None。
         """
         for t in self.state_map.transitions:
             if t.get('from') == from_state and t.get('transition_task') == transition_task:
@@ -199,9 +241,17 @@ class StatePlanner:
         return None
 
     async def verify_state_with_retry(self, state_name: str, retries: int = 5, delay: float = 0.5) -> bool:
-        """
-        带重试机制地检查当前是否处于某个状态。
-        这是一个独立的验证器，用于在状态转移后确认结果。
+        """带重试机制地检查当前是否处于某个特定状态。
+
+        这是一个独立的验证器，主要用于在状态转移任务执行后确认结果。
+
+        Args:
+            state_name: 要验证的目标状态名称。
+            retries: 最大重试次数。
+            delay: 每次重试之间的等待时间（秒）。
+
+        Returns:
+            bool: 如果在重试次数内成功验证状态，则返回 True，否则返回 False。
         """
         check_task = self.state_map.states.get(state_name, {}).get('check_task')
         if not check_task:
@@ -212,14 +262,12 @@ class StatePlanner:
             logger.info(f"正在验证状态 '{state_name}'... (尝试 {attempt + 1}/{retries})")
             try:
                 tfr = await self.orchestrator.execute_task(check_task)
-                # 检查任务是否成功，并且其业务返回值 (user_data) 为 True 或 'True'
                 if tfr and tfr.get('status') == 'SUCCESS' and tfr.get('user_data'):
                     logger.info(f"✅ 状态 '{state_name}' 验证成功。")
                     return True
             except Exception as e:
                 logger.warning(f"验证状态 '{state_name}' 时发生异常: {e}", exc_info=False)
 
-            # 如果不是最后一次尝试，就等待一下
             if attempt < retries - 1:
                 await asyncio.sleep(delay)
 

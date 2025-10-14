@@ -1,4 +1,15 @@
-# packages/aura_core/builder.py (多任务格式支持版)
+# -*- coding: utf-8 -*-
+"""负责从插件源码构建 API 定义文件的构建器。
+
+此模块的核心功能是 `build_package_from_source`，它会遍历一个插件包的
+所有 Python 文件和 `tasks` 目录，通过静态分析和动态加载的方式，
+抽取出所有公开的 Service、Action 和 Task 入口点的信息，
+并最终将这些信息序列化成一个 `api.yaml` 文件。
+
+这个 `api.yaml` 文件是 Aura 框架实现“无源码分发”和“延迟加载”的关键。
+框架在运行时可以仅读取这个 API 文件来了解一个插件提供了哪些能力，
+而无需加载其全部 Python 模块。
+"""
 
 import importlib.util
 import inspect
@@ -20,11 +31,28 @@ API_FILE_NAME = "api.yaml"
 
 
 def set_project_base_path(base_path: Path):
+    """设置项目的根路径，用于计算模块的相对路径。
+
+    Args:
+        base_path: 项目的根目录 `Path` 对象。
+    """
     global PROJECT_BASE_PATH
     PROJECT_BASE_PATH = base_path
 
 
 def build_package_from_source(plugin_def: PluginDefinition):
+    """从插件的源代码构建其 `api.yaml` 文件。
+
+    此函数是构建流程的主入口。它会：
+    1. 清理构建缓存。
+    2. 遍历插件目录下的所有 `.py` 文件，加载并处理其中的 Service 和 Action 定义。
+    3. 扫描 `tasks` 目录下的 `.yaml` 文件，查找被标记为入口点的任务。
+    4. 将收集到的所有公开 API 信息整合成一个字典。
+    5. 将该字典以 YAML 格式写入到插件根目录下的 `api.yaml` 文件中。
+
+    Args:
+        plugin_def: 要构建的插件的 `PluginDefinition` 对象。
+    """
     logger.debug(f"从源码构建包: {plugin_def.canonical_id}")
     clear_build_cache()
     package_path = plugin_def.path
@@ -65,10 +93,20 @@ def build_package_from_source(plugin_def: PluginDefinition):
 
 
 def clear_build_cache():
+    """清除已处理模块的缓存。"""
     _PROCESSED_MODULES.clear()
 
 
 def _process_service_file(module: Any, plugin_def: PluginDefinition) -> List[Dict]:
+    """(私有) 从单个 Python 模块中提取并注册 Service 定义。
+
+    Args:
+        module: 已加载的 Python 模块对象。
+        plugin_def: 当前正在处理的插件定义。
+
+    Returns:
+        一个列表，包含在该模块中找到的所有公开 Service 的信息字典。
+    """
     public_services_info = []
     _PROCESSED_MODULES.add(module.__name__)
     for _, class_obj in inspect.getmembers(module, inspect.isclass):
@@ -91,6 +129,15 @@ def _process_service_file(module: Any, plugin_def: PluginDefinition) -> List[Dic
 
 
 def _process_action_file(module: Any, plugin_def: PluginDefinition) -> List[Dict]:
+    """(私有) 从单个 Python 模块中提取并注册 Action 定义。
+
+    Args:
+        module: 已加载的 Python 模块对象。
+        plugin_def: 当前正在处理的插件定义。
+
+    Returns:
+        一个列表，包含在该模块中找到的所有公开 Action 的信息字典。
+    """
     public_actions_info = []
     _PROCESSED_MODULES.add(module.__name__)
     for _, func_obj in inspect.getmembers(module, inspect.isfunction):
@@ -110,11 +157,19 @@ def _process_action_file(module: Any, plugin_def: PluginDefinition) -> List[Dict
     return public_actions_info
 
 
-# 【【【核心修改】】】
 def _process_task_entry_points(tasks_dir: Path, plugin_def: PluginDefinition) -> List[Dict]:
-    """
-    【修改版】扫描tasks目录，查找并返回公开的任务入口点信息。
-    支持新旧两种任务格式。
+    """(私有) 扫描 tasks 目录，查找并返回所有公开的任务入口点信息。
+
+    此函数会遍历 `tasks` 目录下的所有 `.yaml` 文件，并解析其内容，
+    寻找 `meta.entry_point: true` 标记来识别公开任务。
+    它同时支持单文件单任务（旧格式）和单文件多任务（新格式）的 YAML 结构。
+
+    Args:
+        tasks_dir: 指向插件 `tasks` 目录的 Path 对象。
+        plugin_def: 当前正在处理的插件定义。
+
+    Returns:
+        一个列表，包含找到的所有公开任务入口点的信息字典。
     """
     public_tasks_info = []
     for task_path in tasks_dir.rglob("*.yaml"):
@@ -132,17 +187,16 @@ def _process_task_entry_points(tasks_dir: Path, plugin_def: PluginDefinition) ->
                         task_info = {
                             "title": meta.get("title", task_id_in_plan),
                             "description": meta.get("description", ""),
-                            "task_id": task_id_in_plan,  # 使用任务ID而不是文件名
+                            "task_id": task_id_in_plan,
                             "icon": meta.get("icon")
                         }
                         public_tasks_info.append(task_info)
                         logger.debug(f"发现公开任务入口点: {task_info['title']} in {plugin_def.canonical_id}")
 
-            # 判断格式并处理
-            if 'steps' in all_task_data:  # 旧格式: 单文件单任务
+            if 'steps' in all_task_data:
                 task_name_from_file = task_path.relative_to(tasks_dir).with_suffix('').as_posix()
                 process_single_task(task_name_from_file, all_task_data)
-            else:  # 新格式: 单文件多任务
+            else:
                 for task_key, task_definition in all_task_data.items():
                     process_single_task(task_key, task_definition)
 
@@ -153,6 +207,17 @@ def _process_task_entry_points(tasks_dir: Path, plugin_def: PluginDefinition) ->
 
 
 def _get_module_name_from_path(file_path: Path) -> str:
+    """(私有) 根据文件路径计算出其对应的 Python 模块名。
+
+    Args:
+        file_path: Python 文件的 Path 对象。
+
+    Returns:
+        对应的模块名字符串 (例如, "packages.my_plugin.services.my_service")。
+
+    Raises:
+        RuntimeError: 如果项目的根路径 `PROJECT_BASE_PATH` 尚未设置。
+    """
     if PROJECT_BASE_PATH is None: raise RuntimeError("Builder的PROJECT_BASE_PATH未被初始化。")
     try:
         relative_path = file_path.relative_to(PROJECT_BASE_PATH)
@@ -162,6 +227,17 @@ def _get_module_name_from_path(file_path: Path) -> str:
 
 
 def _load_module_from_path(file_path: Path, module_name: str) -> Optional[Any]:
+    """(私有) 从给定的文件路径动态加载一个 Python 模块。
+
+    为了避免重复加载，此函数会先检查 `sys.modules`。
+
+    Args:
+        file_path: 要加载的 `.py` 文件的路径。
+        module_name: 要赋给该模块的名称。
+
+    Returns:
+        加载成功的模块对象，如果失败则返回 None 或抛出异常。
+    """
     if module_name in sys.modules:
         logger.debug(f"模块 '{module_name}' 已在 sys.modules 中，直接返回。")
         return sys.modules[module_name]

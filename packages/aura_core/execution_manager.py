@@ -1,5 +1,23 @@
-# packages/aura_core/execution_manager.py (修改版)
+# -*- coding: utf-8 -*-
+"""Aura 框架的任务执行管理器。
 
+`ExecutionManager` 是任务执行的核心协调者。它负责管理用于IO密集型和CPU
+密集型任务的线程池和进程池，处理任务的提交、并发控制，并协调状态规划
+（State Planning）等高级功能。
+
+主要职责:
+- **执行池管理**: 启动和关闭 `ThreadPoolExecutor` (用于IO任务) 和
+  `ProcessPoolExecutor` (用于CPU任务)。
+- **任务提交**: 提供 `submit` 方法作为执行任务的统一入口。
+- **并发控制**: 使用全局信号量（Semaphore）和基于资源的信号量来限制并发
+  执行的任务数量，防止系统过载。
+- **状态规划**: 在任务执行前，如果任务定义了 `requires_initial_state`，
+  会自动调用 `StatePlanner` 来执行一系列状态转移任务，以确保系统处于
+  正确的初始状态。
+- **生命周期钩子**: 在任务执行的不同阶段（开始前、成功后、失败后、结束后）
+  触发相应的钩子事件。
+- **错误处理**: 统一处理任务执行过程中的超时、取消和未知异常。
+"""
 import asyncio
 import queue
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
@@ -13,12 +31,20 @@ from packages.aura_core.logger import logger
 
 if TYPE_CHECKING:
     from packages.aura_core.scheduler import Scheduler
-    from packages.aura_core.state_planner import StateMap
 
 
 class ExecutionManager:
+    """管理执行池和任务提交的核心类。"""
     def __init__(self, scheduler: 'Scheduler', max_concurrent_tasks: int = 32, io_workers: int = 16,
                  cpu_workers: int = 4):
+        """初始化 ExecutionManager。
+
+        Args:
+            scheduler: 调度器主实例的引用。
+            max_concurrent_tasks: 全局最大并发任务数。
+            io_workers: IO密集型任务线程池的工作线程数。
+            cpu_workers: CPU密集型任务进程池的工作进程数。
+        """
         self.scheduler = scheduler
         self.max_concurrent_tasks = max_concurrent_tasks
         self.io_workers = io_workers
@@ -31,9 +57,15 @@ class ExecutionManager:
         self._resource_sem_lock = asyncio.Lock()
 
     def set_ui_update_queue(self, q: queue.Queue):
+        """设置用于向UI发送更新的队列。
+
+        Args:
+            q: 一个线程安全的队列实例。
+        """
         self.ui_update_queue = q
 
     async def _get_semaphores_for(self, tasklet: Tasklet) -> List[asyncio.Semaphore]:
+        """(私有) 根据任务的资源标签获取其需要的所有信号量。"""
         sems = [self._global_sem]
         for tag in tasklet.resource_tags:
             parts = tag.split(':', 1)
@@ -46,7 +78,21 @@ class ExecutionManager:
         return sems
 
     async def submit(self, tasklet: Tasklet, is_interrupt_handler: bool = False):
-        """【修复】提交任务执行，迁移 shared_data_lock 到 get_async_lock（异步锁）。"""
+        """提交一个任务 (Tasklet) 到执行管理器。
+
+        这是执行任务的核心方法。它会处理：
+        1. 获取必要的信号量以控制并发。
+        2. 如果需要，执行状态规划。
+        3. 在指定的超时时间内运行任务的执行链。
+        4. 触发所有相关的生命周期钩子。
+        5. 统一处理成功、失败、超时和取消等情况。
+        6. 确保资源（如信号量和正在运行的任务记录）被正确释放。
+
+        Args:
+            tasklet: 要执行的任务单元。
+            is_interrupt_handler: 标记此任务是否为中断处理程序，
+                若是，则不进行状态规划和某些状态更新。
+        """
         if self._io_pool is None or self._cpu_pool is None:
             logger.error("ExecutionManager: 尝试在未启动的执行器上提交任务。请先调用 startup()。")
             raise RuntimeError("Executor pools are not running.")
@@ -61,7 +107,6 @@ class ExecutionManager:
 
         current_task = asyncio.current_task()
         if not is_interrupt_handler:
-            # 【修改】原 with self.scheduler.shared_data_lock: → async with get_async_lock()
             async with self.scheduler.get_async_lock():
                 self.scheduler.running_tasks[tasklet.task_name] = current_task
 
@@ -113,18 +158,25 @@ class ExecutionManager:
             await hook_manager.trigger('after_task_failure', task_context=task_context)
         finally:
             if not is_interrupt_handler:
-                # 【修改】原 with self.scheduler.shared_data_lock: → async with get_async_lock()
                 try:
                     async with self.scheduler.get_async_lock():
                         self.scheduler.running_tasks.pop(tasklet.task_name, None)
                 except Exception as lock_e:
-                    logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")  # 【新增】防护，防 finally 崩溃
+                    logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")
             await hook_manager.trigger('after_task_run', task_context=task_context)
-            logger.debug(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")  # 【修改】debug 级，避免洪水
+            logger.debug(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")
 
     async def _handle_state_planning(self, tasklet: Tasklet) -> bool:
-        """
-        【最终修正版】处理状态规划，集成健壮的、带重试的转移验证。
+        """(私有) 处理状态规划逻辑。
+
+        如果任务需要特定的初始状态，此方法会：
+        1.  感知当前状态。
+        2.  规划一条从当前状态到目标状态的路径（一系列转移任务）。
+        3.  按顺序执行并验证路径中的每个转移任务。
+        4.  如果中途失败，会进行重试，直到达到最大次数。
+
+        Returns:
+            bool: 如果成功到达目标状态则返回 True，否则返回 False。
         """
         task_def = self.scheduler.all_tasks_definitions.get(tasklet.task_name)
         if not task_def: return True
@@ -145,7 +197,6 @@ class ExecutionManager:
         for attempt in range(max_replans):
             logger.info(f"【规划循环 {attempt + 1}/{max_replans}】正在确定当前状态 (目标: '{target_state}')...")
 
-            # 1. 感知 (Perceive)
             current_state = await state_planner.determine_current_state(target_state)
             if not current_state:
                 logger.error("无法确定当前系统状态，规划中止。")
@@ -157,14 +208,12 @@ class ExecutionManager:
 
             logger.info(f"当前状态已确认为: '{current_state}'")
 
-            # 2. 规划 (Plan)
             logger.info(f"正在从 '{current_state}' 规划到 '{target_state}' 的路径...")
             path = state_planner.find_path(current_state, target_state)
             if not path:
                 logger.error(f"找不到从 '{current_state}' 到 '{target_state}' 的路径，规划中止。")
                 return False
 
-            # 3. 行动与验证 (Act & Verify)
             transition_ok = True
             for transition_task in path:
                 expected_state = state_planner.get_expected_state_after_transition(current_state, transition_task)
@@ -172,32 +221,26 @@ class ExecutionManager:
 
                 logger.info(f"执行转移任务: '{full_task_id}' (期望到达: '{expected_state}')...")
 
-                # 执行转移任务
                 transition_tfr = await orchestrator.execute_task(transition_task)
 
-                # 检查任务本身是否失败
                 if not transition_tfr or transition_tfr.get('status') != 'SUCCESS':
                     logger.warning(f"转移任务 '{full_task_id}' 本身执行失败。将重新规划。")
                     transition_ok = False
-                    break  # 中断当前路径，进入下一次重规划循环
+                    break
 
-                # 任务成功，现在带重试地验证是否到达了期望状态
                 if expected_state:
-                    # 调用 StatePlanner 中新增的验证方法
                     is_verified = await state_planner.verify_state_with_retry(expected_state)
                     if not is_verified:
                         logger.warning(
                             f"转移任务 '{full_task_id}' 执行成功，但未能验证到达状态 '{expected_state}'。将重新规划。")
                         transition_ok = False
-                        break  # 验证失败，中断当前路径，进入下一次重规划循环
+                        break
                     else:
-                        # 验证成功！更新当前状态，为路径中的下一步做准备
                         current_state = expected_state
                 else:
                     logger.warning(f"在状态图中找不到任务 '{transition_task}' 对应的目标状态，无法验证，假设成功。")
 
             if transition_ok:
-                # 如果整个路径都成功执行并验证，我们再次确认最终状态
                 if current_state == target_state:
                     logger.info(f"✅ 整个状态转移路径成功完成，系统已到达目标状态 '{target_state}'。")
                     return True
@@ -205,16 +248,13 @@ class ExecutionManager:
                     logger.warning(
                         f"路径执行完毕，但最终状态为 '{current_state}'，与目标 '{target_state}' 不符。将重新规划。")
 
-            # 如果 transition_ok 为 False，或者路径走完状态不对，就等待一下再重新规划
             await asyncio.sleep(1)
 
         logger.critical(f"重规划次数达到上限 ({max_replans})，但仍未到达目标状态 '{target_state}'。")
         return False
 
     async def _run_internal_task(self, task_id: str) -> Dict[str, Any]:
-        """
-        【升级版】一个内部辅助方法，执行任务并返回统一的字典结果。
-        """
+        """(私有) 一个内部辅助方法，用于执行一个任务并返回标准化的结果字典。"""
         if task_id not in self.scheduler.all_tasks_definitions:
             logger.error(f"内部任务执行失败: 任务 '{task_id}' 未定义。")
             return {'status': 'error', 'reason': 'Task not defined'}
@@ -222,11 +262,7 @@ class ExecutionManager:
         tasklet = Tasklet(task_name=task_id, is_ad_hoc=True, execution_mode='sync')
 
         try:
-            # 直接调用 _run_execution_chain 并捕获其返回值
             result = await self._run_execution_chain(tasklet)
-
-            # _run_execution_chain -> orchestrator.execute_task 已经返回了统一的字典格式
-            # 我们只需要确保如果发生异常，也返回一个标准的错误字典
             return result if isinstance(result, dict) else {'status': 'error', 'reason': 'Invalid return type'}
 
         except Exception as e:
@@ -234,6 +270,7 @@ class ExecutionManager:
             return {'status': 'error', 'reason': str(e)}
 
     async def _run_execution_chain(self, tasklet: Tasklet) -> Any:
+        """(私有) 运行任务的核心执行链，最终调用 Orchestrator。"""
         payload = tasklet.payload or {}
         plan_name = payload.get('plan_name')
         task_name_in_plan = payload.get('task') or payload.get('task_name')
@@ -256,6 +293,7 @@ class ExecutionManager:
         )
 
     def startup(self):
+        """启动执行管理器，创建线程池和进程池。"""
         if self._io_pool is None or self._io_pool._shutdown:
             logger.info(f"ExecutionManager: 正在创建新的IO线程池 (workers={self.io_workers})...")
             self._io_pool = ThreadPoolExecutor(max_workers=self.io_workers, thread_name_prefix="aura-io-worker")
@@ -264,6 +302,7 @@ class ExecutionManager:
             self._cpu_pool = ProcessPoolExecutor(max_workers=self.cpu_workers)
 
     def shutdown(self):
+        """优雅地关闭执行管理器，等待所有池中的任务完成。"""
         logger.info("ExecutionManager: 正在关闭执行器池...")
         if self._io_pool:
             self._io_pool.shutdown(wait=True)
@@ -277,4 +316,5 @@ class ExecutionManager:
 
 
 class StatePlanningError(Exception):
+    """在状态规划阶段发生不可恢复的错误时抛出。"""
     pass
