@@ -733,7 +733,7 @@ def scan_and_find_best_match(app: AppProviderService, vision: VisionService, eng
         'top': lambda m: m.center_point[1],
         'bottom': lambda m: -m.center_point[1],  # 用负数实现max
         'left': lambda m: m.center_point[0],
-        'right': lambda m: -m.center_point[0]  # 用负数实现max
+        'right': lambda ml: -ml.center_point[0]  # 用负数实现max
     }
 
     if priority not in priority_map:

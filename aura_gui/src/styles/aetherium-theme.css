@@ -1,0 +1,326 @@
+/* === src/styles/aetherium-theme.css (FIXED) === */
+
+/* --- Aetherium Design System --- */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
+
+:root {
+    /* --- Colors --- */
+    --bg-main: #F7F9FC;
+    --bg-surface: rgba(255, 255, 255, 0.75);
+    --border-frosted: rgba(255, 255, 255, 0.45);
+    --primary-accent: #5865F2;
+    --glow-accent: rgba(106, 117, 255, 0.6);
+    --secondary-accent: #08D9D6;
+    --text-primary: #1E2330;
+    --text-secondary: #6C7288;
+    --text-tertiary: #9DA3B8;
+    --success: #16A34A; --error: #DC2626; --info: #0EA5E9;
+
+    /* --- Shape & Shadow --- */
+    --radius-sm: 6px; --radius: 12px; --radius-lg: 16px;
+    --shadow-glow: 0 0 16px 0 var(--glow-accent);
+    --shadow-card: 0 4px 12px rgba(30, 35, 48, 0.04);
+    --shadow-panel: 0 8px 24px rgba(30, 35, 48, 0.08);
+
+    /* --- Motion --- */
+    --dur: .22s;
+    --ease: cubic-bezier(.22, .61, .36, 1);
+
+    /* --- Typography --- */
+    --font-main: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* --- Dark Mode --- */
+.theme-dark {
+    --bg-main: #0B1220;
+    --bg-surface: rgba(15, 23, 42, 0.7);
+    --border-frosted: rgba(45, 59, 92, 0.5);
+    --text-primary: #E6E9F2;
+    --text-secondary: #9DA3B8;
+    --text-tertiary: #6C7288;
+}
+
+/* --- Global Base --- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: var(--font-main);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+/* --- App Layout (FIXED) --- */
+#app {
+    height: 100vh;
+}
+#app > .app {
+    height: 100%;
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);   /* 左侧固定 240px，右侧可收缩铺满 */
+    grid-template-rows: 60px 1fr;                  /* 顶栏 60px，下面内容行 */
+    grid-template-areas:
+    "sidebar topbar"
+    "sidebar main";
+}
+
+/* --- Layout Components --- */
+.topbar {
+    grid-area: topbar; /* Assign to grid area */
+    backdrop-filter: blur(12px);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-frosted);
+    padding: 8px 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0; z-index: 100;
+}
+.sidebar {
+    grid-area: sidebar; /* Assign to grid area */
+    backdrop-filter: blur(12px);
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border-frosted);
+    padding: 12px;
+    display: flex; flex-direction: column;
+    width: 240px; min-width: 240px; max-width: 240px;
+}
+.main {
+    grid-area: main;
+    padding: 24px;
+    overflow: auto;
+    width: 100%;
+    min-width: 0;             /* ← 关键修正：允许收缩 */
+    display: block;           /* 保守设置，避免外部样式干扰 */
+}
+.panel {
+    backdrop-filter: blur(12px);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-frosted);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-panel);
+}
+.panel-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-frosted);
+}
+.panel-body { padding: 16px; }
+
+/* --- Controls --- */
+.input, .select {
+    background: transparent;
+    border: 1px solid var(--border-frosted);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    color: var(--text-primary);
+    transition: all var(--dur) var(--ease);
+}
+.input:focus, .select:focus {
+    outline: none;
+    border-color: var(--primary-accent);
+    box-shadow: 0 0 0 3px var(--glow-accent);
+}
+.btn {
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: 8px 14px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all var(--dur) var(--ease);
+}
+.btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--glow-accent); }
+.btn-primary {
+    color: #fff;
+    background: var(--primary-accent);
+    box-shadow: 0 4px 8px rgba(88, 101, 242, 0.2);
+}
+.btn-primary:hover { filter: brightness(1.1); box-shadow: 0 6px 12px rgba(88, 101, 242, 0.3); }
+.btn-ghost { background: transparent; color: var(--text-secondary); }
+.btn-ghost:hover { background: rgba(128,128,128,0.1); color: var(--text-primary); }
+
+/* --- Pills & Status --- */
+.pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--border-frosted);
+    background: rgba(128,128,128,0.05);
+    color: var(--text-secondary);
+}
+.pill-green { background: rgba(22, 163, 74, 0.1); color: var(--success); border-color: rgba(22, 163, 74, 0.2); }
+.pill-red { background: rgba(220, 38, 38, 0.1); color: var(--error); border-color: rgba(220, 38, 38, 0.2); }
+.pill-blue { background: rgba(14, 165, 233, 0.1); color: var(--info); border-color: rgba(14, 165, 233, 0.2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot.ok { background: var(--success); }
+.dot.bad { background: var(--error); }
+
+/* --- Table --- */
+.table-wrap { overflow: auto; }
+table { width: 100%; border-collapse: separate; border-spacing: 0; }
+th { text-align: left; padding: 10px 12px; color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border-frosted); }
+td { padding: 12px; border-bottom: 1px solid var(--border-frosted); }
+tr:last-child td { border-bottom: none; }
+code { background: rgba(128,128,128,0.1); padding: 2px 6px; border-radius: 4px; font-family: monospace; }
+pre.json { padding: 12px; border-radius: var(--radius-sm); }
+/* === END src/styles/aetherium-theme.css (FIXED) === */
+
+/* === Aetherium micro-interactions pack === */
+
+/* 1) 主要按钮/状态胶囊轻微律动 */
+@keyframes aether-glow-pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(88,101,242,0.25) }
+    50% { box-shadow: 0 0 0 6px rgba(88,101,242,0.10) }
+}
+.btn-primary.pulse, .pill-green.pulse, .pill-blue.pulse {
+    animation: aether-glow-pulse 2.2s ease-in-out infinite;
+}
+
+/* 2) 内容进场（配合 v-reveal） */
+.reveal { opacity: 0; transform: translateY(8px); transition: opacity .5s var(--ease), transform .5s var(--ease); }
+.reveal-in { opacity: 1; transform: none; }
+
+/* 3) 按住进度（Run/Pause按钮底部进度条） */
+/* --- Hold progress: track + fill（主按钮用白色条，幽灵按钮用主题色） --- */
+.hold-btn { position: relative; overflow: hidden; }
+
+/* 轨道（淡色，始终可见） */
+.hold-btn::before {
+    content: "";
+    position: absolute;
+    left: 8px; right: 8px; bottom: 6px;
+    height: 3px; border-radius: 2px;
+    background: var(--hold-track, rgba(88,101,242,.25)); /* 默认主题色淡轨道 */
+    pointer-events: none;
+    opacity: .7;
+}
+
+/* 填充（根据进度缩放） */
+.hold-btn::after {
+    content: "";
+    position: absolute;
+    left: 8px; bottom: 6px;
+    height: 3px; border-radius: 2px;
+    width: calc(100% - 16px);
+    transform: scaleX(var(--prog, 0));
+    transform-origin: left;
+    background: var(--hold-fill, var(--primary-accent));
+    pointer-events: none;
+    transition: transform .05s linear;
+    /* 让填充在深色背景上更亮一些 */
+    mix-blend-mode: screen;
+}
+
+/* 主按钮（蓝底）：改成白色填充 + 更亮的轨道，保证对比度 */
+.btn-primary.hold-btn {
+    --hold-fill: #fff;
+    --hold-track: rgba(255,255,255,.35);
+}
+
+/* 幽灵按钮（透明底）：保持主题色填充，轨道更浅 */
+.btn-ghost.hold-btn {
+    --hold-fill: var(--primary-accent);
+    --hold-track: rgba(88,101,242,.25);
+}
+
+/* 动效减少时不显示动画 */
+@media (prefers-reduced-motion: reduce) {
+    .hold-btn::after { transition: none; }
+}
+
+
+/* 4) 卡片悬停轻浮 */
+.card-floaty, .task-card, .kpi-card {
+    transition: transform .25s var(--ease), box-shadow .25s var(--ease);
+    will-change: transform;
+}
+.card-floaty:hover, .task-card:hover, .kpi-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 24px rgba(0,0,0,.08), var(--shadow-glow);
+}
+
+/* 5) 尊重“减少动态”偏好 */
+@media (prefers-reduced-motion: reduce) {
+    .btn-primary.pulse, .pill-green.pulse, .pill-blue.pulse { animation: none !important; }
+    .reveal { transition: none !important; opacity: 1 !important; transform: none !important; }
+}
+
+
+/* === Aetherium Glass Surfaces Pack === */
+
+/* 设计令牌 */
+:root {
+    --glass-blur: 18px;
+    --glass-bg-1: rgba(255,255,255,0.58);
+    --glass-bg-2: rgba(255,255,255,0.32);
+    --glass-stroke: rgba(255,255,255,0.38);
+    --glass-shadow: 0 10px 28px rgba(30,35,48,0.12);
+    --glass-glow-1: rgba(88,101,242,0.14);
+    --glass-glow-2: rgba(8,217,214,0.12);
+}
+.theme-dark {
+    --glass-blur: 20px;
+    --glass-bg-1: rgba(18,25,42,0.82);
+    --glass-bg-2: rgba(18,25,42,0.54);
+    --glass-stroke: rgba(120,135,170,0.22);
+    --glass-shadow: 0 16px 32px rgba(0,0,0,0.36);
+    --glass-glow-1: rgba(88,101,242,0.18);
+    --glass-glow-2: rgba(8,217,214,0.16);
+}
+
+/* 通用玻璃面板 */
+.glass {
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    background:
+            radial-gradient(1200px 600px at 100% -10%, var(--glass-glow-1), transparent 60%),
+            radial-gradient(600px 260px at -10% 110%, var(--glass-glow-2), transparent 60%),
+            linear-gradient(180deg, var(--glass-bg-1), var(--glass-bg-2));
+    border: 1px solid var(--border-frosted);
+    box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.15);
+}
+
+/* 折射边缘（拟物厚度） */
+.glass.glass-refract::before{
+    content:"";
+    position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+    padding:1px;
+    background: conic-gradient(from 180deg at 50% 50%,
+    rgba(255,255,255,.65), rgba(255,255,255,.2), rgba(255,255,255,.65)) border-box;
+    /* 只显示“边框环”的遮罩（有兼容降级） */
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    opacity:.85;
+}
+
+/* 内部高光与厚度阴影（更像玻璃块） */
+.glass::after{
+    content:"";
+    position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+    box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.45),    /* 顶部内高光 */
+            inset 0 -1px 0 rgba(0,0,0,0.08);         /* 底部内暗边 */
+}
+
+/* 交互状态：悬停微发光 */
+.glass.glass-shimmer{ transition: box-shadow .25s var(--ease), transform .25s var(--ease); }
+.glass.glass-shimmer:hover{
+    box-shadow:
+            0 16px 40px rgba(0,0,0,.16),
+            0 0 0 1px rgba(255,255,255,0.10) inset,
+            0 0 40px rgba(88,101,242,0.12);
+    transform: translateY(-2px);
+}
+
+/* 尺寸/圆角预设 */
+.glass-thin { border-radius: 12px; }
+.glass-thick{ border-radius: 18px; }
+
+/* 面板区块内边距（可选工具类） */
+.glass-pad { padding: 16px; }
+
+

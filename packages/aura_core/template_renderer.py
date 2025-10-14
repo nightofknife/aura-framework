@@ -2,7 +2,8 @@
 
 from typing import Any, Dict, Optional
 
-from jinja2 import Environment, BaseLoader, UndefinedError
+from jinja2 import BaseLoader, UndefinedError
+from jinja2.nativetypes import NativeEnvironment
 
 from packages.aura_core.context import ExecutionContext
 from packages.aura_core.logger import logger
@@ -17,7 +18,7 @@ class TemplateRenderer:
     def __init__(self, execution_context: ExecutionContext, state_store: StateStoreService):
         self.execution_context = execution_context
         self.state_store = state_store
-        self.jinja_env = Environment(loader=BaseLoader(), enable_async=True)
+        self.jinja_env = NativeEnvironment(loader=BaseLoader(), enable_async=True)
 
     async def get_render_scope(self) -> Dict[str, Any]:
         """
