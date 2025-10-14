@@ -1,5 +1,16 @@
-# packages/aura_core/action_injector.py (FINAL CLEANED VERSION)
+# -*- coding: utf-8 -*-
+"""Action 注入器，负责解析和执行单个 Action。
 
+该模块的核心是 `ActionInjector` 类，它处理 Action 执行的整个生命周期：
+1.  **依赖注入**: 根据 Action 函数签名，自动注入所需的服务、执行上下文（ExecutionContext）
+    以及执行引擎（ExecutionEngine）实例。
+2.  **参数渲染**: 使用模板引擎（TemplateRenderer）渲染 Action 的输入参数，
+    允许在参数中使用动态变量。
+3.  **参数校验**: 如果 Action 的参数是 Pydantic 模型，会自动进行数据校验。
+4.  **同步/异步执行**: 智能地处理同步和异步 Action，将同步函数放入线程池中
+    执行以避免阻塞事件循环。
+5.  **子任务执行**: 特殊处理 `aura.run_task` 这一内建 Action，以实现任务的嵌套调用。
+"""
 import asyncio
 import inspect
 import contextvars
@@ -17,27 +28,53 @@ if TYPE_CHECKING:
 
 
 class ActionInjector:
-    """
-    负责解析和执行单个Action。
-    - 使用传入的TemplateRenderer进行参数渲染。
-    - 从ExecutionContext和预置服务中注入依赖。
+    """负责解析和执行单个 Action。
+
+    此类在执行引擎（ExecutionEngine）的上下文中为每个 Action 实例化。
+    它封装了执行一个 Action 所需的所有逻辑，包括参数渲染、依赖注入和
+    对同步/异步函数的正确调用。
+
+    Attributes:
+        context (ExecutionContext): 当前任务的执行上下文。
+        engine (ExecutionEngine): 父执行引擎实例。
+        renderer (TemplateRenderer): 用于渲染参数的模板渲染器。
+        services (Dict[str, Any]): 一个包含了已实例化服务的字典，用于依赖注入。
     """
 
     def __init__(self, context: ExecutionContext, engine: 'ExecutionEngine', renderer: TemplateRenderer, services: Dict[str, Any]):
+        """初始化 ActionInjector。
+
+        Args:
+            context: 当前任务的执行上下文。
+            engine: 父执行引擎实例。
+            renderer: 用于渲染参数的模板渲染器。
+            services: 已实例化的服务依赖字典。
+        """
         self.context = context
         self.engine = engine
         self.renderer = renderer
         self.services = services
 
     async def execute(self, action_name: str, raw_params: Dict[str, Any]) -> Any:
-        """
-        执行一个Action的核心入口。
-        1. 查找Action定义。
-        2. 使用缓存的作用域渲染参数。
-        3. 准备所有调用参数（包括服务注入）。
-        4. 根据Action是同步还是异步，选择正确的执行方式。
-        """
+        """执行一个 Action 的核心入口。
 
+        此方法按以下步骤执行一个 Action：
+        1. 查找 Action 的定义。
+        2. 使用模板渲染器和当前作用域渲染输入参数。
+        3. 准备所有调用参数，包括注入服务和框架对象。
+        4. 根据 Action 是同步还是异步，选择正确的执行方式。
+
+        Args:
+            action_name: 要执行的 Action 的名称 (FQID)。
+            raw_params: 从 Plan 文件中读取的原始、未经渲染的参数字典。
+
+        Returns:
+            Action 函数的返回值。
+
+        Raises:
+            ValueError: 如果找不到 Action 定义或缺少必要参数。
+            TypeError: 如果 `aura.run_task` 的 `inputs` 参数类型不正确。
+        """
         if action_name == "aura.run_task":
             return await self._execute_run_task(raw_params)
 
@@ -67,13 +104,25 @@ class ActionInjector:
             )
 
     async def _execute_run_task(self, raw_params: Dict[str, Any]) -> Any:
-        """
-        使用 orchestrator 执行一个子任务。这是实现多节点循环和任务复用的核心。
+        """专门处理内建的 `aura.run_task` Action。
+
+        此方法通过调用 Orchestrator 来执行一个子任务，是实现多节点循环和
+        任务复用的核心机制。
+
+        Args:
+            raw_params: `aura.run_task` Action 的原始参数。
+
+        Returns:
+            子任务执行完毕后的框架数据 (`framework_data`)。
+
+        Raises:
+            ValueError: 如果缺少 `task_name` 参数。
+            TypeError: 如果 `inputs` 参数不是一个字典。
+            Exception: 如果子任务执行失败，则重新抛出异常。
         """
         logger.info(f"Executing sub-task via aura.run_task...")
 
         # 步骤 1: 渲染参数
-        # 子任务的参数也需要渲染，因为它可能包含来自父任务的变量
         render_scope = await self.renderer.get_render_scope()
         rendered_params = await self.renderer.render(raw_params, scope=render_scope)
 
@@ -87,30 +136,40 @@ class ActionInjector:
             raise TypeError(f"aura.run_task 'inputs' parameter must be a dictionary.")
 
         # 步骤 3: 获取 Orchestrator 实例
-        # 这是安全访问顶层服务的正确路径
         orchestrator = self.engine.orchestrator
 
         # 步骤 4: 调用 Orchestrator 执行子任务
-        # 这是上下文传递的关键点：将计算好的 sub_task_inputs 传递给新任务
         tfr = await orchestrator.execute_task(
             task_name_in_plan=task_name,
             inputs=sub_task_inputs
         )
 
         # 步骤 5: 处理子任务结果
-        # 如果子任务失败，则当前 action 也失败，并将错误信息向上传播
         if tfr.get('status') in ('FAILED', 'ERROR'):
             error_info = tfr.get('error', {'message': 'Unknown error in sub-task.'})
             raise Exception(f"Sub-task '{task_name}' failed. Reason: {error_info}")
 
-        # 如果成功，将子任务的完整执行结果作为此 action 的返回值
-        # 这使得父任务可以访问子任务的内部状态，例如：
-        # {{ nodes.my_loop_node.output[0].nodes.sub_task_node.output }}
+        # 返回子任务的完整框架数据，允许父任务访问其内部状态
         return tfr.get('framework_data')
 
     def _prepare_action_arguments(self, action_def: ActionDefinition, rendered_params: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        准备Action的最终调用参数，注入服务和框架对象。
+        """准备 Action 的最终调用参数，处理依赖注入和参数映射。
+
+        此方法负责：
+        - 如果 Action 期望一个 Pydantic 模型，则用渲染后的参数实例化该模型。
+        - 注入 `service` 依赖。
+        - 注入 `ExecutionContext` 和 `ExecutionEngine` 实例。
+        - 从 `rendered_params` 中匹配常规参数。
+
+        Args:
+            action_def: 要执行的 Action 的定义。
+            rendered_params: 已经过模板渲染的参数字典。
+
+        Returns:
+            一个字典，包含了调用 Action 函数所需的所有参数名和值。
+
+        Raises:
+            ValueError: 如果参数校验失败或缺少必要参数。
         """
         sig = action_def.signature
         call_args = {}
@@ -144,16 +203,12 @@ class ActionInjector:
             if param_name in action_def.service_deps:
                 service_fqid = action_def.service_deps[param_name]
 
-                # 优先从已经实例化的 services 字典中获取
-                # 注意：这里的 service_fqid 实际上是别名，因为 service_deps 的 key 是参数名（别名）
-                # 我们需要检查 self.services 中是否有这个别名
                 if service_fqid in self.services:
                     call_args[param_name] = self.services[service_fqid]
                 else:
-                    # 如果服务不在已实例化的字典中，尝试从注册表动态获取
                     logger.warning(f"服务 '{service_fqid}' 未在启动时预实例化，尝试动态获取。")
                     service_instance = service_registry.get_service_instance(service_fqid)
-                    self.services[service_fqid] = service_instance  # 缓存起来供后续使用
+                    self.services[service_fqid] = service_instance
                     call_args[param_name] = service_instance
                 continue
 

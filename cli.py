@@ -1,5 +1,16 @@
-# cli.py (Aura 3.0 - 阶段四)
+# -*- coding: utf-8 -*-
+"""Aura 框架的命令行接口 (CLI)。
 
+该模块使用 `click` 库构建了一个功能丰富的命令行工具，用于与 Aura 框架进行交互。
+它允许开发者管理插件包、运行临时任务以及检查已注册的服务。
+
+主要命令组:
+- `package`: 用于管理 Aura 包（插件），如构建。
+- `task`: 用于运行和管理任务。
+- `service`: 用于查看已注册的服务及其状态。
+
+所有命令在执行前都会确保 Aura 核心框架（Scheduler）已被初始化。
+"""
 import click
 import sys
 from pathlib import Path
@@ -28,8 +39,18 @@ except ImportError as e:
 scheduler_instance: Scheduler = None
 
 
-def get_scheduler():
-    """获取全局的Scheduler实例，如果不存在则创建它。"""
+def get_scheduler() -> Scheduler:
+    """获取全局的 Scheduler 实例，如果不存在则进行初始化。
+
+    这是一个单例模式的实现，确保所有 CLI 命令共享同一个框架实例。
+    首次调用时，它会实例化 Scheduler，这个过程会加载所有插件和定义。
+
+    Returns:
+        Scheduler: 全局唯一的调度器实例。
+
+    Raises:
+        SystemExit: 如果初始化过程中发生严重错误，则会终止程序。
+    """
     global scheduler_instance
     if scheduler_instance is None:
         click.echo("正在初始化Aura框架...")
@@ -47,7 +68,11 @@ def get_scheduler():
 
 @click.group()
 def aura():
-    """Aura 3.0 自动化框架命令行工具。"""
+    """Aura 3.0 自动化框架命令行工具。
+
+    这是所有命令的根入口点。调用任何子命令之前，它会通过 `get_scheduler()`
+    确保 Aura 框架核心已经被加载。
+    """
     # 这个函数是所有命令的入口，我们在这里确保框架被加载。
     get_scheduler()
     pass
@@ -56,15 +81,23 @@ def aura():
 # --- 1. 包管理命令组 ---
 @aura.group()
 def package():
-    """管理Aura包（插件）。"""
+    """管理 Aura 包（插件）的命令组。
+
+    提供用于创建、构建、检查和管理 Aura 插件包的子命令。
+    """
     pass
 
 
 @package.command()
 @click.argument('package_path', type=click.Path(exists=True, file_okay=False, resolve_path=True))
 def build(package_path: str):
-    """
-    强制从源码构建一个包，并生成/更新其 api.yaml 文件。
+    """强制从源码构建一个包，并生成或更新其 api.yaml 文件。
+
+    此命令会扫描包的源代码，提取所有 action 和 service 的定义，
+    并将其序列化到 `api.yaml` 文件中。这对于分发不含源码的已打包插件非常重要。
+
+    Args:
+        package_path (str): 要构建的包的根目录路径。
     """
     scheduler = get_scheduler()
     package_path_obj = Path(package_path)
@@ -100,7 +133,7 @@ def build(package_path: str):
 # --- 2. 任务管理命令组 ---
 @aura.group()
 def task():
-    """运行和管理任务。"""
+    """运行和管理任务的命令组。"""
     pass
 
 
@@ -108,10 +141,15 @@ def task():
 @click.argument('task_fqid')
 @click.option('--wait', is_flag=True, help="阻塞并等待任务执行完成。")
 def run_task(task_fqid: str, wait: bool):
-    """
-    运行一个临时任务 (Ad-Hoc Task)。
-    TASK_FQID 的格式为: <plan_name>/<task_name>
-    例如: my_plan/daily_check
+    """运行一个临时任务 (Ad-Hoc Task)。
+
+    通过提供任务的完全限定ID（FQID），可以直接触发任何已定义的任务，
+    而无需预先在 schedule.yaml 中进行调度。
+
+    Args:
+        task_fqid (str): 任务的完全限定ID，格式为 `<plan_name>/<task_name>`。
+                         例如: `my_plan/daily_check`。
+        wait (bool): 如果设置，命令将阻塞直到任务执行完毕。
     """
     scheduler = get_scheduler()
 
@@ -151,13 +189,17 @@ def run_task(task_fqid: str, wait: bool):
 # --- 3. 服务管理命令组 ---
 @aura.group()
 def service():
-    """查看已注册的服务。"""
+    """查看已注册的服务的命令组。"""
     pass
 
 
 @service.command(name="list")
 def list_services():
-    """列出所有已注册的服务及其状态。"""
+    """列出所有已注册的服务及其状态。
+
+    此命令会显示每个服务的 FQID、是否公开、当前状态（如 resolved, defined）
+    以及它所属的插件。状态会用不同颜色高亮以示区分。
+    """
     scheduler = get_scheduler()
     definitions = scheduler.get_all_services_status()
 
