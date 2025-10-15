@@ -32,8 +32,10 @@ from .state_store_service import StateStoreService
 from .template_renderer import TemplateRenderer
 
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
+
 
 class StepState(Enum):
     """表示任务中一个步骤（节点）的执行状态。"""
@@ -49,6 +51,7 @@ class ExecutionEngine:
 
     每个任务在运行时都会创建一个独立的 `ExecutionEngine` 实例。
     """
+
     def __init__(self, orchestrator: 'Orchestrator', pause_event: asyncio.Event,
                  event_callback: Optional[Callable] = None):
         """初始化执行引擎。
@@ -374,7 +377,7 @@ class ExecutionEngine:
         return await injector.execute(action_name, raw_params)
 
     async def _execute_loop(self, node_id: str, node_data: Dict, node_context: ExecutionContext, loop_config: Dict) -> \
-    List[Any]:
+            List[Any]:
         """(私有) 执行节点中定义的循环逻辑。"""
         renderer = TemplateRenderer(node_context, self.state_store)
         rendered_config = await renderer.render(loop_config)
@@ -441,4 +444,3 @@ class ExecutionEngine:
             logger.warning("接收到全局暂停信号，任务执行已暂停。等待恢复信号...")
             await self.pause_event.wait()
             logger.info("接收到恢复信号，任务将继续执行。")
-
