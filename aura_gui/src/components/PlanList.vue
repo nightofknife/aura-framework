@@ -37,7 +37,7 @@ const emit = defineEmits(['plan-selected']);
 const plans = ref([]);
 const loading = ref(true);
 const error = ref(null);
-const apiClient = axios.create({baseURL: 'http://127.0.0.1:8000/api', timeout: 5000});
+const apiClient = axios.create({baseURL: 'http://127.0.0.1:18098/api', timeout: 5000});
 
 const fetchPlans = async () => {
   loading.value = true;

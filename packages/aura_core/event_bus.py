@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""提供一个线程安全的、异步的事件总线。
+"""
+提供一个线程安全的、异步的事件总线。
 
 此模块是 Aura 框架内部组件间通信的核心。它实现了一个发布/订阅（Pub/Sub）模式，
 允许系统不同部分在不直接相互引用的情况下，通过发布和订阅事件来进行解耦通信。
@@ -22,6 +23,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Dict, Any, List, Optional, Awaitable
 import threading
+
+
+
 
 def get_utc_timestamp() -> str:
     """获取当前时间的 UTC ISO 格式字符串。"""
@@ -107,9 +111,10 @@ class EventBus:
         with self._lock:
             for sub in self._subscriptions[key]:
                 if sub.callback is callback and sub.loop is loop and sub.persistent == persistent:
+                    print(f"[EventBus] 跳过重复订阅: {key}")
                     return
             self._subscriptions[key].append(Subscription(callback=callback, loop=loop, persistent=persistent))
-
+            print(f"[EventBus] 已注册订阅: key='{key}', persistent={persistent}, loop={id(loop)}")
     async def publish(self, event: Event):
         """发布一个事件到事件总线。
 
@@ -149,6 +154,9 @@ class EventBus:
         此方法会遍历所有订阅，并移除那些 `persistent` 标志为 False 的订阅。
         """
         with self._lock:
+            before_count = sum(len(subs) for subs in self._subscriptions.values())
             for key, subs in list(self._subscriptions.items()):
                 self._subscriptions[key] = [s for s in subs if s.persistent]
+            after_count = sum(len(subs) for subs in self._subscriptions.values())
+            print(f"[EventBus] clear_subscriptions 执行完毕: 清理前 {before_count} 个订阅，清理后 {after_count} 个")
 

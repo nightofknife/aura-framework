@@ -83,7 +83,7 @@
             <th style="width:26px;"></th>
             <th>Plan / Task</th>
             <th>Inputs</th>
-            <th>Priority</th>
+            <th>Repeat</th> <!-- ✅ 改为 Repeat -->
             <th>Status</th>
             <th>Actions</th>
           </tr>
@@ -100,7 +100,17 @@
               </td>
               <td><strong>{{ it.plan_name }}</strong> / {{ it.task_name }}</td>
               <td><code>{{ previewInputs(it.inputs) }}</code></td>
-              <td>{{ it.priority ?? '—' }}</td>
+              <td>
+                <!-- ✅ 显示重复次数，支持就地编辑 -->
+                <input
+                    class="repeat-input"
+                    type="number"
+                    v-model.number="it.repeat"
+                    min="1"
+                    max="500"
+                    @change="updateTask(it.id, { repeat: it.repeat })"
+                >
+              </td>
               <td><span class="pill" :class="statusPill(it.status)">{{ safeUpper(it.status || 'pending') }}</span></td>
               <td>
                 <button class="btn btn-ghost" @click="remove(it)">Del</button>
@@ -151,13 +161,28 @@
         <div v-if="cfg.jsonError" class="error">{{ cfg.jsonError }}</div>
       </div>
 
-      <details class="adv">
-        <summary><b>Advanced</b> (priority & note)</summary>
+      <!-- ✅ 新增：重复执行配置 -->
+      <details class="adv" open>
+        <summary><b>Repeat Execution</b></summary>
         <div class="adv-grid">
           <div class="field">
-            <div class="label">Priority (optional)</div>
-            <input class="input" v-model.number="cfg.priority" type="number" placeholder="e.g. 5">
+            <div class="label">Repeat Count</div>
+            <input
+                class="input"
+                v-model.number="cfg.repeat"
+                type="number"
+                min="1"
+                max="500"
+                placeholder="1"
+            >
+            <div class="help">Execute this task N times (1-500)</div>
           </div>
+        </div>
+      </details>
+
+      <details class="adv">
+        <summary><b>Advanced</b> (note only)</summary>
+        <div class="adv-grid">
           <div class="field">
             <div class="label">Note</div>
             <input class="input" v-model="cfg.note" placeholder="Optional note">
@@ -187,7 +212,7 @@ onMounted(() => window.addEventListener('keydown', onGlobalKey))
 onUnmounted(() => window.removeEventListener('keydown', onGlobalKey))
 
 const {push: toast} = useToasts();
-const api = axios.create({baseURL: 'http://127.0.0.1:8000/api', timeout: 5000});
+const api = axios.create({baseURL: 'http://127.0.0.1:18098/api', timeout: 5000});
 
 // 运行控制（含长按切换）
 const {running, autoMode, startBatch, pause, setAuto, forceStop} = useStagingRunner();
@@ -205,23 +230,19 @@ function onHoldStart(target) {
       clearInterval(hold._timer);
 
       if (target === 'run') {
-        // 长按：切换全局 auto，并在需要时立即开跑
         const next = !autoMode.value;
         setAuto(next);
         if (next) {
-          // 如果刚切到 ON 且当前未运行，并且有任务，则立即开始批量
           if (!running.value && stagingList.value.length > 0) {
             startBatch();
           }
         }
       } else {
-        // 长按暂停键：强制停止
         forceStop();
       }
     }
   }, 16);
 }
-
 
 function onHoldEnd(target) {
   clearInterval(hold._timer);
@@ -229,28 +250,29 @@ function onHoldEnd(target) {
 
   if (target === 'run') {
     if (p < 100) {
-      // 短按：临时开启 auto，把队列跑空后还原先前状态
       const wasAuto = autoMode.value;
       if (!wasAuto) setAuto(true);
 
-      // 开始批量
       startBatch();
 
-      // 监听“队列清空或停止”，然后还原 auto
+      // ✅ 修改：只在队列完全清空且没有任务在派发时才还原
       if (!wasAuto) {
         const stopWatch = watch(
             [stagingList, running],
             ([list, run]) => {
-              if ((!list || list.length === 0) || !run) {
-                setAuto(wasAuto);       // 还原到进入前的 auto 状态
-                stopWatch();            // 解除监听
+              // ✅ 检查：队列为空 且 没有任务在运行
+              const allPending = list.every(it => it.status === 'pending');
+              const isEmpty = list.length === 0;
+
+              if (isEmpty && !run) {
+                setAuto(wasAuto);
+                stopWatch();
               }
             }
         );
       }
     }
   } else {
-    // 短按暂停：仅暂停
     if (p < 100) pause();
   }
 
@@ -258,12 +280,6 @@ function onHoldEnd(target) {
   hold.pause = 0;
 }
 
-
-function onHoldCancel() {
-  clearInterval(hold._timer);
-  hold.run = 0;
-  hold.pause = 0;
-}
 
 // Plans & Tasks
 const plans = ref([]);
@@ -298,11 +314,9 @@ async function loadAllTasks() {
   allTasks.value = result;
 }
 
-// 方案状态 & 查询
 const open = reactive({byPlan: true, favs: false});
 const ui = reactive({planSelected: '', query: ''});
 
-// 搜索 & 高亮
 const searchEl = ref(null);
 
 function focusSearch() {
@@ -320,7 +334,6 @@ function highlight(s) {
   return escHtml(String(s || '')).replace(rx, '<mark>$1</mark>');
 }
 
-// 收藏
 const FAV_KEY = 'exec.favs';
 const favSet = ref(new Set(JSON.parse(localStorage.getItem(FAV_KEY) || '[]')));
 
@@ -336,7 +349,6 @@ function toggleFav(plan, task) {
   localStorage.setItem(FAV_KEY, JSON.stringify([...next]));
 }
 
-// 分组视图
 const grouped = computed(() => {
   const ps = ui.planSelected || (plans.value[0]?.name || '');
   const q = (ui.query || '').trim().toLowerCase();
@@ -364,7 +376,6 @@ const grouped = computed(() => {
 });
 const showGroupHeaders = computed(() => (ui.query || '').trim().length > 0);
 
-// 收藏视图
 const favTasksView = computed(() => {
   const map = new Map(allTasks.value.map(t => [t.__key, t]));
   const list = [...favSet.value.values()].map(k => map.get(k)).filter(Boolean);
@@ -373,7 +384,6 @@ const favTasksView = computed(() => {
       .map(t => ({...t, titleHtml: highlight(t.title), descHtml: highlight(t.desc), starred: true}));
 });
 
-// 初始化
 onMounted(async () => {
   await loadPlans();
   if (!ui.planSelected && plans.value.length) ui.planSelected = plans.value[0].name;
@@ -388,7 +398,7 @@ function onGlobalKey(e) {
   }
 }
 
-// 参数配置（仅添加时）
+// 参数配置
 const cfg = reactive({
   open: false,
   plan: '',
@@ -398,7 +408,8 @@ const cfg = reactive({
   inputsRaw: '{}',
   jsonError: '',
   priority: null,
-  note: ''
+  note: '',
+  repeat: 1, // ✅ 新增
 });
 
 function openConfig(plan, task, meta) {
@@ -418,6 +429,7 @@ function openConfig(plan, task, meta) {
   }
   cfg.priority = null;
   cfg.note = '';
+  cfg.repeat = 1; // ✅ 重置为 1
 }
 
 const hasSchema = computed(() => !!cfg.meta?.inputs_schema);
@@ -484,7 +496,7 @@ function buildInputs() {
 // 本地队列
 const staging = useStagingQueue();
 const stagingList = computed(() => Array.isArray(staging.items?.value) ? staging.items.value : []);
-const historyList = computed(() => Array.isArray(staging.history?.value) ? staging.history.value : []);
+const {updateTask} = staging;
 
 function confirmAdd() {
   const inputs = buildInputs();
@@ -493,9 +505,14 @@ function confirmAdd() {
     task_name: cfg.task,
     inputs,
     priority: cfg.priority ?? null,
-    note: cfg.note || ''
+    note: cfg.note || '',
+    repeat: Math.max(1, Math.min(500, cfg.repeat || 1)), // ✅ 添加重复次数
   });
-  toast({type: 'success', title: 'Added to queue', message: `${cfg.plan} / ${cfg.task}`});
+  toast({
+    type: 'success',
+    title: 'Added to queue',
+    message: `${cfg.plan} / ${cfg.task} ${cfg.repeat > 1 ? `(×${cfg.repeat})` : ''}`
+  });
   cfg.open = false;
 }
 
@@ -512,14 +529,6 @@ function expandAll(v) {
   expanded.value = v ? new Set(stagingList.value.map(x => x.id)) : new Set();
 }
 
-function moveUp(it) {
-  staging.move(it.id, -1);
-}
-
-function moveDown(it) {
-  staging.move(it.id, +1);
-}
-
 function remove(it) {
   staging.removeTask(it.id);
 }
@@ -528,7 +537,7 @@ function clearAll() {
   staging.clear();
 }
 
-// —— 拖拽排序 —— //
+// 拖拽排序
 const dragId = ref(null);
 const dragOverId = ref(null);
 
@@ -564,33 +573,6 @@ function onDrop(targetId) {
   }
 }
 
-function onDragEnd() {
-  dragId.value = null;
-  dragOverId.value = null;
-}
-
-// 历史
-const qHist = ref('');
-const filteredHistory = computed(() => {
-  const q = qHist.value.trim().toLowerCase();
-  if (!q) return historyList.value;
-  return historyList.value.filter(h => (`${h.plan_name} ${h.task_name} ${JSON.stringify(h.inputs || {})}`).toLowerCase().includes(q));
-});
-
-function requeue(h) {
-  staging.addTask({
-    plan_name: h.plan_name,
-    task_name: h.task_name,
-    inputs: h.inputs,
-    priority: h.priority,
-    note: h.note
-  });
-}
-
-function clearHistory() {
-  staging.clearHistory();
-}
-
 // 通用
 function previewInputs(obj) {
   try {
@@ -621,14 +603,6 @@ function statusPill(s) {
   if (v === 'success') return 'pill-green';
   if (v === 'error') return 'pill-red';
   return 'pill-gray';
-}
-
-function fmt(ts) {
-  if (!ts) return '—';
-  const ms = ts > 1e12 ? ts : Math.floor(ts * 1000);
-  const d = new Date(ms);
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 </script>
 
@@ -665,7 +639,6 @@ function fmt(ts) {
   align-items: center;
 }
 
-/* 两列自适应 */
 .content-grid {
   width: 100%;
   min-width: 0;
@@ -722,6 +695,34 @@ function fmt(ts) {
 
 .row-drop-target {
   background: color-mix(in oklab, var(--primary-accent) 10%, transparent);
+}
+
+/* ✅ 新增：重复次数输入框样式 */
+.repeat-input {
+  width: 60px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-frosted);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  text-align: center;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.repeat-input:hover {
+  border-color: var(--primary-accent);
+}
+
+.repeat-input:focus {
+  outline: none;
+  border-color: var(--primary-accent);
+  box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.1);
+}
+
+.repeat-input::-webkit-inner-spin-button,
+.repeat-input::-webkit-outer-spin-button {
+  opacity: 1;
 }
 
 .fade-enter-active, .fade-leave-active {

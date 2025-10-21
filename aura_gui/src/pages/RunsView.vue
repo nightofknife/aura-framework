@@ -15,7 +15,7 @@
       <ProDataTable
           :columns="columns"
           :rows="rowsView"
-          row-key="id"
+          :row-key="row => row.cid || row.id"
           :maxHeight="'70vh'"
           :sort-default="{key:'startedAt',dir:'desc'}"
           @row-click="openRun"
@@ -34,47 +34,62 @@
 </template>
 
 <script setup>
-import {computed, ref, watch} from 'vue';
+import { computed, ref } from 'vue';
 import ProFilterBar from '../components/ProFilterBar.vue';
 import ProDataTable from '../components/ProDataTable.vue';
 import RunDetailDrawer from '../components/RunDetailDrawer.vue';
-import {useRuns} from '../composables/useRuns.js';
-import {useAuraSocket} from '../composables/useAuraSocket.js';
+import { useRuns } from '../composables/useRuns.js';
 
-const {activeRuns, recentRuns, runsById} = useRuns();
-const {lastMessage} = useAuraSocket();
+const { activeRuns, recentRuns, runsById } = useRuns();
 
 const columns = [
-  {key: 'status', label: 'Status', width: '110px'},
-  {key: 'plan', label: 'Plan', sortable: true, width: '180px'},
-  {key: 'task', label: 'Task', sortable: true},
-  {key: 'startedAt', label: 'Started', sortable: true, width: '180px'},
-  {key: 'finishedAt', label: 'Finished', sortable: true, width: '180px'},
-  {key: 'elapsed', label: 'Duration', sortable: true, width: '110px'},
+  { key: 'status', label: 'Status', width: '110px' },
+  { key: 'plan_name', label: 'Plan', sortable: true, width: '180px' },
+  { key: 'task_name', label: 'Task', sortable: true },
+  { key: 'startedAt', label: 'Started', sortable: true, width: '180px' },
+  { key: 'finishedAt', label: 'Finished', sortable: true, width: '180px' },
+  { key: 'elapsed', label: 'Duration', sortable: true, width: '110px' },
 ];
 
-const filters = ref({query: '', status: '', plan: ''});
+const filters = ref({ query: '', status: '', plan: '' });
+
 const planOptions = computed(() => {
-  const set = new Set([...activeRuns.value, ...recentRuns.value].map(r => r.plan).filter(Boolean));
+  const set = new Set([...activeRuns.value, ...recentRuns.value].map(r => r.plan_name).filter(Boolean));
   return [...set];
 });
 
 const rows = computed(() => {
   const all = [...activeRuns.value, ...recentRuns.value];
   return all.map(r => ({
-    id: r.id, plan: r.plan, task: r.task, status: r.status,
-    startedAt: r.startedAt ? new Date(r.startedAt) : null,
-    finishedAt: r.finishedAt ? new Date(r.finishedAt) : null,
-    elapsed: r.startedAt && r.finishedAt ? r.finishedAt - r.startedAt : (r.startedAt ? Date.now() - r.startedAt : null),
+    id: r.id,
+    cid: r.cid,
+    plan_name: r.plan_name,
+    task_name: r.task_name,
+    status: r.status,
+    startedAt: r.started_at || r.startedAt ? new Date(r.started_at || r.startedAt) : null,
+    finishedAt: r.finished_at || r.finishedAt ? new Date(r.finished_at || r.finishedAt) : null,
+    elapsed: (() => {
+      const start = r.started_at || r.startedAt;
+      const end = r.finished_at || r.finishedAt;
+      if (start && end) return end - start;
+      if (start) return Date.now() - start;
+      return null;
+    })(),
   }));
 });
 
 const rowsView = computed(() => {
   let list = rows.value;
   const q = (filters.value.query || '').toLowerCase();
-  if (q) list = list.filter(r => (r.plan || '').toLowerCase().includes(q) || (r.task || '').toLowerCase().includes(q) || (r.id || '').toLowerCase().includes(q));
+  if (q) {
+    list = list.filter(r =>
+        (r.plan_name || '').toLowerCase().includes(q) ||
+        (r.task_name || '').toLowerCase().includes(q) ||
+        (r.cid || r.id || '').toLowerCase().includes(q)
+    );
+  }
   if (filters.value.status) list = list.filter(r => r.status === filters.value.status);
-  if (filters.value.plan) list = list.filter(r => r.plan === filters.value.plan);
+  if (filters.value.plan) list = list.filter(r => r.plan_name === filters.value.plan);
   return list;
 });
 
@@ -87,26 +102,31 @@ function statusClass(s) {
   if (v === 'error' || v === 'failed') return 'pill-red';
   return 'pill-gray';
 }
-function pad(n) { return String(n).padStart(2, '0'); }
-function fmt(ts) { if (!ts) return '—'; const d = new Date(ts); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
-function duration(a, b) { if (!a || !b) return '—'; const ms = b - a; const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60; return h ? `${h}h ${m}m ${sec}s` : (m ? `${m}m ${sec}s` : `${sec}s`); }
-function safeUpper(s) { const t = (s == null ? '' : String(s)); return t ? t.toUpperCase() : '—'; }
+
+function safeUpper(s) {
+  const t = (s == null ? '' : String(s));
+  return t ? t.toUpperCase() : '—';
+}
 
 const drawerOpen = ref(false);
 const current = ref(null);
+
 function openRun(row) {
-  const r = runsById.value[row.id] || row;
+  const runId = row.cid || row.id;
+  const r = runsById.value[runId] || row;
   current.value = r;
   drawerOpen.value = true;
 }
-
-// （可选）如果有 log.append 事件但 run 不存在，延迟创建容器以承接日志
-watch(lastMessage, evt => {
-  if (!evt || (evt.name||'').toLowerCase()!=='log.append') return;
-  const p = evt.payload || {};
-  if (!p.run_id) return;
-  if (!runsById.value[p.run_id]) {
-    runsById.value[p.run_id] = { id: p.run_id, plan: p.plan_name, task: p.task_name, status: 'running', startedAt: null, finishedAt: null, logs: [], timeline: {nodes: []} };
-  }
-});
 </script>
+
+<style scoped>
+.panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.panel-body {
+  flex: 1;
+  overflow: hidden;
+}
+</style>

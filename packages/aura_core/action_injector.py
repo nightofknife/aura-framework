@@ -138,10 +138,15 @@ class ActionInjector:
         # 步骤 3: 获取 Orchestrator 实例
         orchestrator = self.engine.orchestrator
 
-        # 步骤 4: 调用 Orchestrator 执行子任务
+        # ✅ 新增步骤 3.5: 从当前上下文中获取父任务的 cid
+        parent_cid = self.context.data.get('cid')
+        logger.debug(f"Executing sub-task '{task_name}' with parent_cid: {parent_cid}")
+
+        # 步骤 4: ✅ 修改：调用 Orchestrator 时传递 parent_cid
         tfr = await orchestrator.execute_task(
             task_name_in_plan=task_name,
-            inputs=sub_task_inputs
+            inputs=sub_task_inputs,
+            parent_cid=parent_cid  # ✅ 新增：让子任务继承父任务的 cid
         )
 
         # 步骤 5: 处理子任务结果
@@ -151,6 +156,7 @@ class ActionInjector:
 
         # 返回子任务的完整框架数据，允许父任务访问其内部状态
         return tfr.get('framework_data')
+
 
     def _prepare_action_arguments(self, action_def: ActionDefinition, rendered_params: Dict[str, Any]) -> Dict[str, Any]:
         """准备 Action 的最终调用参数，处理依赖注入和参数映射。

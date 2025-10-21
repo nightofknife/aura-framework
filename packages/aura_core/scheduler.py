@@ -42,6 +42,7 @@ from .execution_manager import ExecutionManager
 from .interrupt_service import InterruptService
 from .plan_manager import PlanManager
 from .scheduling_service import SchedulingService
+from packages.aura_core.id_generator import SnowflakeGenerator
 
 if TYPE_CHECKING:
     from packages.aura_core.orchestrator import Orchestrator
@@ -98,7 +99,7 @@ class Scheduler:
         self._pre_start_task_buffer: List[Tasklet] = []
         self.fallback_lock = threading.RLock()
         self.pause_event = asyncio.Event()
-
+        self.id_generator = SnowflakeGenerator(instance=1)
         # --- 异步组件 (运行时初始化) ---
         self.is_running: Optional[asyncio.Event] = None
         self.task_queue: Optional[TaskQueue] = None
@@ -264,14 +265,39 @@ class Scheduler:
                 raise
         logger.info("======= 资源加载完毕 ... =======")
 
+    # scheduler.py
+
     async def _async_reload_subscriptions(self):
         """(私有) 异步地重新加载所有事件总线的订阅。"""
-        await self.event_bus.clear_subscriptions()
-        await self.event_bus.subscribe(event_pattern='*', callback=self._mirror_event_to_ui_queue, channel='*')
+        # ✅ 修复：不要清除所有订阅，只清除那些由 Scheduler 自己注册的
+        # await self.event_bus.clear_subscriptions()  # ❌ 移除这行
+
+        # ✅ 只重新注册 Scheduler 自己的订阅
+        await self.event_bus.subscribe(
+            event_pattern='*',
+            callback=self._mirror_event_to_ui_queue,
+            channel='*',
+            persistent=True  # ✅ 标记为持久化
+        )
         await self._subscribe_event_triggers()
-        await self.event_bus.subscribe(event_pattern='task.*', callback=self._obs_ingest_event, channel='*')
-        await self.event_bus.subscribe(event_pattern='node.*', callback=self._obs_ingest_event, channel='*')
-        await self.event_bus.subscribe(event_pattern='queue.*', callback=self._obs_ingest_event, channel='*')
+        await self.event_bus.subscribe(
+            event_pattern='task.*',
+            callback=self._obs_ingest_event,
+            channel='*',
+            persistent=True
+        )
+        await self.event_bus.subscribe(
+            event_pattern='node.*',
+            callback=self._obs_ingest_event,
+            channel='*',
+            persistent=True
+        )
+        await self.event_bus.subscribe(
+            event_pattern='queue.*',
+            callback=self._obs_ingest_event,
+            channel='*',
+            persistent=True
+        )
 
     def start_scheduler(self):
         """启动调度器的主事件循环和所有后台服务。"""
@@ -281,9 +307,38 @@ class Scheduler:
         self.startup_complete_event.clear()
         logger.info("用户请求启动调度器及所有后台服务...")
         self.execution_manager.startup()
-        self._scheduler_thread = threading.Thread(target=self._run_scheduler_in_thread, name="SchedulerThread",
-                                                  daemon=True)
+        self._scheduler_thread = threading.Thread(
+            target=self._run_scheduler_in_thread,
+            name="SchedulerThread",
+            daemon=True
+        )
         self._scheduler_thread.start()
+
+        # ✅ 修复：等待调度器完全启动
+        logger.info("等待调度器事件循环完全启动...")
+        startup_success = self.startup_complete_event.wait(timeout=10)
+
+        if not startup_success:
+            logger.error("调度器启动超时！")
+            return
+
+        # ✅ 修复：在事件循环启动后发布事件
+        if self._loop and self._loop.is_running():
+            logger.info("调度器已启动，正在发布 scheduler.started 事件...")
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.event_bus.publish(Event(
+                        name="scheduler.started",
+                        payload={"message": "Scheduler has started."}
+                    )),
+                    self._loop
+                )
+                # 等待事件发布完成
+                future.result(timeout=2)
+                logger.info("scheduler.started 事件发布成功。")
+            except Exception as e:
+                logger.error(f"发布 scheduler.started 事件失败: {e}")
+
         self._push_ui_update('master_status_update', {"is_running": True})
 
     def _run_scheduler_in_thread(self):
@@ -303,7 +358,24 @@ class Scheduler:
         if not self._scheduler_thread or not self._scheduler_thread.is_alive() or not self._loop:
             logger.warning("调度器已经处于停止状态。")
             return
+
         logger.info("用户请求停止调度器及所有后台服务...")
+
+        # ✅ 修复：在停止之前发布事件
+        if self._loop and self._loop.is_running():
+            logger.info("正在发布 scheduler.stopped 事件...")
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.event_bus.publish(Event(
+                        name="scheduler.stopped",
+                        payload={"message": "Scheduler is stopping."}
+                    )),
+                    self._loop
+                )
+                future.result(timeout=2)
+                logger.info("scheduler.stopped 事件发布成功。")
+            except Exception as e:
+                logger.error(f"发布 scheduler.stopped 事件失败: {e}")
 
         if self.is_running:
             self._loop.call_soon_threadsafe(self.is_running.clear)
@@ -313,6 +385,7 @@ class Scheduler:
         self._scheduler_thread.join(timeout=10)
         if self._scheduler_thread.is_alive():
             logger.error("调度器线程在超时后未能停止。")
+
         self.execution_manager.shutdown()
         self._scheduler_thread = None
         self._loop = None
@@ -337,9 +410,7 @@ class Scheduler:
         try:
             await self._async_reload_subscriptions()
 
-            await self.event_bus.publish(
-                Event(name="scheduler.started", payload={"message": "Scheduler has started."})
-            )
+
             async with TaskGroup() as tg:
                 tg.create_task(self._consume_interrupt_queue())
                 tg.create_task(self._consume_main_task_queue())
@@ -353,9 +424,6 @@ class Scheduler:
             logger.info("调度器主任务被取消，正在优雅关闭...")
         finally:
             self.is_running.clear()
-            await self.event_bus.publish(
-                Event(name="scheduler.stopped", payload={"message": "Scheduler has been stopped."})
-            )
             self._loop = None
             self._main_task = None
             logger.info("调度器主循环 (Commander) 已安全退出。")
@@ -367,7 +435,19 @@ class Scheduler:
 
         while True:
             try:
+                current_running_count = len(self.running_tasks)
+
+                # ✅ 详细日志
+                if current_running_count > 0 or self.task_queue.qsize() > 0:
+                    logger.info(
+                        f"[Queue Consumer] 当前状态: "
+                        f"running={current_running_count}/{max_cc}, "
+                        f"queue_size={self.task_queue.qsize()}, "
+                        f"keys={list(self.running_tasks.keys())}"
+                    )
+
                 if len(self.running_tasks) >= max_cc:
+                    logger.warning(f"[Queue Consumer] 达到并发上限，等待中...")
                     await asyncio.sleep(0.2)
                     continue
 
@@ -396,14 +476,18 @@ class Scheduler:
 
                 submit_task = asyncio.create_task(self.execution_manager.submit(tasklet))
 
-                key = getattr(tasklet, "id", None) or getattr(tasklet, "task_name", None)
-                if not key:
-                    key = f"task:{int(time.time() * 1000)}"
+                key = tasklet.cid if hasattr(tasklet, 'cid') and tasklet.cid else f"task:{int(time.time() * 1000)}"
+
+                logger.info(f"[Queue Consumer] ✅ 任务入队: key={key}")
                 self.running_tasks[key] = submit_task
 
                 def _cleanup(_fut: asyncio.Task):
                     try:
-                        self.running_tasks.pop(key, None)
+                        removed = self.running_tasks.pop(key, None)
+                        if removed:
+                            logger.debug(f"[_consume_main_task_queue] 任务已从 running_tasks 清除，key={key}")
+                        else:
+                            logger.warning(f"[_consume_main_task_queue] 清理失败：找不到 key={key}")
                     finally:
                         try:
                             self.task_queue.task_done()
@@ -723,9 +807,11 @@ class Scheduler:
 
         return {"ok": True, "message": "Task enqueued."}
 
-    def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None):
+    def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None, temp_id: Optional[str] = None):
         """临时（Ad-hoc）运行一个任何已定义的任务。"""
         params = params or {}
+
+        canonical_id = str(next(self.id_generator))
 
         async def async_run():
             async with self.get_async_lock():
@@ -775,6 +861,7 @@ class Scheduler:
 
                 tasklet = Tasklet(
                     task_name=full_task_id,
+                    cid=canonical_id,
                     is_ad_hoc=True,
                     payload={'plan_name': plan_name, 'task_name': task_name},
                     execution_mode=task_def.get('execution_mode', 'sync'),
@@ -789,6 +876,7 @@ class Scheduler:
                     await self.event_bus.publish(Event(
                         name='queue.enqueued',
                         payload={
+                            'cid': canonical_id,
                             'plan_name': plan_name,
                             'task_name': task_name,
                             'priority': (self.all_tasks_definitions.get(full_task_id) or {}).get('priority'),
@@ -799,7 +887,8 @@ class Scheduler:
                 except Exception:
                     pass
 
-            return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
+            return {"status": "success", "message": f"Task '{full_task_id}' queued for execution.","temp_id": temp_id,
+                "cid": canonical_id}
 
         if self._loop and self._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(async_run(), self._loop)
@@ -808,7 +897,7 @@ class Scheduler:
             except Exception as e:
                 full_id = f"{plan_name}/{task_name}"
                 logger.warning(f"Ad-hoc task failed for '{full_id}': {e}")
-                return {"status": "error", "message": str(e)}
+                return {"status": "error", "message": str(e), "temp_id": temp_id}
         else:
             with self.fallback_lock:
                 logger.info(f"调度器未运行，临时任务 '{plan_name}/{task_name}' 已加入启动前缓冲区。")
@@ -816,6 +905,7 @@ class Scheduler:
                 task_def = self.all_tasks_definitions.get(full_task_id, {})
                 tasklet = Tasklet(
                     task_name=full_task_id,
+                    cid=canonical_id,
                     is_ad_hoc=True,
                     payload={'plan_name': plan_name, 'task_name': task_name},
                     execution_mode=task_def.get('execution_mode', 'sync'),
@@ -825,7 +915,13 @@ class Scheduler:
                 self.run_statuses.setdefault(full_task_id, {}).update(
                     {'status': 'queued', 'queued_at': datetime.now()}
                 )
-                return {"status": "success", "message": f"Task '{full_task_id}' queued for execution."}
+                return {
+                    "status": "success",
+                    "message": f"Task '{full_task_id}' queued for execution.",
+                    "temp_id": temp_id,
+                    "cid": canonical_id
+                }
+
 
     def get_master_status(self) -> dict:
         """获取调度器的宏观运行状态。"""
@@ -1381,3 +1477,225 @@ class Scheduler:
 
             except Exception as e:
                 logger.error(f"热重载插件 '{plan_name}' 时出错: {e}", exc_info=True)
+
+
+
+    def get_active_runs_snapshot(self) -> List[Dict[str, Any]]:
+        """
+        线程安全地获取当前所有活动运行的快照。
+        返回一个字典列表，每个字典代表一个正在运行的任务。
+        """
+        with self.fallback_lock:
+            # self._obs_runs 存储了所有运行的信息
+            # 我们只筛选出状态为 'running' 的
+            active_list = [
+                run_data for run_data in self._obs_runs.values()
+                if run_data.get('status') == 'running'
+            ]
+            return active_list
+
+    # scheduler.py 新增方法（添加在 Scheduler 类中）
+
+    def run_batch_ad_hoc_tasks(self, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """批量派发多个临时任务。
+
+        Args:
+            tasks: 任务列表，每个任务包含 plan_name, task_name, inputs
+
+        Returns:
+            包含所有任务派发结果的字典
+        """
+        results = []
+        success_count = 0
+        failed_count = 0
+
+        for task in tasks:
+            try:
+                result = self.run_ad_hoc_task(
+                    plan_name=task.get("plan_name"),
+                    task_name=task.get("task_name"),
+                    params=task.get("inputs", {})
+                )
+
+                if result.get("status") == "success":
+                    success_count += 1
+                else:
+                    failed_count += 1
+
+                results.append({
+                    "plan_name": task.get("plan_name"),
+                    "task_name": task.get("task_name"),
+                    "status": result.get("status"),
+                    "message": result.get("message"),
+                    "cid": result.get("cid")
+                })
+            except Exception as e:
+                failed_count += 1
+                results.append({
+                    "plan_name": task.get("plan_name"),
+                    "task_name": task.get("task_name"),
+                    "status": "error",
+                    "message": str(e),
+                    "cid": None
+                })
+
+        return {
+            "results": results,
+            "success_count": success_count,
+            "failed_count": failed_count
+        }
+
+    def cancel_task(self, cid: str) -> Dict[str, Any]:
+        """取消指定 cid 的任务。
+
+        Args:
+            cid: 任务的唯一追踪ID
+
+        Returns:
+            包含取消操作结果的字典
+        """
+        with self.fallback_lock:
+            if cid not in self.running_tasks:
+                return {"status": "error", "message": f"Task with cid '{cid}' is not running or not found."}
+
+            task = self.running_tasks.get(cid)
+            if task and not task.done():
+                task.cancel()
+                logger.info(f"Task with cid '{cid}' has been cancelled.")
+                return {"status": "success", "message": f"Task '{cid}' cancellation initiated."}
+            else:
+                return {"status": "error", "message": f"Task '{cid}' is already finished or cannot be cancelled."}
+
+    def update_task_priority(self, cid: str, new_priority: int) -> Dict[str, Any]:
+        """调整指定任务的优先级。
+
+        注意：此功能需要任务仍在队列中（未开始执行）。
+
+        Args:
+            cid: 任务的唯一追踪ID
+            new_priority: 新的优先级值（数字越小优先级越高）
+
+        Returns:
+            包含操作结果的字典
+        """
+        # 由于当前的 TaskQueue 实现基于 asyncio.PriorityQueue，
+        # 无法直接修改已入队任务的优先级。
+        # 这需要重新实现队列或在任务未入队时设置优先级。
+
+        logger.warning(f"Priority update for task '{cid}' is not fully implemented yet.")
+        return {
+            "status": "error",
+            "message": "Priority update is not supported for tasks already in the queue. "
+                       "This feature requires queue implementation upgrade."
+        }
+
+    def get_batch_task_status(self, cids: List[str]) -> List[Dict[str, Any]]:
+        """批量获取多个任务的状态。
+
+        Args:
+            cids: 任务的 cid 列表
+
+        Returns:
+            包含所有任务状态的列表
+        """
+        results = []
+
+        with self.fallback_lock:
+            for cid in cids:
+                # 尝试从 _obs_runs 中查找
+                run_data = self._obs_runs.get(cid)
+
+                if run_data:
+                    results.append({
+                        "cid": cid,
+                        "status": run_data.get("status"),
+                        "plan_name": run_data.get("plan_name"),
+                        "task_name": run_data.get("task_name"),
+                        "started_at": run_data.get("started_at"),
+                        "finished_at": run_data.get("finished_at"),
+                        "nodes": run_data.get("nodes", [])
+                    })
+                else:
+                    # 如果在 _obs_runs 中找不到，可能任务还在队列中
+                    results.append({
+                        "cid": cid,
+                        "status": "not_found",
+                        "plan_name": None,
+                        "task_name": None,
+                        "started_at": None,
+                        "finished_at": None,
+                        "nodes": None
+                    })
+
+        return results
+
+    # scheduler.py 中新增方法
+
+    async def queue_insert_at(self, index: int, plan_name: str, task_name: str,
+                              params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """在队列的指定位置插入任务。"""
+        full_task_id = f"{plan_name}/{task_name}"
+        task_def = self.all_tasks_definitions.get(full_task_id, {})
+
+        canonical_id = str(next(self.id_generator))
+
+        tasklet = Tasklet(
+            task_name=full_task_id,
+            cid=canonical_id,
+            is_ad_hoc=True,
+            payload={'plan_name': plan_name, 'task_name': task_name},
+            execution_mode=task_def.get('execution_mode', 'sync'),
+            initial_context=params or {}
+        )
+
+        success = await self.task_queue.insert_at(index, tasklet)
+
+        if success:
+            return {"status": "success", "cid": canonical_id, "message": f"Task inserted at position {index}"}
+        else:
+            return {"status": "error", "message": "Failed to insert task"}
+
+    async def queue_remove_task(self, cid: str) -> Dict[str, Any]:
+        """从队列中删除指定任务。"""
+        success = await self.task_queue.remove_by_cid(cid)
+
+        if success:
+            return {"status": "success", "message": f"Task {cid} removed from queue"}
+        else:
+            return {"status": "error", "message": f"Task {cid} not found in queue"}
+
+    async def queue_move_to_front(self, cid: str) -> Dict[str, Any]:
+        """将任务移动到队列头部。"""
+        success = await self.task_queue.move_to_front(cid)
+
+        if success:
+            return {"status": "success", "message": f"Task {cid} moved to front"}
+        else:
+            return {"status": "error", "message": f"Task {cid} not found in queue"}
+
+    async def queue_move_to_position(self, cid: str, new_index: int) -> Dict[str, Any]:
+        """将任务移动到指定位置。"""
+        success = await self.task_queue.move_to_position(cid, new_index)
+
+        if success:
+            return {"status": "success", "message": f"Task {cid} moved to position {new_index}"}
+        else:
+            return {"status": "error", "message": f"Task {cid} not found in queue"}
+
+    async def queue_list_all(self) -> List[Dict[str, Any]]:
+        """获取队列中所有任务。"""
+        return await self.task_queue.list_all()
+
+    async def queue_clear(self) -> Dict[str, Any]:
+        """清空队列。"""
+        count = await self.task_queue.clear()
+        return {"status": "success", "message": f"Cleared {count} tasks from queue"}
+
+    async def queue_reorder(self, cid_order: List[str]) -> Dict[str, Any]:
+        """重新排序队列。"""
+        success = await self.task_queue.reorder(cid_order)
+
+        if success:
+            return {"status": "success", "message": "Queue reordered successfully"}
+        else:
+            return {"status": "error", "message": "Failed to reorder queue"}

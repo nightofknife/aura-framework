@@ -314,14 +314,64 @@ class ExecutionEngine:
             node_data = self.nodes[node_id]
             if self.event_callback:
                 await self.event_callback('node.started', {'node_id': node_id})
-            await self._check_pause()
 
-            loop_config = node_data.get('loop')
-            if loop_config:
-                action_result = await self._execute_loop(node_id, node_data, node_context, loop_config)
-            else:
-                action_result = await self._execute_single_action(node_data, node_context)
+            # ---------------------------
+            # 重试机制：解析配置 + 尝试循环
+            # ---------------------------
+            retry_cfg = self._parse_retry_config(node_data)
+            max_attempts = retry_cfg["count"] + 1  # 首次 + 重试次数
+            delay_sec = retry_cfg["delay"]
+            retry_on = retry_cfg["on_exception"]  # None = 对所有异常都可重试
+            cond_expr = retry_cfg["condition"]  # 成功后基于结果再次判定是否需要重试
 
+            attempt = 1
+            while attempt <= max_attempts:
+                await self._check_pause()
+                try:
+                    loop_config = node_data.get('loop')
+                    if loop_config:
+                        action_result = await self._execute_loop(node_id, node_data, node_context, loop_config)
+                    else:
+                        action_result = await self._execute_single_action(node_data, node_context)
+
+                    # 若配置了“重试条件”，即使无异常也可触发重试（例如：HTTP 200 但业务失败）
+                    if cond_expr:
+                        renderer = TemplateRenderer(node_context, self.state_store)
+                        scope = {"result": action_result, "attempt": attempt}
+                        should_retry = bool(
+                            await renderer._render_recursive(
+                                cond_expr, {**scope, **(await renderer.get_render_scope())}
+                            )
+                        )
+                        if should_retry:
+                            if attempt < max_attempts:
+                                logger.warning(
+                                    f"节点 '{node_id}' 第 {attempt}/{max_attempts - 1} 次执行后命中 retry_condition，"
+                                    f"{delay_sec}s 后重试..."
+                                )
+                                await asyncio.sleep(delay_sec)
+                                attempt += 1
+                                continue
+                            # 最后一轮仍命中条件，视为失败
+                            raise RuntimeError("RetryConditionNotSatisfied")
+
+                    # 成功且无需重试，跳出循环
+                    break
+
+                except Exception as e:
+                    # 是否允许对该异常进行重试
+                    if attempt < max_attempts and self._should_retry_on_exception(e, retry_on):
+                        logger.warning(
+                            f"节点 '{node_id}' 第 {attempt}/{max_attempts - 1} 次失败：{type(e).__name__}: {e}，"
+                            f"{delay_sec}s 后重试..."
+                        )
+                        await asyncio.sleep(delay_sec)
+                        attempt += 1
+                        continue
+                    # 不可重试或已到最后一次，抛出让外层失败逻辑处理
+                    raise
+
+            # 处理 outputs
             outputs_block = node_data.get('outputs', {})
             if outputs_block:
                 renderer = TemplateRenderer(node_context, self.state_store)
@@ -444,3 +494,65 @@ class ExecutionEngine:
             logger.warning("接收到全局暂停信号，任务执行已暂停。等待恢复信号...")
             await self.pause_event.wait()
             logger.info("接收到恢复信号，任务将继续执行。")
+
+    def _parse_retry_config(self, node_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        解析节点上的重试配置，支持以下等价写法：
+          - retry: 3
+          - retry_delay: 2
+          - retry_on: ["TimeoutError", "requests.exceptions.ConnectionError"]
+          - retry_condition: "{{ result.status_code >= 500 }}"
+        以及字典写法：
+          - retry:
+              count: 3
+              delay|interval: 1
+              on_exception|retry_on: [...]
+              condition|retry_condition: "..."
+        """
+        # 默认配置
+        cfg = {"count": 0, "delay": 0.0, "on_exception": None, "condition": None}
+
+        raw_retry = node_data.get("retry", None)
+        raw_delay = node_data.get("retry_delay", None)  # 简写覆盖
+        raw_retry_on = node_data.get("retry_on", None)
+        raw_retry_cond = node_data.get("retry_condition", None)
+
+        if isinstance(raw_retry, int):
+            cfg["count"] = max(0, int(raw_retry))
+        elif isinstance(raw_retry, dict):
+            cfg["count"] = max(0, int(raw_retry.get("count", 0) or 0))
+            # delay / interval 任选其一
+            if raw_retry.get("delay") is not None:
+                cfg["delay"] = float(raw_retry.get("delay") or 0.0)
+            if raw_retry.get("interval") is not None:
+                cfg["delay"] = float(raw_retry.get("interval") or cfg["delay"])
+            # on_exception / retry_on 任选其一
+            cfg["on_exception"] = raw_retry.get("on_exception") or raw_retry.get("retry_on")
+            # condition / retry_condition 任选其一
+            cfg["condition"] = raw_retry.get("condition") or raw_retry.get("retry_condition")
+
+        # 顶层简写覆盖字典写法
+        if raw_delay is not None:
+            cfg["delay"] = float(raw_delay or 0.0)
+        if raw_retry_on is not None:
+            cfg["on_exception"] = raw_retry_on
+        if raw_retry_cond is not None:
+            cfg["condition"] = raw_retry_cond
+
+        # 规范化列表
+        if isinstance(cfg["on_exception"], str):
+            cfg["on_exception"] = [cfg["on_exception"]]
+        if cfg["on_exception"] is not None and not isinstance(cfg["on_exception"], list):
+            cfg["on_exception"] = list(cfg["on_exception"])
+        return cfg
+
+
+    def _should_retry_on_exception(self, err: Exception, retry_on: Optional[List[str]]) -> bool:
+        """当 retry_on 为 None 时，对所有异常进行重试；否则匹配异常名或完整限定名。"""
+        if retry_on is None:
+            return True
+        exc_name = type(err).__name__
+        qual_name = f"{type(err).__module__}.{exc_name}"
+        targets = set(retry_on)
+        # 同时支持简名与完整限定名
+        return (exc_name in targets) or (qual_name in targets)
