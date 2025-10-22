@@ -1,16 +1,14 @@
 // === src/composables/useStagingRunner.js ===
-import { ref, watch, nextTick, effectScope, computed } from 'vue';
+import { ref, watch, effectScope } from 'vue';
 import axios from 'axios';
 import { useStagingQueue, GUI_STATUS } from './useStagingQueue.js';
 import { useToasts } from './useToasts.js';
 import { useRuns } from './useRuns.js';
 import { useQueueStore } from './useQueueStore.js';
 
-// --- 配置 ---
 const API_BASE = 'http://127.0.0.1:18098/api';
 const api = axios.create({ baseURL: API_BASE, timeout: 10000 });
 
-// --- 内部状态 ---
 const running = ref(false);
 const autoMode = ref(false);
 const isDispatching = ref(false);
@@ -35,7 +33,6 @@ export function useStagingRunner() {
     const { setRuns } = useRuns();
     const { fetchOverview } = useQueueStore();
 
-    // --- 轮询活跃任务 ---
     async function pollActiveRuns() {
         try {
             const { data } = await api.get('/runs/active');
@@ -45,44 +42,27 @@ export function useStagingRunner() {
         }
     }
 
-    // --- 核心工作流：派发器 ---
     async function dispatcher() {
-        console.log('[Dispatcher] Called', { running: running.value, isDispatching: isDispatching.value });
-
-        if (!running.value) {
-            console.log('[Dispatcher] Not running, exit');
-            return;
-        }
-
-        if (isDispatching.value) {
-            console.log('[Dispatcher] Already dispatching, exit');
-            return;
-        }
+        if (!running.value || isDispatching.value) return;
 
         const nextItem = items.value.find(it => it.toDispatch && it.status === 'pending');
-        console.log('[Dispatcher] Next item:', nextItem ? `${nextItem.plan_name}/${nextItem.task_name}` : 'none');
-
         if (!nextItem) {
-            console.log('[Dispatcher] Queue empty, stopping');
             running.value = false;
             return;
         }
 
         isDispatching.value = true;
-        console.log('[Dispatcher] Start dispatching:', nextItem.task_name);
 
         const temp_id = generateTempId();
         updateTask(nextItem.id, { status: 'dispatching', temp_id });
         setGuiStatus(nextItem.id, GUI_STATUS.DISPATCHING);
 
         const repeatCount = Math.max(1, Math.min(500, nextItem.repeat || 1));
-        console.log('[Dispatcher] Repeat count:', repeatCount);
 
         try {
             const results = [];
 
             for (let i = 0; i < repeatCount; i++) {
-                console.log(`[Dispatcher] Dispatching ${i + 1}/${repeatCount}`);
                 const { data } = await api.post('/tasks/run', {
                     plan_name: nextItem.plan_name,
                     task_name: nextItem.task_name,
@@ -91,7 +71,6 @@ export function useStagingRunner() {
 
                 if (data.status === 'success') {
                     results.push(data.cid);
-                    console.log(`[Dispatcher] Success ${i + 1}/${repeatCount}, cid:`, data.cid);
                 } else {
                     throw new Error(data.message || 'Dispatch failed');
                 }
@@ -101,20 +80,20 @@ export function useStagingRunner() {
                 }
             }
 
+            // ✅ 派发成功 → 标记为 queued（不移除）
             updateTask(nextItem.id, {
-                status: 'dispatched',
+                status: 'queued',
                 cid: results[0],
                 dispatchedAt: Date.now(),
             });
-            setGuiStatus(nextItem.id, GUI_STATUS.QUEUED, { handoff: true });
+            setGuiStatus(nextItem.id, GUI_STATUS.QUEUED);
+
             toast({
                 type: 'success',
                 title: 'Task Dispatched',
                 message: `${nextItem.task_name} ×${repeatCount}`
             });
-            console.log('[Dispatcher] Task completed successfully');
         } catch (err) {
-            console.error('[Dispatcher] Error:', err);
             updateTask(nextItem.id, { status: 'pending' });
             setGuiStatus(nextItem.id, GUI_STATUS.ENQUEUE_FAILED, { error: err.message });
             toast({
@@ -123,28 +102,16 @@ export function useStagingRunner() {
                 message: err.message
             });
         } finally {
-            console.log('[Dispatcher] Finally block, releasing lock');
             isDispatching.value = false;
 
-            // ✅ 立即检查是否有更多任务
-            const hasMore = items.value.some(it => it.toDispatch && it.status === 'pending');
-            console.log('[Dispatcher] Has more tasks?', hasMore);
-
-            if (running.value && hasMore) {
-                console.log('[Dispatcher] Scheduling next dispatch');
-                // ✅ 使用 setTimeout(0) 确保当前调用栈完成
-                setTimeout(() => {
-                    console.log('[Dispatcher] Calling dispatcher again');
+            setTimeout(() => {
+                if (running.value) {
                     dispatcher();
-                }, 0);
-            } else {
-                console.log('[Dispatcher] No more tasks or not running');
-                running.value = false;
-            }
+                }
+            }, 0);
         }
     }
 
-    // --- 状态同步 ---
     function syncUiWithBackendState() {
         const { runsById } = useRuns();
 
@@ -154,19 +121,24 @@ export function useStagingRunner() {
             const backendRun = runsById.value[localItem.cid];
 
             if (backendRun) {
+                // ✅ 后端正在运行
                 if (localItem.status !== 'running') {
                     updateTask(localItem.id, { status: 'running' });
-                    setGuiStatus(localItem.id, GUI_STATUS.RUNNING, { handoff: true });
+                    setGuiStatus(localItem.id, GUI_STATUS.RUNNING);
                 }
-            } else if (['dispatched', 'running'].includes(localItem.status)) {
+            } else if (['queued', 'running'].includes(localItem.status)) {
+                // ✅ 后端找不到 → 任务完成
                 setGuiStatus(localItem.id, GUI_STATUS.SUCCESS, { finishedAt: Date.now() });
                 pushHistory({ ...localItem, status: 'success', finishedAt: Date.now() });
-                removeTask(localItem.id);
+
+                // ✅ 延迟 2 秒后才移除（让用户看到完成状态）
+                setTimeout(() => {
+                    removeTask(localItem.id);
+                }, 2000);
             }
         }
     }
 
-    // --- 启动轮询 ---
     function startPolling() {
         if (pollingTimer) return;
         pollingTimer = setInterval(async () => {
@@ -183,9 +155,7 @@ export function useStagingRunner() {
         }
     }
 
-    // --- 对外暴露的控制函数 ---
     function startBatch() {
-        console.log('[startBatch] Called');
         batchUpdate(it => {
             if (it.status === 'pending') {
                 it.toDispatch = true;
@@ -195,13 +165,11 @@ export function useStagingRunner() {
         running.value = true;
 
         if (!isDispatching.value) {
-            console.log('[startBatch] Starting dispatcher');
             dispatcher();
         }
     }
 
     function pause() {
-        console.log('[pause] Called');
         running.value = false;
         batchUpdate(it => {
             if (it.toDispatch && it.status === 'pending') it.toDispatch = false;
@@ -226,7 +194,6 @@ export function useStagingRunner() {
         toast({ type: 'info', title: 'Paused', message: 'Queue dispatch paused.' });
     }
 
-    // --- 启动与监听 ---
     function bootOnce() {
         if (booted) return;
         booted = true;

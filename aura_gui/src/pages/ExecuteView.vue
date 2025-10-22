@@ -28,6 +28,38 @@
       </div>
     </div>
 
+    <!-- ✅ 新增：队列统计面板 -->
+    <div class="queue-stats glass glass-thin">
+      <div class="stat-item">
+        <div class="stat-icon">⏸️</div>
+        <div class="stat-content">
+          <div class="stat-value">{{ queueStats.pending }}</div>
+          <div class="stat-label">待派发</div>
+        </div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-icon">📤</div>
+        <div class="stat-content">
+          <div class="stat-value">{{ queueStats.dispatching }}</div>
+          <div class="stat-label">派发中</div>
+        </div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-content">
+          <div class="stat-value">{{ queueStats.queued }}</div>
+          <div class="stat-label">队列中</div>
+        </div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-icon">▶️</div>
+        <div class="stat-content">
+          <div class="stat-value">{{ queueStats.running }}</div>
+          <div class="stat-label">执行中</div>
+        </div>
+      </div>
+    </div>
+
     <div class="content-grid">
       <SchemePanel v-reveal v-model:open="open.byPlan" title="按计划（含搜索）"
                    description="优先展示当前 Plan 的匹配任务">
@@ -83,15 +115,22 @@
             <th style="width:26px;"></th>
             <th>Plan / Task</th>
             <th>Inputs</th>
-            <th>Repeat</th> <!-- ✅ 改为 Repeat -->
+            <th>Repeat</th>
             <th>Status</th>
             <th>Actions</th>
           </tr>
           </thead>
           <tbody>
           <template v-for="it in stagingList" :key="it.id">
-            <tr :class="{ 'row-drop-target': dragOverId === it.id }" @dragover.prevent="onDragOver(it.id)"
-                @drop.prevent="onDrop(it.id)" @dragleave="onDragLeave(it.id)">
+            <tr
+                :class="[
+                { 'row-drop-target': dragOverId === it.id },
+                rowStatusClass(it.gui_status)
+              ]"
+                @dragover.prevent="onDragOver(it.id)"
+                @drop.prevent="onDrop(it.id)"
+                @dragleave="onDragLeave(it.id)"
+            >
               <td>
                 <button class="btn btn-ghost" @click="toggleRow(it.id)">{{ expanded.has(it.id) ? '▾' : '▸' }}</button>
               </td>
@@ -101,19 +140,34 @@
               <td><strong>{{ it.plan_name }}</strong> / {{ it.task_name }}</td>
               <td><code>{{ previewInputs(it.inputs) }}</code></td>
               <td>
-                <!-- ✅ 显示重复次数，支持就地编辑 -->
                 <input
                     class="repeat-input"
                     type="number"
                     v-model.number="it.repeat"
                     min="1"
                     max="500"
+                    :disabled="it.status !== 'pending'"
                     @change="updateTask(it.id, { repeat: it.repeat })"
                 >
               </td>
-              <td><span class="pill" :class="statusPill(it.status)">{{ safeUpper(it.status || 'pending') }}</span></td>
               <td>
-                <button class="btn btn-ghost" @click="remove(it)">Del</button>
+                <!-- ✅ 修改：显示 GUI 状态 -->
+                <span
+                    class="pill status-pill"
+                    :class="guiStatusClass(it.gui_status)"
+                    :style="{ background: guiStatusColor(it.gui_status) }"
+                >
+                  {{ guiStatusLabel(it.gui_status) }}
+                </span>
+              </td>
+              <td>
+                <button
+                    class="btn btn-ghost"
+                    @click="remove(it)"
+                    :disabled="it.status !== 'pending'"
+                >
+                  Del
+                </button>
               </td>
             </tr>
             <Transition name="expand">
@@ -161,7 +215,6 @@
         <div v-if="cfg.jsonError" class="error">{{ cfg.jsonError }}</div>
       </div>
 
-      <!-- ✅ 新增：重复执行配置 -->
       <details class="adv" open>
         <summary><b>Repeat Execution</b></summary>
         <div class="adv-grid">
@@ -204,7 +257,7 @@ import axios from 'axios';
 import SchemePanel from '../components/SchemePanel.vue';
 import TaskMiniCard from '../components/TaskMiniCard.vue';
 import ProContextPanel from '../components/ProContextPanel.vue';
-import {useStagingQueue} from '../composables/useStagingQueue.js';
+import {useStagingQueue, GUI_STATUS, STATUS_LABELS, STATUS_COLORS} from '../composables/useStagingQueue.js';
 import {useStagingRunner} from '../composables/useStagingRunner.js';
 import {useToasts} from '../composables/useToasts.js';
 
@@ -250,27 +303,8 @@ function onHoldEnd(target) {
 
   if (target === 'run') {
     if (p < 100) {
-      const wasAuto = autoMode.value;
-      if (!wasAuto) setAuto(true);
-
+      // ✅ 简化：短按直接启动批量派发
       startBatch();
-
-      // ✅ 修改：只在队列完全清空且没有任务在派发时才还原
-      if (!wasAuto) {
-        const stopWatch = watch(
-            [stagingList, running],
-            ([list, run]) => {
-              // ✅ 检查：队列为空 且 没有任务在运行
-              const allPending = list.every(it => it.status === 'pending');
-              const isEmpty = list.length === 0;
-
-              if (isEmpty && !run) {
-                setAuto(wasAuto);
-                stopWatch();
-              }
-            }
-        );
-      }
     }
   } else {
     if (p < 100) pause();
@@ -279,7 +313,6 @@ function onHoldEnd(target) {
   hold.run = 0;
   hold.pause = 0;
 }
-
 
 // Plans & Tasks
 const plans = ref([]);
@@ -409,7 +442,7 @@ const cfg = reactive({
   jsonError: '',
   priority: null,
   note: '',
-  repeat: 1, // ✅ 新增
+  repeat: 1,
 });
 
 function openConfig(plan, task, meta) {
@@ -429,7 +462,7 @@ function openConfig(plan, task, meta) {
   }
   cfg.priority = null;
   cfg.note = '';
-  cfg.repeat = 1; // ✅ 重置为 1
+  cfg.repeat = 1;
 }
 
 const hasSchema = computed(() => !!cfg.meta?.inputs_schema);
@@ -506,7 +539,7 @@ function confirmAdd() {
     inputs,
     priority: cfg.priority ?? null,
     note: cfg.note || '',
-    repeat: Math.max(1, Math.min(500, cfg.repeat || 1)), // ✅ 添加重复次数
+    repeat: Math.max(1, Math.min(500, cfg.repeat || 1)),
   });
   toast({
     type: 'success',
@@ -514,6 +547,71 @@ function confirmAdd() {
     message: `${cfg.plan} / ${cfg.task} ${cfg.repeat > 1 ? `(×${cfg.repeat})` : ''}`
   });
   cfg.open = false;
+}
+
+// ✅ 新增：队列统计
+const queueStats = computed(() => {
+  const stats = {
+    pending: 0,
+    dispatching: 0,
+    queued: 0,
+    running: 0,
+  };
+
+  stagingList.value.forEach(task => {
+    switch (task.gui_status) {
+      case GUI_STATUS.IDLE:
+      case GUI_STATUS.SELECTED:
+        stats.pending++;
+        break;
+      case GUI_STATUS.DISPATCHING:
+        stats.dispatching++;
+        break;
+      case GUI_STATUS.QUEUED:
+        stats.queued++;
+        break;
+      case GUI_STATUS.RUNNING:
+        stats.running++;
+        break;
+    }
+  });
+
+  return stats;
+});
+
+// ✅ 新增：GUI 状态相关函数
+function guiStatusLabel(status) {
+  return STATUS_LABELS[status] || status || '未知';
+}
+
+function guiStatusColor(status) {
+  return STATUS_COLORS[status] || '#6c757d';
+}
+
+function guiStatusClass(status) {
+  const classes = [];
+
+  if (status === GUI_STATUS.RUNNING) {
+    classes.push('status-running');
+  }
+  if (status === GUI_STATUS.DISPATCHING) {
+    classes.push('status-dispatching');
+  }
+  if (status === GUI_STATUS.SUCCESS) {
+    classes.push('status-success');
+  }
+  if (status === GUI_STATUS.ERROR || status === GUI_STATUS.ENQUEUE_FAILED) {
+    classes.push('status-error');
+  }
+
+  return classes.join(' ');
+}
+
+function rowStatusClass(status) {
+  if (status === GUI_STATUS.RUNNING) return 'row-running';
+  if (status === GUI_STATUS.SUCCESS) return 'row-success';
+  if (status === GUI_STATUS.ERROR || status === GUI_STATUS.ENQUEUE_FAILED) return 'row-error';
+  return '';
 }
 
 // 队列：展开/折叠 & 操作
@@ -639,6 +737,60 @@ function statusPill(s) {
   align-items: center;
 }
 
+/* ✅ 新增：队列统计面板 */
+.queue-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  padding: 20px;
+  border-radius: 12px;
+  background: linear-gradient(135deg,
+  color-mix(in oklab, var(--primary-accent) 5%, transparent),
+  color-mix(in oklab, var(--bg-secondary) 50%, transparent)
+  );
+  border: 1px solid var(--border-frosted);
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg-primary);
+  border-radius: 8px;
+  border: 1px solid var(--border-frosted);
+  transition: all 0.3s ease;
+}
+
+.stat-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.stat-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.stat-content {
+  flex: 1;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .content-grid {
   width: 100%;
   min-width: 0;
@@ -710,7 +862,7 @@ function statusPill(s) {
   transition: all 0.2s;
 }
 
-.repeat-input:hover {
+.repeat-input:hover:not(:disabled) {
   border-color: var(--primary-accent);
 }
 
@@ -720,9 +872,112 @@ function statusPill(s) {
   box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.1);
 }
 
+.repeat-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .repeat-input::-webkit-inner-spin-button,
 .repeat-input::-webkit-outer-spin-button {
   opacity: 1;
+}
+
+/* ✅ 新增：状态指示器样式 */
+.status-pill {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: white;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* 执行中状态：脉冲动画 */
+.status-running {
+  animation: pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 12px rgba(40, 167, 69, 0.6);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.05);
+  }
+}
+
+/* 派发中状态：闪烁动画 */
+.status-dispatching {
+  animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* 成功状态：淡出效果 */
+.status-success {
+  animation: fadeOut 2s ease-out;
+}
+
+@keyframes fadeOut {
+  0% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.6;
+  }
+}
+
+/* 错误状态：抖动效果 */
+.status-error {
+  animation: shake 0.5s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+
+/* 行状态背景色 */
+tbody tr {
+  transition: background-color 0.3s ease;
+}
+
+.row-running {
+  background: color-mix(in oklab, #28a745 8%, transparent);
+}
+
+.row-success {
+  background: color-mix(in oklab, #218838 5%, transparent);
+  opacity: 0.8;
+}
+
+.row-error {
+  background: color-mix(in oklab, #dc3545 8%, transparent);
 }
 
 .fade-enter-active, .fade-leave-active {
