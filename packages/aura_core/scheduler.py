@@ -1478,20 +1478,58 @@ class Scheduler:
             except Exception as e:
                 logger.error(f"热重载插件 '{plan_name}' 时出错: {e}", exc_info=True)
 
-
-
     def get_active_runs_snapshot(self) -> List[Dict[str, Any]]:
         """
         线程安全地获取当前所有活动运行的快照。
-        返回一个字典列表，每个字典代表一个正在运行的任务。
+        包括正在执行的任务和队列中等待的任务。
         """
+        import time
+
         with self.fallback_lock:
-            # self._obs_runs 存储了所有运行的信息
-            # 我们只筛选出状态为 'running' 的
-            active_list = [
-                run_data for run_data in self._obs_runs.values()
-                if run_data.get('status') == 'running'
-            ]
+            active_list = []
+            current_time_ms = int(time.time() * 1000)
+
+            # ✅ 1. 正在执行的任务（从 running_tasks 获取）
+            for cid in list(self.running_tasks.keys()):
+                run_data = self._obs_runs.get(cid)
+
+                if run_data and run_data.get('status') == 'running':
+                    # ✅ 有完整的运行数据
+                    active_list.append(run_data)
+                else:
+                    # ✅ 事件还没更新，返回临时数据
+                    logger.debug(f"[get_active_runs_snapshot] Task {cid} is running but not in _obs_runs yet")
+
+                    # 尝试从 _obs_ready 获取基础信息
+                    ready_item = self._obs_ready.get(cid, {})
+
+                    active_list.append({
+                        'cid': cid,
+                        'run_id': cid,
+                        'plan_name': ready_item.get('plan_name'),
+                        'task_name': ready_item.get('task_name'),
+                        'status': 'starting',  # ← 标记为启动中
+                        'started_at': current_time_ms,
+                        'finished_at': None,
+                        'nodes': []
+                    })
+
+            # ✅ 2. 队列中等待的任务（可选：如果你想在前端显示"队列中"的任务）
+            for cid, item in self._obs_ready.items():
+                if cid not in self.running_tasks:  # 避免重复
+                    active_list.append({
+                        'cid': cid,
+                        'run_id': item.get('run_id', cid),
+                        'plan_name': item.get('plan_name'),
+                        'task_name': item.get('task_name'),
+                        'status': 'queued',
+                        'enqueued_at': int(item.get('enqueued_at', 0) * 1000),
+                        'started_at': None,
+                        'finished_at': None,
+                        'nodes': []
+                    })
+
+            logger.debug(f"[get_active_runs_snapshot] Returning {len(active_list)} active runs")
             return active_list
 
     # scheduler.py 新增方法（添加在 Scheduler 类中）

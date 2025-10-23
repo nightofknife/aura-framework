@@ -156,16 +156,25 @@ export function useStagingRunner() {
     }
 
     function startBatch() {
+        console.log('[startBatch] Called');
+
+        // ✅ 标记所有 pending 任务
         batchUpdate(it => {
             if (it.status === 'pending') {
                 it.toDispatch = true;
-                if (it.gui_status === GUI_STATUS.IDLE) it.gui_status = GUI_STATUS.SELECTED;
+                if (it.gui_status === GUI_STATUS.IDLE) {
+                    it.gui_status = GUI_STATUS.SELECTED;
+                }
             }
         });
+
         running.value = true;
 
         if (!isDispatching.value) {
+            console.log('[startBatch] Starting dispatcher');
             dispatcher();
+        } else {
+            console.log('[startBatch] Dispatcher already running');
         }
     }
 

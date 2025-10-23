@@ -303,8 +303,41 @@ function onHoldEnd(target) {
 
   if (target === 'run') {
     if (p < 100) {
-      // ✅ 简化：短按直接启动批量派发
+      // 短按：批量派发当前队列中的所有任务
+      console.log('[onHoldEnd] Starting batch dispatch');
+      console.log('[onHoldEnd] Pending tasks:', stagingList.value.filter(t => t.status === 'pending').length);
+
+      const wasAuto = autoMode.value;
+      if (!wasAuto) {
+        console.log('[onHoldEnd] Temporarily enabling auto mode');
+        setAuto(true);
+      }
+
       startBatch();
+
+      // ✅ 监听队列变化，确保所有任务都被派发
+      if (!wasAuto) {
+        const stopWatch = watch(
+            [stagingList, running],
+            ([list, run]) => {
+              const pending = list.filter(it => it.status === 'pending').length;
+
+              console.log('[Watch] Queue state:', {
+                total: list.length,
+                pending: pending,
+                running: run
+              });
+
+              // ✅ 当没有 pending 任务且派发器停止时，恢复原始 auto 模式
+              if (pending === 0 && !run) {
+                console.log('[Watch] All tasks dispatched, restoring auto mode to:', wasAuto);
+                setAuto(wasAuto);
+                stopWatch();
+              }
+            },
+            { deep: true }
+        );
+      }
     }
   } else {
     if (p < 100) pause();
@@ -313,6 +346,7 @@ function onHoldEnd(target) {
   hold.run = 0;
   hold.pause = 0;
 }
+
 
 // Plans & Tasks
 const plans = ref([]);
