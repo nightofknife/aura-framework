@@ -1,11 +1,8 @@
-import { ref } from 'vue';
+// === src/composables/useStagingQueue.js ===
+import {ref} from 'vue';
 
 /**
  * GUI 独立状态集（与引擎内部状态解耦）
- * - pre：交付前，GUI 可暂停/撤销
- * - queued：已交付到调度器队列（不可暂停）
- * - engine：引擎内运行中（不可暂停）
- * - post：已完成
  */
 export const GUI_STATUS = {
     IDLE: 'IDLE',
@@ -14,13 +11,41 @@ export const GUI_STATUS = {
     DISPATCHING: 'DISPATCHING',
     ENQUEUE_FAILED: 'ENQUEUE_FAILED',
 
-    QUEUED: 'QUEUED',
+    QUEUED: 'QUEUED',        // ✅ 已在后端队列中等待
     DEQUEUED: 'DEQUEUED',
 
-    RUNNING: 'RUNNING',
+    RUNNING: 'RUNNING',      // ✅ 后端执行中
 
     SUCCESS: 'SUCCESS',
     ERROR: 'ERROR',
+};
+
+// ✅ 新增：状态对应的中文标签
+export const STATUS_LABELS = {
+    [GUI_STATUS.IDLE]: '待派发',
+    [GUI_STATUS.SELECTED]: '已选中',
+    [GUI_STATUS.WAITING_ENGINE]: '等待引擎',
+    [GUI_STATUS.DISPATCHING]: '派发中...',
+    [GUI_STATUS.ENQUEUE_FAILED]: '入队失败',
+    [GUI_STATUS.QUEUED]: '队列中',
+    [GUI_STATUS.DEQUEUED]: '已出队',
+    [GUI_STATUS.RUNNING]: '执行中',
+    [GUI_STATUS.SUCCESS]: '已完成',
+    [GUI_STATUS.ERROR]: '失败',
+};
+
+// ✅ 新增：状态对应的颜色
+export const STATUS_COLORS = {
+    [GUI_STATUS.IDLE]: '#6c757d',
+    [GUI_STATUS.SELECTED]: '#007bff',
+    [GUI_STATUS.WAITING_ENGINE]: '#ffc107',
+    [GUI_STATUS.DISPATCHING]: '#fd7e14',
+    [GUI_STATUS.ENQUEUE_FAILED]: '#dc3545',
+    [GUI_STATUS.QUEUED]: '#17a2b8',
+    [GUI_STATUS.DEQUEUED]: '#20c997',
+    [GUI_STATUS.RUNNING]: '#28a745',
+    [GUI_STATUS.SUCCESS]: '#218838',
+    [GUI_STATUS.ERROR]: '#c82333',
 };
 
 export const GUI_PHASE = {
@@ -43,26 +68,22 @@ function readLS() {
             task_name: it.task_name ?? '',
             inputs: (it.inputs && typeof it.inputs === 'object') ? it.inputs : {},
 
-            // 排序/备注
             priority: it.priority ?? null,
             note: it.note ?? '',
+            repeat: Math.max(1, Math.min(500, it.repeat || 1)),
 
-            // 引擎侧状态（仅用于显示/回放）
             status: it.status || 'pending',
 
-            // 前端调度打标
             toDispatch: !!it.toDispatch,
             toDispatchEpoch: it.toDispatchEpoch ?? null,
 
-            // 运行期绑定
             run_id: it.run_id ?? null,
+            cid: it.cid ?? null, // ✅ 添加 cid
 
-            // GUI 独立状态机
             gui_status: it.gui_status || GUI_STATUS.IDLE,
             phase: it.phase || GUI_PHASE.PRE,
-            handoff: !!it.handoff, // true 表示已交付（QUEUED/DEQUEUED/RUNNING/完成）
+            handoff: !!it.handoff,
 
-            // 关键时间戳
             selectedAt: it.selectedAt ?? null,
             dispatchedAt: it.dispatchedAt ?? null,
             enqueuedAt: it.enqueuedAt ?? null,
@@ -74,23 +95,57 @@ function readLS() {
         return [];
     }
 }
-function writeLS(arr){ try{ localStorage.setItem(LS_KEY, JSON.stringify(arr)); }catch{} }
 
-function readHistory(){ try{ const raw = localStorage.getItem(LS_KEY_HISTORY); const arr = raw?JSON.parse(raw):[]; return Array.isArray(arr)?arr:[]; }catch{ return []; } }
-function writeHistory(arr){ try{ localStorage.setItem(LS_KEY_HISTORY, JSON.stringify(arr)); }catch{} }
+function writeLS(arr) {
+    try {
+        localStorage.setItem(LS_KEY, JSON.stringify(arr));
+    } catch {
+    }
+}
+
+function readHistory() {
+    try {
+        const raw = localStorage.getItem(LS_KEY_HISTORY);
+        const arr = raw ? JSON.parse(raw) : [];
+        return Array.isArray(arr) ? arr : [];
+    } catch {
+        return [];
+    }
+}
+
+function writeHistory(arr) {
+    try {
+        localStorage.setItem(LS_KEY_HISTORY, JSON.stringify(arr));
+    } catch {
+    }
+}
 
 const items = ref(readLS());
 const history = ref(readHistory());
 
-function persist(){ writeLS(items.value); }
-function persistHistory(){ writeHistory(history.value); }
+function persist() {
+    writeLS(items.value);
+}
 
-function uid(){ return 'q_' + Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
+function persistHistory() {
+    writeHistory(history.value);
+}
 
-function addTask({plan_name, task_name, inputs = {}, priority = null, note = ''} = {}) {
+function uid() {
+    return 'q_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+function addTask({plan_name, task_name, inputs = {}, priority = null, note = '', repeat = 1} = {}) {
     const it = {
         id: uid(),
-        plan_name, task_name, inputs, priority, note,
+        temp_id: null,
+        cid: null,
+        plan_name,
+        task_name,
+        inputs,
+        priority,
+        note,
+        repeat: Math.max(1, Math.min(500, repeat || 1)),
 
         status: 'pending',
 
@@ -115,7 +170,7 @@ function addTask({plan_name, task_name, inputs = {}, priority = null, note = ''}
     return it.id;
 }
 
-function updateTask(id, patch){
+function updateTask(id, patch) {
     const idx = items.value.findIndex(x => x.id === id);
     if (idx >= 0) {
         Object.assign(items.value[idx], patch);
@@ -123,21 +178,30 @@ function updateTask(id, patch){
         persist();
     }
 }
-function removeTask(id){
+
+function removeTask(id) {
     items.value = items.value.filter(x => x.id !== id);
     persist();
 }
-function clear(){ items.value = []; persist(); }
-function duplicate(id){
-    const i = items.value.findIndex(x => x.id === id); if (i<0) return;
+
+function clear() {
+    items.value = [];
+    persist();
+}
+
+function duplicate(id) {
+    const i = items.value.findIndex(x => x.id === id);
+    if (i < 0) return;
     const it = items.value[i];
     const copy = {
         ...it,
         id: uid(),
+        repeat: it.repeat || 1,
         status: 'pending',
         toDispatch: false,
         toDispatchEpoch: null,
         run_id: null,
+        cid: null,
 
         gui_status: GUI_STATUS.IDLE,
         phase: GUI_PHASE.PRE,
@@ -150,30 +214,42 @@ function duplicate(id){
         startedAt: null,
         finishedAt: null,
     };
-    const arr = items.value.slice(); arr.splice(i+1,0,copy); items.value = arr; persist(); return copy.id;
-}
-function move(id, dir=-1){
-    const i = items.value.findIndex(x => x.id===id); if (i<0) return;
-    const j = Math.min(items.value.length-1, Math.max(0, i+dir)); if (i===j) return;
-    const arr = items.value.slice(); const [it]=arr.splice(i,1); arr.splice(j,0,it); items.value = arr; persist();
+    const arr = items.value.slice();
+    arr.splice(i + 1, 0, copy);
+    items.value = arr;
+    persist();
+    return copy.id;
 }
 
-/** 批量原地修改，只触发一次响应式更新（避免“漏打一条”的竞态） */
-function batchUpdate(mutator){
+function move(id, dir = -1) {
+    const i = items.value.findIndex(x => x.id === id);
+    if (i < 0) return;
+    const j = Math.min(items.value.length - 1, Math.max(0, i + dir));
+    if (i === j) return;
+    const arr = items.value.slice();
+    const [it] = arr.splice(i, 1);
+    arr.splice(j, 0, it);
+    items.value = arr;
+    persist();
+}
+
+function batchUpdate(mutator) {
     const arr = items.value;
     let changed = false;
 
-    // 助手：只有 value 变了才写入，并返回是否变更
     const set = (obj, key, val) => {
-        if (obj[key] !== val) { obj[key] = val; return true; }
+        if (obj[key] !== val) {
+            obj[key] = val;
+            return true;
+        }
         return false;
     };
 
     for (const it of arr) {
         try {
-            // 约定：mutator 返回布尔，表示该条是否有实际修改
             changed = mutator(it, set) || changed;
-        } catch {}
+        } catch {
+        }
     }
 
     if (changed) {
@@ -182,9 +258,7 @@ function batchUpdate(mutator){
     }
 }
 
-
-/** GUI 状态机统一入口 */
-function setGuiStatus(id, gui_status, extraPatch = {}){
+function setGuiStatus(id, gui_status, extraPatch = {}) {
     const now = Date.now();
 
     const phase =
@@ -208,17 +282,31 @@ function setGuiStatus(id, gui_status, extraPatch = {}){
         c = set(it, 'phase', phase) || c;
         c = set(it, 'handoff', handoff) || c;
 
-        // 时间戳只在未设置时写入
-        if (gui_status === GUI_STATUS.SELECTED && !it.selectedAt) { it.selectedAt = now; c = true; }
-        if (gui_status === GUI_STATUS.DISPATCHING && !it.dispatchedAt) { it.dispatchedAt = now; c = true; }
-        if (gui_status === GUI_STATUS.QUEUED && !it.enqueuedAt) { it.enqueuedAt = now; c = true; }
-        if (gui_status === GUI_STATUS.DEQUEUED && !it.dequeuedAt) { it.dequeuedAt = now; c = true; }
-        if (gui_status === GUI_STATUS.RUNNING && !it.startedAt) { it.startedAt = now; c = true; }
+        if (gui_status === GUI_STATUS.SELECTED && !it.selectedAt) {
+            it.selectedAt = now;
+            c = true;
+        }
+        if (gui_status === GUI_STATUS.DISPATCHING && !it.dispatchedAt) {
+            it.dispatchedAt = now;
+            c = true;
+        }
+        if (gui_status === GUI_STATUS.QUEUED && !it.enqueuedAt) {
+            it.enqueuedAt = now;
+            c = true;
+        }
+        if (gui_status === GUI_STATUS.DEQUEUED && !it.dequeuedAt) {
+            it.dequeuedAt = now;
+            c = true;
+        }
+        if (gui_status === GUI_STATUS.RUNNING && !it.startedAt) {
+            it.startedAt = now;
+            c = true;
+        }
         if ((gui_status === GUI_STATUS.SUCCESS || gui_status === GUI_STATUS.ERROR) && !it.finishedAt) {
-            it.finishedAt = now; c = true;
+            it.finishedAt = now;
+            c = true;
         }
 
-        // 合并额外补丁（也仅在不同才写入）
         for (const k in (extraPatch || {})) {
             c = set(it, k, extraPatch[k]) || c;
         }
@@ -226,8 +314,7 @@ function setGuiStatus(id, gui_status, extraPatch = {}){
     });
 }
 
-// —— History —— //
-function pushHistory(entry, max=300){
+function pushHistory(entry, max = 300) {
     const rec = {
         id: entry.id || uid(),
         plan_name: entry.plan_name || '',
@@ -235,16 +322,22 @@ function pushHistory(entry, max=300){
         inputs: entry.inputs || {},
         priority: entry.priority ?? null,
         note: entry.note || '',
+        repeat: entry.repeat || 1,
         status: entry.status || 'success',
         run_id: entry.run_id || null,
+        cid: entry.cid || null,
         finishedAt: entry.finishedAt || Date.now(),
     };
-    history.value = [rec, ...history.value].slice(0,max);
+    history.value = [rec, ...history.value].slice(0, max);
     persistHistory();
 }
-function clearHistory(){ history.value = []; persistHistory(); }
 
-export function useStagingQueue(){
+function clearHistory() {
+    history.value = [];
+    persistHistory();
+}
+
+export function useStagingQueue() {
     return {
         items,
         addTask, updateTask, removeTask, clear, duplicate, move, persist,

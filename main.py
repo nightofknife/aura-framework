@@ -93,7 +93,7 @@ def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
 
     根据 `ad_hoc_mode` 的值，此函数可以显示可调度的任务列表
     或所有方案中定义的全部任务列表。用户选择一个任务后，
-    该任务将被添加到调度器的执行队列中。
+    可以指定运行次数，然后批量添加到调度器的执行队列中。
 
     Args:
         scheduler: 当前的 Scheduler 实例。
@@ -148,24 +148,69 @@ def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
                 time.sleep(1)
                 continue
 
+            # ✅ 新增：询问运行次数
+            while True:
+                try:
+                    run_count_input = input("\n请输入运行次数 (默认为1): ").strip()
+                    if not run_count_input:
+                        run_count = 1
+                    else:
+                        run_count = int(run_count_input)
+                        if run_count <= 0:
+                            print("运行次数必须大于0，请重新输入。")
+                            continue
+                    break
+                except ValueError:
+                    print("无效的输入，请输入一个正整数。")
+
+            # ✅ 批量添加任务
+            print(f"\n正在添加 {run_count} 个任务到队列...")
+            success_count = 0
+            failed_count = 0
+
             if ad_hoc_mode:
                 plan_name, task_name = task_to_run.split('/', 1)
-                result = scheduler.run_ad_hoc_task(plan_name, task_name)
                 task_display_name = task_to_run
             else:
                 task_id = task_to_run.get('id')
-                result = scheduler.run_manual_task(task_id)
                 task_display_name = task_to_run.get('name')
 
-            if result.get('status') == 'success':
-                print(f"\n✅ 任务 '{task_display_name}' 已成功加入待执行队列。")
-                if not scheduler_is_running:
-                    print("   请从主菜单启动调度器来运行它。")
-            else:
-                print(f"\n❌ 加入队列失败: {result.get('message')}")
+            for i in range(1, run_count + 1):
+                try:
+                    if ad_hoc_mode:
+                        result = scheduler.run_ad_hoc_task(plan_name, task_name)
+                    else:
+                        result = scheduler.run_manual_task(task_id)
+
+                    if result.get('status') == 'success':
+                        success_count += 1
+                        print(f"  [{i}/{run_count}] ✅ 任务已入队 (cid: {result.get('cid', 'N/A')})")
+                    else:
+                        failed_count += 1
+                        print(f"  [{i}/{run_count}] ❌ 失败: {result.get('message')}")
+
+                    # 短暂延迟以避免过快的并发请求
+                    if i < run_count:
+                        time.sleep(0.05)
+
+                except Exception as e:
+                    failed_count += 1
+                    print(f"  [{i}/{run_count}] ❌ 异常: {e}")
+
+            # 显示汇总结果
+            print(f"\n{'=' * 60}")
+            print(f"任务添加完成:")
+            print(f"  ✅ 成功: {success_count}/{run_count}")
+            if failed_count > 0:
+                print(f"  ❌ 失败: {failed_count}/{run_count}")
+            print(f"{'=' * 60}")
+
+            if success_count > 0 and not scheduler_is_running:
+                print("\n💡 提示: 请从主菜单启动调度器来运行这些任务。")
 
             wait_for_enter()
             return
+
         except ValueError:
             print("无效的输入，请输入数字。")
             time.sleep(1)

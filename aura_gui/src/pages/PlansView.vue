@@ -151,7 +151,7 @@ import {useStagingQueue} from '../composables/useStagingQueue.js';
 const {push: toast} = useToasts();
 const {addTask} = useStagingQueue();
 
-const api = axios.create({baseURL:'http://127.0.0.1:8000/api', timeout:5000});
+const api = axios.create({baseURL:'http://127.0.0.1:18098/api', timeout:5000});
 
 const plans = ref([]);
 const planQuery = ref('');

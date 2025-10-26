@@ -26,7 +26,9 @@ class ExecutionContext:
             - `loop`: 用于存放当前循环迭代的变量（如 `item` 和 `index`）。
     """
 
-    def __init__(self, initial_data: Optional[Dict[str, Any]] = None, inputs: Optional[Dict[str, Any]] = None):
+    def __init__(self, initial_data: Optional[Dict[str, Any]] = None,
+                 inputs: Optional[Dict[str, Any]] = None,
+                 cid: Optional[str] = None): # ✅ 新增 cid 参数
         """初始化一个执行上下文。
 
         Args:
@@ -39,7 +41,8 @@ class ExecutionContext:
             "initial": initial_data or {},
             "inputs": inputs or {},
             "nodes": {},
-            "loop": {}  # 用于存放循环变量 (item, index)
+            "loop": {},  # 用于存放循环变量 (item, index)
+            "cid": cid or None  # ✅ 存储 cid
         }
 
     def fork(self) -> 'ExecutionContext':

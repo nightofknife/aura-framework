@@ -105,10 +105,10 @@ class ExecutionManager:
         if task_id_for_status and not is_interrupt_handler:
             self.scheduler.update_run_status(task_id_for_status, {'status': 'running', 'started_at': now})
 
-        current_task = asyncio.current_task()
-        if not is_interrupt_handler:
-            async with self.scheduler.get_async_lock():
-                self.scheduler.running_tasks[tasklet.task_name] = current_task
+        # current_task = asyncio.current_task()
+        # if not is_interrupt_handler:
+        #     async with self.scheduler.get_async_lock():
+        #         self.scheduler.running_tasks[tasklet.task_name] = current_task
 
         semaphores = await self._get_semaphores_for(tasklet)
 
@@ -157,12 +157,12 @@ class ExecutionManager:
                                                  {'status': 'idle', 'last_run': now, 'result': 'failure'})
             await hook_manager.trigger('after_task_failure', task_context=task_context)
         finally:
-            if not is_interrupt_handler:
-                try:
-                    async with self.scheduler.get_async_lock():
-                        self.scheduler.running_tasks.pop(tasklet.task_name, None)
-                except Exception as lock_e:
-                    logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")
+            # if not is_interrupt_handler:
+            #     try:
+            #         async with self.scheduler.get_async_lock():
+            #             self.scheduler.running_tasks.pop(tasklet.task_name, None)
+            #     except Exception as lock_e:
+            #         logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")
             await hook_manager.trigger('after_task_run', task_context=task_context)
             logger.debug(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")
 
@@ -274,22 +274,27 @@ class ExecutionManager:
         payload = tasklet.payload or {}
         plan_name = payload.get('plan_name')
         task_name_in_plan = payload.get('task') or payload.get('task_name')
+
         if not plan_name:
             parts = tasklet.task_name.split('/', 1)
             if len(parts) == 2:
                 plan_name, task_name_in_plan = parts
             else:
                 raise ValueError(f"无法从 tasklet.task_name '{tasklet.task_name}' 中解析出 plan_name。")
+
         if not plan_name or not task_name_in_plan:
             raise ValueError(f"无法从 tasklet 中确定 plan_name 或 task_name: {tasklet}")
+
         orchestrator = self.scheduler.plans.get(plan_name)
         if not orchestrator:
             raise RuntimeError(f"在执行任务时找不到方案包 '{plan_name}' 的 Orchestrator。")
 
+        # ✅ 修改：传递 tasklet.cid
         return await orchestrator.execute_task(
             task_name_in_plan,
             tasklet.triggering_event,
-            tasklet.initial_context
+            tasklet.initial_context,
+            parent_cid=tasklet.cid
         )
 
     def startup(self):

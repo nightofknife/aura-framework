@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Aura 框架的 FastAPI 服务器。
+"""Aura 框架的 FastAPI 服务器（REST API 版本）。
 
-该模块提供了用于控制和监控 Aura 自动化框架的实时 API 服务器。
-它利用 FastAPI 构建 RESTful API 端点，并通过 WebSocket 将实时事件和日志
-流式传输到客户端（如 Aura GUI）。
+该模块提供了用于控制和监控 Aura 自动化框架的 RESTful API 服务器。
+所有状态同步和任务控制都通过 REST API 实现，只保留日志流的 WebSocket。
 
 主要功能:
 - **系统控制**: 启动、停止、重载和获取 Aura 调度器的状态。
 - **资源发现**: 列出所有已加载的方案（Plans）和任务（Tasks）。
-- **任务执行**: 支持以临时（Ad-hoc）方式触发任何任务的执行。
+- **任务执行**: 支持单个和批量任务派发。
+- **任务管理**: 取消任务、调整优先级。
 - **状态监控**: 提供对活动任务、任务队列和历史运行时间线的洞察。
-- **实时通信**: 使用 WebSocket 将核心事件和日志实时推送到前端。
+- **实时日志**: 使用 WebSocket 将日志实时推送到前端。
 - **热重载**: 支持动态启用或禁用插件的自动热重载功能。
 """
 
@@ -22,205 +22,189 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# 导入你的核心Aura Scheduler
 from packages.aura_core.scheduler import Scheduler
 from packages.aura_core.event_bus import Event
 
 # --- 1. 全局核心实例 ---
-# 这是整个API服务器的“大脑”，它持有并管理Aura框架的实例。
-# 我们在启动时将日志级别设置为DEBUG，以便捕获所有日志进行流式传输。
-# 注意：logger.setup() 在 Scheduler 的 __init__ 中已经调用过一次，
-# 这里的调用是为了确保API日志队列被正确设置。
 logger = logging.getLogger("AuraFramework")
 logger.setLevel(logging.DEBUG)
 
 app = FastAPI(
-    title="Aura Framework API",
-    description="A real-time API server to control and observe the Aura automation framework.",
-    version="1.0.0"
+    title="Aura Framework API (REST Edition)",
+    description="A RESTful API server to control and observe the Aura automation framework.",
+    version="2.0.0"
 )
 scheduler = Scheduler()
 
 # --- 2. CORS中间件 ---
-# 允许你的Electron GUI（其源通常是 http://localhost:xxxx）访问此API。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 在生产环境中应收紧为你的GUI的具体地址
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# --- 3. WebSocket 连接管理器 ---
-class ConnectionManager:
-    """管理所有活跃的 WebSocket 连接。
+# --- 3. WebSocket 连接管理器（仅用于日志流） ---
+class LogConnectionManager:
+    """管理所有日志 WebSocket 连接。"""
 
-    这是一个辅助类，用于跟踪所有连接到服务器的客户端，并提供向所有客户端
-    广播消息的功能。
-
-    Attributes:
-        active_connections (List[WebSocket]): 当前活跃的 WebSocket 连接列表。
-    """
     def __init__(self):
-        """初始化 ConnectionManager。"""
-        self.active_connections: List[WebSocket] = []
+        self.log_connections: List[WebSocket] = []
+        self.lock = asyncio.Lock()
 
     async def connect(self, websocket: WebSocket):
-        """接受一个新的 WebSocket 连接并将其添加到活跃连接列表。
-
-        Args:
-            websocket (WebSocket): 要接受的 WebSocket 连接对象。
-        """
         await websocket.accept()
-        self.active_connections.append(websocket)
+        async with self.lock:
+            self.log_connections.append(websocket)
 
-    def disconnect(self, websocket: WebSocket):
-        """从活跃连接列表中移除一个已断开的 WebSocket 连接。
+    async def disconnect(self, websocket: WebSocket):
+        async with self.lock:
+            if websocket in self.log_connections:
+                self.log_connections.remove(websocket)
 
-        Args:
-            websocket (WebSocket): 要移除的 WebSocket 连接对象。
-        """
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict):
-        """向所有活跃的 WebSocket 连接广播一条 JSON 消息。
-
-        此方法会并发地将消息发送给所有客户端，以提高效率。
-
-        Args:
-            message (dict): 要发送的 JSON 消息体（以字典形式）。
-        """
-        tasks = [connection.send_json(message) for connection in self.active_connections]
+    async def broadcast_logs(self, message: dict):
+        if not self.log_connections:
+            return
+        connections = self.log_connections[:]
+        tasks = [conn.send_json(message) for conn in connections]
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-manager = ConnectionManager()
+log_manager = LogConnectionManager()
 
 
-# --- 4. 后台任务：连接Aura核心与WebSocket的桥梁 ---
-async def event_bus_listener(event: Event):
-    """订阅 Aura 事件总线的回调函数。
-
-    每当框架内部发布一个事件，此函数就会被调用，并将事件数据通过 WebSocket
-    广播到所有连接的客户端。
-
-    Args:
-        event (Event): 从事件总线接收到的事件对象。
-    """
-    await manager.broadcast({"type": "event", "payload": event.to_dict()})
-
-
+# --- 4. 后台任务：日志流监听器 ---
 async def log_queue_listener():
-    """持续从 Aura 日志队列中消费日志记录并进行广播。
-
-    这是一个异步的、长时运行的后台任务。它安全地从线程安全的日志队列中获取
-    日志条目，并将其通过 WebSocket 广播出去，从而避免阻塞主事件循环。
-    """
-    logger.info("Log queue listener started. Awaiting logs...")
+    """持续从 Aura 日志队列中消费日志记录并广播到日志通道。"""
+    logger.info("Log queue listener started. Awaiting logs for the LOGS channel...")
     loop = asyncio.get_running_loop()
     while True:
         try:
-            # 在一个单独的线程中执行阻塞的 get() 方法，然后 await 它的结果
-            # 这可以防止阻塞 FastAPI 的主事件循环
-            log_entry = await loop.run_in_executor(
-                None,  # 使用默认的线程池
-                scheduler.api_log_queue.get
-            )
-
-            await manager.broadcast({"type": "log", "payload": log_entry})
-            # 注意：由于 get() 是阻塞的，task_done() 必须在它成功返回后调用
+            log_entry = await loop.run_in_executor(None, scheduler.api_log_queue.get)
+            await log_manager.broadcast_logs({"type": "log", "payload": log_entry})
             loop.run_in_executor(None, scheduler.api_log_queue.task_done)
         except Exception as e:
-            # 使用print以防日志系统本身出问题
             print(f"CRITICAL: Log listener background task failed: {e}")
-            await asyncio.sleep(1)  # 发生错误时稍作等待
+            await asyncio.sleep(1)
 
 
 @app.on_event("startup")
 async def startup_event():
-    """FastAPI 应用启动时执行的钩子函数。
-
-    此函数负责启动所有必要的后台任务，将 Aura 核心与 WebSocket 世界连接起来，
-    包括日志监听器和事件总线订阅者。
-    """
-    # 获取当前（FastAPI的）事件循环
-    current_loop = asyncio.get_running_loop()
-
-    # 启动日志监听器
+    """FastAPI 应用启动时执行的钩子函数。"""
     asyncio.create_task(log_queue_listener())
-
-    # 将我们的WebSocket广播回调订阅到EventBus
-    # 订阅时，传入当前循环，以便EventBus知道如何安全地调用它
-    await scheduler.event_bus.subscribe(
-        event_pattern='*',
-        callback=event_bus_listener,
-        channel='*',
-        loop=current_loop,
-        persistent=True,
-    )
-    logger.info("Aura API server started. WebSocket listeners are active.")
+    logger.info("Aura API server (REST Edition) started. Log streaming is active.")
 
 
 # --- 5. Pydantic API 模型 ---
-# 使用Pydantic模型能让FastAPI自动进行数据验证和生成API文档，非常强大。
 class SystemStatusResponse(BaseModel):
-    """系统状态响应的数据模型。"""
     is_running: bool
 
 
 class PlanResponse(BaseModel):
-    """方案信息响应的数据模型。"""
     name: str
     task_count: int
 
 
 class TaskMeta(BaseModel):
-    """任务元数据的数据模型。"""
     title: str | None = None
     description: str | None = None
     inputs: List[Dict] | None = None
 
 
 class TaskDefinitionResponse(BaseModel):
-    """任务定义详情响应的数据模型。"""
     full_task_id: str
     task_name_in_plan: str
     meta: TaskMeta
 
 
 class AdHocTaskRequest(BaseModel):
-    """临时任务执行请求的数据模型。"""
     plan_name: str
     task_name: str
     inputs: Dict[str, Any] = Field(default_factory=dict)
 
 
-class AdHocTaskResponse(BaseModel):
-    """临时任务执行响应的数据模型。"""
+class BatchTaskRequest(BaseModel):
+    """批量任务派发请求。"""
+    tasks: List[AdHocTaskRequest]
+
+
+class TaskDispatchResult(BaseModel):
+    """单个任务派发结果。"""
+    plan_name: str
+    task_name: str
+    status: str
+    message: str
+    cid: str | None = None
+
+
+class BatchTaskResponse(BaseModel):
+    """批量任务派发响应。"""
+    results: List[TaskDispatchResult]
+    success_count: int
+    failed_count: int
+
+
+class CancelTaskResponse(BaseModel):
+    """任务取消响应。"""
     status: str
     message: str
 
 
+class UpdatePriorityRequest(BaseModel):
+    """任务优先级更新请求。"""
+    priority: int
+
+
+class UpdatePriorityResponse(BaseModel):
+    """任务优先级更新响应。"""
+    status: str
+    message: str
+
+
+class BatchStatusRequest(BaseModel):
+    """批量状态查询请求。"""
+    cids: List[str]
+
+
+class TaskStatusItem(BaseModel):
+    """单个任务状态。"""
+    cid: str
+    status: str | None = None
+    plan_name: str | None = None
+    task_name: str | None = None
+    started_at: int | None = None
+    finished_at: int | None = None
+    nodes: List[Dict] | None = None
+
+
+class BatchStatusResponse(BaseModel):
+    """批量状态查询响应。"""
+    tasks: List[TaskStatusItem]
+
+
 class ActiveRunResponse(BaseModel):
-    """活跃运行任务信息的数据模型。"""
-    task_id: str
+    """活跃运行任务信息（增强版）。"""
+    run_id: str
+    cid: str | None = None
+    plan_name: str | None = None
+    task_name: str | None = None
+    started_at: int | None = None
+    status: str | None = None
 
 
 class QueuePlanCount(BaseModel):
-    """按方案统计的队列数量。"""
     plan: str
     count: int
 
 
 class QueuePriorityCount(BaseModel):
-    """按优先级统计的队列数量。"""
     priority: int
     count: int
 
 
 class QueueOverviewResponse(BaseModel):
-    """任务队列概览信息的数据模型。"""
     ready_length: int
     delayed_length: int
     by_plan: List[QueuePlanCount]
@@ -228,11 +212,10 @@ class QueueOverviewResponse(BaseModel):
     avg_wait_sec: float
     p95_wait_sec: float
     oldest_age_sec: float
-    throughput: Dict[str, int]  # e.g. {"m5":0,"m15":0,"m60":0}
+    throughput: Dict[str, int]
 
 
 class QueueItem(BaseModel):
-    """队列中单个任务条目的数据模型。"""
     run_id: str | None = None
     plan_name: str | None = None
     task_name: str | None = None
@@ -243,13 +226,11 @@ class QueueItem(BaseModel):
 
 
 class QueueListResponse(BaseModel):
-    """任务队列列表的响应数据模型。"""
     items: List[QueueItem]
     next_cursor: str | None = None
 
 
 class TimelineNode(BaseModel):
-    """运行时间线中单个节点的数据模型。"""
     node_id: str
     startMs: int | None = None
     endMs: int | None = None
@@ -257,7 +238,6 @@ class TimelineNode(BaseModel):
 
 
 class RunTimelineResponse(BaseModel):
-    """任务运行时间线的响应数据模型。"""
     run_id: str
     plan_name: str | None = None
     task_name: str | None = None
@@ -266,70 +246,65 @@ class RunTimelineResponse(BaseModel):
     status: str | None = None
     nodes: List[TimelineNode] = Field(default_factory=list)
 
+class QueueInsertRequest(BaseModel):
+    index: int
+    plan_name: str
+    task_name: str
+    inputs: Dict[str, Any] = Field(default_factory=dict)
 
-# --- 6. WebSocket Endpoint ---
-@app.websocket("/ws/events")
-async def websocket_endpoint(websocket: WebSocket):
-    """处理 WebSocket 连接的主端点。
 
-    此端点负责接受新的客户端连接，并无限期地保持连接开放以进行实时通信。
-    它处理连接的建立和断开。
+class QueueMoveRequest(BaseModel):
+    position: int
 
-    Args:
-        websocket (WebSocket): 客户端的 WebSocket 连接对象。
-    """
-    await manager.connect(websocket)
-    logger.info("New GUI client connected via WebSocket.")
+
+class QueueReorderRequest(BaseModel):
+    cid_order: List[str]
+
+
+
+# --- 6. WebSocket Endpoint (仅日志流) ---
+@app.websocket("/ws/logs")
+async def websocket_endpoint_logs(websocket: WebSocket):
+    """处理日志流的 WebSocket 连接。"""
+    await log_manager.connect(websocket)
+    client_info = f"{websocket.client.host}:{websocket.client.port}"
+    logger.info(f"Client {client_info} connected to LOGS channel.")
     try:
         while True:
-            # 保持连接开放。未来可以接收来自客户端的消息，例如 "ping"。
             await websocket.receive_text()
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
-        logger.info("GUI client disconnected.")
+        logger.info(f"Client {client_info} disconnected from LOGS channel.")
+    finally:
+        await log_manager.disconnect(websocket)
 
 
 # --- 7. REST API Endpoints ---
 
-# --- 系统控制 ---
+# === 系统控制 ===
 @app.post("/api/system/start", tags=["System"])
 def system_start():
-    """启动 Aura 框架的后台调度器。
-
-    这是一个同步操作，会立即返回，并在后台启动调度器。
-    """
+    """启动 Aura 框架的后台调度器。"""
     scheduler.start_scheduler()
     return {"status": "starting", "message": "Scheduler startup initiated."}
 
 
 @app.post("/api/system/stop", tags=["System"])
 def system_stop():
-    """优雅地停止 Aura 框架。
-
-    此操作会等待所有正在运行的任务完成后再停止调度器。
-    """
+    """优雅地停止 Aura 框架。"""
     scheduler.stop_scheduler()
     return {"status": "stopping", "message": "Scheduler shutdown initiated."}
 
 
 @app.get("/api/system/status", response_model=SystemStatusResponse, tags=["System"])
 def system_status():
-    """获取框架的宏观运行状态。
-
-    Returns:
-        SystemStatusResponse: 包含 `is_running` 标志的响应对象。
-    """
+    """获取框架的宏观运行状态。"""
     return scheduler.get_master_status()
 
 
-# --- 资源发现 ---
+# === 资源发现 ===
 @app.get("/api/plans", response_model=List[PlanResponse], tags=["Discovery"])
 def list_plans():
-    """获取所有已加载的 Plan 列表及其包含的任务数量。
-
-    Returns:
-        List[PlanResponse]: 一个包含所有方案及其任务计数的列表。
-    """
+    """获取所有已加载的 Plan 列表及其包含的任务数量。"""
     plan_names = scheduler.get_all_plans()
     all_tasks = scheduler.get_all_task_definitions_with_meta()
 
@@ -343,17 +318,7 @@ def list_plans():
 
 @app.get("/api/plans/{plan_name}/tasks", response_model=List[TaskDefinitionResponse], tags=["Discovery"])
 def list_tasks_in_plan(plan_name: str):
-    """获取指定 Plan 下所有 Task 的详细定义信息。
-
-    Args:
-        plan_name (str): 要查询的方案名称。
-
-    Raises:
-        HTTPException: 如果找不到指定的方案，则返回 404 错误。
-
-    Returns:
-        List[TaskDefinitionResponse]: 指定方案下的所有任务定义列表。
-    """
+    """获取指定 Plan 下所有 Task 的详细定义信息。"""
     all_tasks = scheduler.get_all_task_definitions_with_meta()
     plan_tasks = [task for task in all_tasks if task['plan_name'] == plan_name]
 
@@ -363,22 +328,10 @@ def list_tasks_in_plan(plan_name: str):
     return plan_tasks
 
 
-# --- 任务执行 ---
-@app.post("/api/tasks/run", response_model=AdHocTaskResponse, status_code=202, tags=["Execution"])
+# === 任务执行 ===
+@app.post("/api/tasks/run", status_code=202, tags=["Execution"])
 def run_ad_hoc_task(request: AdHocTaskRequest):
-    """以临时（Ad-hoc）方式执行任何一个指定的 Task。
-
-    这是 GUI 上“立即运行”功能的核心实现。任务将被立即加入执行队列。
-
-    Args:
-        request (AdHocTaskRequest): 包含 `plan_name`, `task_name` 和 `inputs` 的请求体。
-
-    Raises:
-        HTTPException: 如果任务入队失败，则返回 400 错误。
-
-    Returns:
-        AdHocTaskResponse: 包含任务入队状态和消息的响应。
-    """
+    """执行单个临时任务。"""
     result = scheduler.run_ad_hoc_task(
         plan_name=request.plan_name,
         task_name=request.task_name,
@@ -389,39 +342,64 @@ def run_ad_hoc_task(request: AdHocTaskRequest):
     return result
 
 
-# --- 状态查询 ---
+@app.post("/api/tasks/batch", response_model=BatchTaskResponse, status_code=202, tags=["Execution"])
+def run_batch_tasks(request: BatchTaskRequest):
+    """批量执行多个临时任务。"""
+    tasks_input = [
+        {
+            "plan_name": task.plan_name,
+            "task_name": task.task_name,
+            "inputs": task.inputs
+        }
+        for task in request.tasks
+    ]
+
+    result = scheduler.run_batch_ad_hoc_tasks(tasks_input)
+    return result
+
+
+# === 任务管理 ===
+@app.post("/api/tasks/{cid}/cancel", response_model=CancelTaskResponse, tags=["Task Management"])
+def cancel_task(cid: str):
+    """取消指定 cid 的任务。"""
+    result = scheduler.cancel_task(cid)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@app.patch("/api/tasks/{cid}/priority", response_model=UpdatePriorityResponse, tags=["Task Management"])
+def update_task_priority(cid: str, request: UpdatePriorityRequest):
+    """调整指定任务的优先级。"""
+    result = scheduler.update_task_priority(cid, request.priority)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+# === 状态查询 ===
 @app.get("/api/runs/active", response_model=List[ActiveRunResponse], tags=["Observability"])
-async def get_active_runs():
-    """获取当前所有正在执行的任务的快照。
-
-    这是一个异步端点，它会安全地从调度器的运行上下文中读取数据。
-
-    Returns:
-        List[ActiveRunResponse]: 一个包含所有活动任务 ID 的列表。
-    """
-    # 安全地从异步上下文中读取共享数据
-    async with scheduler.get_async_lock():
-        # scheduler.running_tasks 的键是任务的唯一ID
-        active_task_ids = list(scheduler.running_tasks.keys())
-    return [{"task_id": task_id} for task_id in active_task_ids]
+def get_active_runs():
+    """获取当前所有正在执行的任务的快照（增强版）。"""
+    active_runs = scheduler.get_active_runs_snapshot()
+    return active_runs
 
 
-# --- Queue Overview ---
+@app.post("/api/tasks/status/batch", response_model=BatchStatusResponse, tags=["Observability"])
+def get_batch_task_status(request: BatchStatusRequest):
+    """批量获取多个任务的状态。"""
+    result = scheduler.get_batch_task_status(request.cids)
+    return {"tasks": result}
+
+
 @app.get("/api/queue/overview", response_model=QueueOverviewResponse, tags=["Observability"])
 def api_queue_overview():
-    """获取任务队列的综合概览统计信息。
-
-    如果查询失败，会返回一个包含默认值的空响应体，以便前端能够优雅地处理。
-
-    Returns:
-        QueueOverviewResponse: 包含队列长度、等待时间、吞吐量等统计数据的响应。
-    """
+    """获取任务队列的综合概览统计信息。"""
     try:
         data = scheduler.get_queue_overview()
         return data
     except Exception as e:
         logging.exception("queue overview failed")
-        # 返回空也行，前端会优雅处理
         return QueueOverviewResponse(
             ready_length=0, delayed_length=0,
             by_plan=[], by_priority=[],
@@ -430,21 +408,9 @@ def api_queue_overview():
         )
 
 
-# --- Queue List ---
 @app.get("/api/queue/list", response_model=QueueListResponse, tags=["Observability"])
 def api_queue_list(state: str, limit: int = 200):
-    """列出处于特定状态（就绪或延迟）的任务队列中的条目。
-
-    Args:
-        state (str): 要查询的队列状态，必须是 'ready' 或 'delayed'。
-        limit (int): 返回的最大条目数。
-
-    Raises:
-        HTTPException: 如果 `state` 参数无效，则返回 400 错误。
-
-    Returns:
-        QueueListResponse: 包含任务条目列表和分页游标的响应。
-    """
+    """列出处于特定状态（就绪或延迟）的任务队列中的条目。"""
     state = (state or 'ready').lower()
     if state not in ('ready', 'delayed'):
         raise HTTPException(status_code=400, detail="state must be 'ready' or 'delayed'")
@@ -456,68 +422,119 @@ def api_queue_list(state: str, limit: int = 200):
         return QueueListResponse(items=[], next_cursor=None)
 
 
-# --- Run Timeline ---
 @app.get("/api/run/{run_id}/timeline", response_model=RunTimelineResponse, tags=["Observability"])
 def api_run_timeline(run_id: str):
-    """获取指定任务运行（run_id）的详细时间线数据。
-
-    Args:
-        run_id (str): 要查询的任务运行的唯一 ID。
-
-    Raises:
-        HTTPException: 如果找不到指定的 `run_id`，则返回 404 错误。
-
-    Returns:
-        RunTimelineResponse: 包含该次运行所有执行节点状态和耗时的时间线数据。
-    """
+    """获取指定任务运行（run_id）的详细时间线数据。"""
     data = scheduler.get_run_timeline(run_id)
     if not data:
         raise HTTPException(status_code=404, detail=f"run_id '{run_id}' not found.")
-    # Pydantic 会自动校验/转换
     return data
 
 
+# === 系统管理 ===
 @app.post("/api/system/reload", tags=["System"])
 async def system_reload():
-    """执行一次完整的全量重载。
-
-    此操作会清空所有当前的插件注册表和定义，然后重新从磁盘加载所有插件。
-    这是一个破坏性操作，仅当没有任务正在执行时才能成功。
-
-    Raises:
-        HTTPException: 如果重载因有任务正在运行而失败，则返回 409 Conflict 错误。
-
-    Returns:
-        dict: 包含重载操作结果状态和消息的字典。
-    """
+    """执行一次完整的全量重载。"""
     result = await scheduler.reload_all()
     if result.get("status") == "error":
-        raise HTTPException(status_code=409, detail=result.get("message")) # 409 Conflict
+        raise HTTPException(status_code=409, detail=result.get("message"))
     return result
+
 
 @app.post("/api/system/hot_reload/enable", tags=["System"])
 def enable_hot_reload():
-    """启用基于文件系统监控的自动热重载功能。
-
-    启用后，对插件文件的任何更改都将自动触发重载。
-
-    Raises:
-        HTTPException: 如果启用失败，则返回 400 错误。
-
-    Returns:
-        dict: 包含操作结果的字典。
-    """
+    """启用基于文件系统监控的自动热重载功能。"""
     result = scheduler.enable_hot_reload()
     if result.get("status") == "error":
         raise HTTPException(status_code=400, detail=result.get("message"))
     return result
 
+
 @app.post("/api/system/hot_reload/disable", tags=["System"])
 def disable_hot_reload():
-    """禁用自动热重载功能。
-
-    Returns:
-        dict: 包含操作结果的字典。
-    """
+    """禁用自动热重载功能。"""
     result = scheduler.disable_hot_reload()
     return result
+
+@app.post("/api/queue/insert", tags=["Queue Management"])
+async def queue_insert(request: QueueInsertRequest):
+    """在队列的指定位置插入任务。"""
+    result = await scheduler.queue_insert_at(
+        index=request.index,
+        plan_name=request.plan_name,
+        task_name=request.task_name,
+        params=request.inputs
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result
+
+
+@app.delete("/api/queue/{cid}", tags=["Queue Management"])
+async def queue_remove(cid: str):
+    """从队列中删除指定任务。"""
+    result = await scheduler.queue_remove_task(cid)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@app.post("/api/queue/{cid}/move-to-front", tags=["Queue Management"])
+async def queue_move_front(cid: str):
+    """将任务移动到队列头部。"""
+    result = await scheduler.queue_move_to_front(cid)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@app.post("/api/queue/{cid}/move-to-position", tags=["Queue Management"])
+async def queue_move_position(cid: str, request: QueueMoveRequest):
+    """将任务移动到指定位置。"""
+    result = await scheduler.queue_move_to_position(cid, request.position)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@app.get("/api/queue/all", tags=["Queue Management"])
+async def queue_list_all():
+    """获取队列中所有任务。"""
+    return await scheduler.queue_list_all()
+
+
+@app.delete("/api/queue/clear", tags=["Queue Management"])
+async def queue_clear():
+    """清空队列。"""
+    return await scheduler.queue_clear()
+
+
+@app.post("/api/queue/reorder", tags=["Queue Management"])
+async def queue_reorder(request: QueueReorderRequest):
+    """重新排序队列。"""
+    result = await scheduler.queue_reorder(request.cid_order)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result
+
+
+# --- 8. 主程序入口 ---
+if __name__ == "__main__":
+    import uvicorn
+    from pathlib import Path
+
+    print("=" * 80)
+    print(" " * 20 + "AURA FRAMEWORK API SERVER (REST Edition)")
+    print("=" * 80)
+    print(f"  Server will start on: http://0.0.0.0:18098")
+    print(f"  API Documentation:    http://localhost:18098/docs")
+    print(f"  WebSocket Log Stream: ws://localhost:18098/ws/logs")
+    print("=" * 80)
+    print()
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=18098,
+        log_level="info"
+    )

@@ -28,6 +28,38 @@
       </div>
     </div>
 
+    <!-- ✅ 新增：队列统计面板 -->
+    <div class="queue-stats glass glass-thin">
+      <div class="stat-item">
+        <div class="stat-icon">⏸️</div>
+        <div class="stat-content">
+          <div class="stat-value">{{ queueStats.pending }}</div>
+          <div class="stat-label">待派发</div>
+        </div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-icon">📤</div>
+        <div class="stat-content">
+          <div class="stat-value">{{ queueStats.dispatching }}</div>
+          <div class="stat-label">派发中</div>
+        </div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-content">
+          <div class="stat-value">{{ queueStats.queued }}</div>
+          <div class="stat-label">队列中</div>
+        </div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-icon">▶️</div>
+        <div class="stat-content">
+          <div class="stat-value">{{ queueStats.running }}</div>
+          <div class="stat-label">执行中</div>
+        </div>
+      </div>
+    </div>
+
     <div class="content-grid">
       <SchemePanel v-reveal v-model:open="open.byPlan" title="按计划（含搜索）"
                    description="优先展示当前 Plan 的匹配任务">
@@ -83,15 +115,22 @@
             <th style="width:26px;"></th>
             <th>Plan / Task</th>
             <th>Inputs</th>
-            <th>Priority</th>
+            <th>Repeat</th>
             <th>Status</th>
             <th>Actions</th>
           </tr>
           </thead>
           <tbody>
           <template v-for="it in stagingList" :key="it.id">
-            <tr :class="{ 'row-drop-target': dragOverId === it.id }" @dragover.prevent="onDragOver(it.id)"
-                @drop.prevent="onDrop(it.id)" @dragleave="onDragLeave(it.id)">
+            <tr
+                :class="[
+                { 'row-drop-target': dragOverId === it.id },
+                rowStatusClass(it.gui_status)
+              ]"
+                @dragover.prevent="onDragOver(it.id)"
+                @drop.prevent="onDrop(it.id)"
+                @dragleave="onDragLeave(it.id)"
+            >
               <td>
                 <button class="btn btn-ghost" @click="toggleRow(it.id)">{{ expanded.has(it.id) ? '▾' : '▸' }}</button>
               </td>
@@ -100,10 +139,35 @@
               </td>
               <td><strong>{{ it.plan_name }}</strong> / {{ it.task_name }}</td>
               <td><code>{{ previewInputs(it.inputs) }}</code></td>
-              <td>{{ it.priority ?? '—' }}</td>
-              <td><span class="pill" :class="statusPill(it.status)">{{ safeUpper(it.status || 'pending') }}</span></td>
               <td>
-                <button class="btn btn-ghost" @click="remove(it)">Del</button>
+                <input
+                    class="repeat-input"
+                    type="number"
+                    v-model.number="it.repeat"
+                    min="1"
+                    max="500"
+                    :disabled="it.status !== 'pending'"
+                    @change="updateTask(it.id, { repeat: it.repeat })"
+                >
+              </td>
+              <td>
+                <!-- ✅ 修改：显示 GUI 状态 -->
+                <span
+                    class="pill status-pill"
+                    :class="guiStatusClass(it.gui_status)"
+                    :style="{ background: guiStatusColor(it.gui_status) }"
+                >
+                  {{ guiStatusLabel(it.gui_status) }}
+                </span>
+              </td>
+              <td>
+                <button
+                    class="btn btn-ghost"
+                    @click="remove(it)"
+                    :disabled="it.status !== 'pending'"
+                >
+                  Del
+                </button>
               </td>
             </tr>
             <Transition name="expand">
@@ -151,13 +215,27 @@
         <div v-if="cfg.jsonError" class="error">{{ cfg.jsonError }}</div>
       </div>
 
-      <details class="adv">
-        <summary><b>Advanced</b> (priority & note)</summary>
+      <details class="adv" open>
+        <summary><b>Repeat Execution</b></summary>
         <div class="adv-grid">
           <div class="field">
-            <div class="label">Priority (optional)</div>
-            <input class="input" v-model.number="cfg.priority" type="number" placeholder="e.g. 5">
+            <div class="label">Repeat Count</div>
+            <input
+                class="input"
+                v-model.number="cfg.repeat"
+                type="number"
+                min="1"
+                max="500"
+                placeholder="1"
+            >
+            <div class="help">Execute this task N times (1-500)</div>
           </div>
+        </div>
+      </details>
+
+      <details class="adv">
+        <summary><b>Advanced</b> (note only)</summary>
+        <div class="adv-grid">
           <div class="field">
             <div class="label">Note</div>
             <input class="input" v-model="cfg.note" placeholder="Optional note">
@@ -179,7 +257,7 @@ import axios from 'axios';
 import SchemePanel from '../components/SchemePanel.vue';
 import TaskMiniCard from '../components/TaskMiniCard.vue';
 import ProContextPanel from '../components/ProContextPanel.vue';
-import {useStagingQueue} from '../composables/useStagingQueue.js';
+import {useStagingQueue, GUI_STATUS, STATUS_LABELS, STATUS_COLORS} from '../composables/useStagingQueue.js';
 import {useStagingRunner} from '../composables/useStagingRunner.js';
 import {useToasts} from '../composables/useToasts.js';
 
@@ -187,7 +265,7 @@ onMounted(() => window.addEventListener('keydown', onGlobalKey))
 onUnmounted(() => window.removeEventListener('keydown', onGlobalKey))
 
 const {push: toast} = useToasts();
-const api = axios.create({baseURL: 'http://127.0.0.1:8000/api', timeout: 5000});
+const api = axios.create({baseURL: 'http://127.0.0.1:18098/api', timeout: 5000});
 
 // 运行控制（含长按切换）
 const {running, autoMode, startBatch, pause, setAuto, forceStop} = useStagingRunner();
@@ -205,23 +283,19 @@ function onHoldStart(target) {
       clearInterval(hold._timer);
 
       if (target === 'run') {
-        // 长按：切换全局 auto，并在需要时立即开跑
         const next = !autoMode.value;
         setAuto(next);
         if (next) {
-          // 如果刚切到 ON 且当前未运行，并且有任务，则立即开始批量
           if (!running.value && stagingList.value.length > 0) {
             startBatch();
           }
         }
       } else {
-        // 长按暂停键：强制停止
         forceStop();
       }
     }
   }, 16);
 }
-
 
 function onHoldEnd(target) {
   clearInterval(hold._timer);
@@ -229,28 +303,43 @@ function onHoldEnd(target) {
 
   if (target === 'run') {
     if (p < 100) {
-      // 短按：临时开启 auto，把队列跑空后还原先前状态
-      const wasAuto = autoMode.value;
-      if (!wasAuto) setAuto(true);
+      // 短按：批量派发当前队列中的所有任务
+      console.log('[onHoldEnd] Starting batch dispatch');
+      console.log('[onHoldEnd] Pending tasks:', stagingList.value.filter(t => t.status === 'pending').length);
 
-      // 开始批量
+      const wasAuto = autoMode.value;
+      if (!wasAuto) {
+        console.log('[onHoldEnd] Temporarily enabling auto mode');
+        setAuto(true);
+      }
+
       startBatch();
 
-      // 监听“队列清空或停止”，然后还原 auto
+      // ✅ 监听队列变化，确保所有任务都被派发
       if (!wasAuto) {
         const stopWatch = watch(
             [stagingList, running],
             ([list, run]) => {
-              if ((!list || list.length === 0) || !run) {
-                setAuto(wasAuto);       // 还原到进入前的 auto 状态
-                stopWatch();            // 解除监听
+              const pending = list.filter(it => it.status === 'pending').length;
+
+              console.log('[Watch] Queue state:', {
+                total: list.length,
+                pending: pending,
+                running: run
+              });
+
+              // ✅ 当没有 pending 任务且派发器停止时，恢复原始 auto 模式
+              if (pending === 0 && !run) {
+                console.log('[Watch] All tasks dispatched, restoring auto mode to:', wasAuto);
+                setAuto(wasAuto);
+                stopWatch();
               }
-            }
+            },
+            {deep: true}
         );
       }
     }
   } else {
-    // 短按暂停：仅暂停
     if (p < 100) pause();
   }
 
@@ -258,12 +347,6 @@ function onHoldEnd(target) {
   hold.pause = 0;
 }
 
-
-function onHoldCancel() {
-  clearInterval(hold._timer);
-  hold.run = 0;
-  hold.pause = 0;
-}
 
 // Plans & Tasks
 const plans = ref([]);
@@ -298,11 +381,9 @@ async function loadAllTasks() {
   allTasks.value = result;
 }
 
-// 方案状态 & 查询
 const open = reactive({byPlan: true, favs: false});
 const ui = reactive({planSelected: '', query: ''});
 
-// 搜索 & 高亮
 const searchEl = ref(null);
 
 function focusSearch() {
@@ -320,7 +401,6 @@ function highlight(s) {
   return escHtml(String(s || '')).replace(rx, '<mark>$1</mark>');
 }
 
-// 收藏
 const FAV_KEY = 'exec.favs';
 const favSet = ref(new Set(JSON.parse(localStorage.getItem(FAV_KEY) || '[]')));
 
@@ -336,7 +416,6 @@ function toggleFav(plan, task) {
   localStorage.setItem(FAV_KEY, JSON.stringify([...next]));
 }
 
-// 分组视图
 const grouped = computed(() => {
   const ps = ui.planSelected || (plans.value[0]?.name || '');
   const q = (ui.query || '').trim().toLowerCase();
@@ -364,7 +443,6 @@ const grouped = computed(() => {
 });
 const showGroupHeaders = computed(() => (ui.query || '').trim().length > 0);
 
-// 收藏视图
 const favTasksView = computed(() => {
   const map = new Map(allTasks.value.map(t => [t.__key, t]));
   const list = [...favSet.value.values()].map(k => map.get(k)).filter(Boolean);
@@ -373,7 +451,6 @@ const favTasksView = computed(() => {
       .map(t => ({...t, titleHtml: highlight(t.title), descHtml: highlight(t.desc), starred: true}));
 });
 
-// 初始化
 onMounted(async () => {
   await loadPlans();
   if (!ui.planSelected && plans.value.length) ui.planSelected = plans.value[0].name;
@@ -388,7 +465,7 @@ function onGlobalKey(e) {
   }
 }
 
-// 参数配置（仅添加时）
+// 参数配置
 const cfg = reactive({
   open: false,
   plan: '',
@@ -398,7 +475,8 @@ const cfg = reactive({
   inputsRaw: '{}',
   jsonError: '',
   priority: null,
-  note: ''
+  note: '',
+  repeat: 1,
 });
 
 function openConfig(plan, task, meta) {
@@ -418,6 +496,7 @@ function openConfig(plan, task, meta) {
   }
   cfg.priority = null;
   cfg.note = '';
+  cfg.repeat = 1;
 }
 
 const hasSchema = computed(() => !!cfg.meta?.inputs_schema);
@@ -484,7 +563,7 @@ function buildInputs() {
 // 本地队列
 const staging = useStagingQueue();
 const stagingList = computed(() => Array.isArray(staging.items?.value) ? staging.items.value : []);
-const historyList = computed(() => Array.isArray(staging.history?.value) ? staging.history.value : []);
+const {updateTask} = staging;
 
 function confirmAdd() {
   const inputs = buildInputs();
@@ -493,10 +572,80 @@ function confirmAdd() {
     task_name: cfg.task,
     inputs,
     priority: cfg.priority ?? null,
-    note: cfg.note || ''
+    note: cfg.note || '',
+    repeat: Math.max(1, Math.min(500, cfg.repeat || 1)),
   });
-  toast({type: 'success', title: 'Added to queue', message: `${cfg.plan} / ${cfg.task}`});
+  toast({
+    type: 'success',
+    title: 'Added to queue',
+    message: `${cfg.plan} / ${cfg.task} ${cfg.repeat > 1 ? `(×${cfg.repeat})` : ''}`
+  });
   cfg.open = false;
+}
+
+// ✅ 新增：队列统计
+const queueStats = computed(() => {
+  const stats = {
+    pending: 0,
+    dispatching: 0,
+    queued: 0,
+    running: 0,
+  };
+
+  stagingList.value.forEach(task => {
+    switch (task.gui_status) {
+      case GUI_STATUS.IDLE:
+      case GUI_STATUS.SELECTED:
+        stats.pending++;
+        break;
+      case GUI_STATUS.DISPATCHING:
+        stats.dispatching++;
+        break;
+      case GUI_STATUS.QUEUED:
+        stats.queued++;
+        break;
+      case GUI_STATUS.RUNNING:
+        stats.running++;
+        break;
+    }
+  });
+
+  return stats;
+});
+
+// ✅ 新增：GUI 状态相关函数
+function guiStatusLabel(status) {
+  return STATUS_LABELS[status] || status || '未知';
+}
+
+function guiStatusColor(status) {
+  return STATUS_COLORS[status] || '#6c757d';
+}
+
+function guiStatusClass(status) {
+  const classes = [];
+
+  if (status === GUI_STATUS.RUNNING) {
+    classes.push('status-running');
+  }
+  if (status === GUI_STATUS.DISPATCHING) {
+    classes.push('status-dispatching');
+  }
+  if (status === GUI_STATUS.SUCCESS) {
+    classes.push('status-success');
+  }
+  if (status === GUI_STATUS.ERROR || status === GUI_STATUS.ENQUEUE_FAILED) {
+    classes.push('status-error');
+  }
+
+  return classes.join(' ');
+}
+
+function rowStatusClass(status) {
+  if (status === GUI_STATUS.RUNNING) return 'row-running';
+  if (status === GUI_STATUS.SUCCESS) return 'row-success';
+  if (status === GUI_STATUS.ERROR || status === GUI_STATUS.ENQUEUE_FAILED) return 'row-error';
+  return '';
 }
 
 // 队列：展开/折叠 & 操作
@@ -512,14 +661,6 @@ function expandAll(v) {
   expanded.value = v ? new Set(stagingList.value.map(x => x.id)) : new Set();
 }
 
-function moveUp(it) {
-  staging.move(it.id, -1);
-}
-
-function moveDown(it) {
-  staging.move(it.id, +1);
-}
-
 function remove(it) {
   staging.removeTask(it.id);
 }
@@ -528,7 +669,7 @@ function clearAll() {
   staging.clear();
 }
 
-// —— 拖拽排序 —— //
+// 拖拽排序
 const dragId = ref(null);
 const dragOverId = ref(null);
 
@@ -564,33 +705,6 @@ function onDrop(targetId) {
   }
 }
 
-function onDragEnd() {
-  dragId.value = null;
-  dragOverId.value = null;
-}
-
-// 历史
-const qHist = ref('');
-const filteredHistory = computed(() => {
-  const q = qHist.value.trim().toLowerCase();
-  if (!q) return historyList.value;
-  return historyList.value.filter(h => (`${h.plan_name} ${h.task_name} ${JSON.stringify(h.inputs || {})}`).toLowerCase().includes(q));
-});
-
-function requeue(h) {
-  staging.addTask({
-    plan_name: h.plan_name,
-    task_name: h.task_name,
-    inputs: h.inputs,
-    priority: h.priority,
-    note: h.note
-  });
-}
-
-function clearHistory() {
-  staging.clearHistory();
-}
-
 // 通用
 function previewInputs(obj) {
   try {
@@ -621,14 +735,6 @@ function statusPill(s) {
   if (v === 'success') return 'pill-green';
   if (v === 'error') return 'pill-red';
   return 'pill-gray';
-}
-
-function fmt(ts) {
-  if (!ts) return '—';
-  const ms = ts > 1e12 ? ts : Math.floor(ts * 1000);
-  const d = new Date(ms);
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 </script>
 
@@ -665,7 +771,60 @@ function fmt(ts) {
   align-items: center;
 }
 
-/* 两列自适应 */
+/* ✅ 新增：队列统计面板 */
+.queue-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  padding: 20px;
+  border-radius: 12px;
+  background: linear-gradient(135deg,
+  color-mix(in oklab, var(--primary-accent) 5%, transparent),
+  color-mix(in oklab, var(--bg-secondary) 50%, transparent)
+  );
+  border: 1px solid var(--border-frosted);
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg-primary);
+  border-radius: 8px;
+  border: 1px solid var(--border-frosted);
+  transition: all 0.3s ease;
+}
+
+.stat-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.stat-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.stat-content {
+  flex: 1;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .content-grid {
   width: 100%;
   min-width: 0;
@@ -722,6 +881,137 @@ function fmt(ts) {
 
 .row-drop-target {
   background: color-mix(in oklab, var(--primary-accent) 10%, transparent);
+}
+
+/* ✅ 新增：重复次数输入框样式 */
+.repeat-input {
+  width: 60px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-frosted);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  text-align: center;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.repeat-input:hover:not(:disabled) {
+  border-color: var(--primary-accent);
+}
+
+.repeat-input:focus {
+  outline: none;
+  border-color: var(--primary-accent);
+  box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.1);
+}
+
+.repeat-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.repeat-input::-webkit-inner-spin-button,
+.repeat-input::-webkit-outer-spin-button {
+  opacity: 1;
+}
+
+/* ✅ 新增：状态指示器样式 */
+.status-pill {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: white;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* 执行中状态：脉冲动画 */
+.status-running {
+  animation: pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 12px rgba(40, 167, 69, 0.6);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.05);
+  }
+}
+
+/* 派发中状态：闪烁动画 */
+.status-dispatching {
+  animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* 成功状态：淡出效果 */
+.status-success {
+  animation: fadeOut 2s ease-out;
+}
+
+@keyframes fadeOut {
+  0% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.6;
+  }
+}
+
+/* 错误状态：抖动效果 */
+.status-error {
+  animation: shake 0.5s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+
+/* 行状态背景色 */
+tbody tr {
+  transition: background-color 0.3s ease;
+}
+
+.row-running {
+  background: color-mix(in oklab, #28a745 8%, transparent);
+}
+
+.row-success {
+  background: color-mix(in oklab, #218838 5%, transparent);
+  opacity: 0.8;
+}
+
+.row-error {
+  background: color-mix(in oklab, #dc3545 8%, transparent);
 }
 
 .fade-enter-active, .fade-leave-active {

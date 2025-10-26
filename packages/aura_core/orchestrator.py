@@ -66,7 +66,8 @@ class Orchestrator:
             self,
             task_name_in_plan: str,
             triggering_event: Optional[Event] = None,
-            inputs: Optional[Dict[str, Any]] = None
+            inputs: Optional[Dict[str, Any]] = None,
+            parent_cid: Optional[str] = None  # ✅ 新增参数
     ) -> Dict[str, Any]:
         """执行一个任务并返回一个标准化的 TFR (Task Final Result) 对象。
 
@@ -92,6 +93,7 @@ class Orchestrator:
             name='task.started',
             payload={
                 'run_id': run_id,
+                'cid': parent_cid,
                 'plan_name': self.plan_name,
                 'task_name': task_name_in_plan,
                 'start_time': task_start_time,
@@ -114,6 +116,7 @@ class Orchestrator:
 
             async def step_event_callback(event_name: str, payload: Dict):
                 payload['run_id'] = run_id
+                payload['cid'] = parent_cid
                 payload['plan_name'] = self.plan_name
                 payload['task_name'] = task_name_in_plan
                 await self.event_bus.publish(Event(name=event_name, payload=payload))
@@ -173,6 +176,7 @@ class Orchestrator:
                 name='task.finished',
                 payload={
                     'run_id': run_id,
+                    'cid': parent_cid,
                     'plan_name': self.plan_name, 'task_name': task_name_in_plan,
                     'end_time': time.time(),
                     'duration': time.time() - task_start_time,
