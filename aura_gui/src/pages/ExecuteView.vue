@@ -335,7 +335,7 @@ function onHoldEnd(target) {
                 stopWatch();
               }
             },
-            { deep: true }
+            {deep: true}
         );
       }
     }
