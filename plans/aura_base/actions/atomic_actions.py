@@ -21,6 +21,7 @@ from packages.aura_core.state_store_service import StateStoreService
 # --- 服务与数据模型导入 (来自本包) ---
 from ..services.app_provider_service import AppProviderService
 from ..services.ocr_service import OcrService, OcrResult, MultiOcrResult
+from ..services.process_manager_service import ProcessManagerService
 from ..services.vision_service import VisionService, MatchResult, MultiMatchResult
 
 
@@ -749,5 +750,57 @@ def scan_and_find_best_match(app: AppProviderService, vision: VisionService, eng
     return best_match
 
 
+@register_action(name="start_process", public=True)
+@requires_services(process_manager="process_manager")
+def start_process(
+    process_manager: ProcessManagerService,
+    identifier: str,
+    executable_path: Optional[str] = None,
+    args: Optional[List[str]] = None,
+    cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    res = process_manager.start_process(
+        identifier=identifier, executable_path=executable_path, args=args, cwd=cwd, env=env
+    )
+    if res.get("status") not in ("success", "already_running"):
+        raise StopTaskException(f"启动进程失败：{res.get('message')}", success=False)
+    return res
+
+
+@register_action(name="stop_process", public=True)
+@requires_services(process_manager="process_manager")
+def stop_process(
+    process_manager: ProcessManagerService,
+    identifier: str,
+    force: bool = False,
+    timeout: float = 5.0,
+) -> Dict[str, Any]:
+    res = process_manager.stop_process(identifier=identifier, force=force, timeout=timeout)
+    if res.get("status") == "error":
+        raise StopTaskException(f"停止进程失败：{res.get('message')}", success=False)
+    return res
+
+
+@register_action(name="get_process_status", read_only=True, public=True)
+@requires_services(process_manager="process_manager")
+def get_process_status(
+    process_manager: ProcessManagerService,
+    identifier: str,
+) -> Dict[str, Any]:
+    return process_manager.get_process_status(identifier=identifier)
+
+
+@register_action(name="wait_for_process_exit", public=True)
+@requires_services(process_manager="process_manager")
+def wait_for_process_exit(
+    process_manager: ProcessManagerService,
+    identifier: str,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    res = process_manager.wait_for_exit(identifier=identifier, timeout=timeout)
+    if res.get("status") == "timeout":
+        raise StopTaskException("等待进程退出超时。", success=False)
+    return res
 
 

@@ -68,12 +68,15 @@ class StateStoreService:
         """(私有) 内部加载方法，必须在锁内调用。"""
         if not self._filepath:
             return
+
         loop = asyncio.get_running_loop()
         try:
             if os.path.exists(self._filepath):
-                with open(self._filepath, 'r', encoding='utf-8') as f:
-                    content = await loop.run_in_executor(None, f.read)
-                    self._data = json.loads(content)
+                def _read():
+                    with open(self._filepath, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+
+                self._data = await loop.run_in_executor(None, _read)
             else:
                 self._data = {}
         except (json.JSONDecodeError, IOError) as e:
@@ -84,12 +87,17 @@ class StateStoreService:
         """(私有) 内部保存方法，必须在锁内调用。"""
         if not self._filepath:
             return
+
         loop = asyncio.get_running_loop()
         try:
-            os.makedirs(os.path.dirname(self._filepath), exist_ok=True)
             data_to_save = self._data.copy()
-            with open(self._filepath, 'w', encoding='utf-8') as f:
-                await loop.run_in_executor(None, lambda: json.dump(data_to_save, f, indent=4, ensure_ascii=False))
+
+            def _write():
+                os.makedirs(os.path.dirname(self._filepath), exist_ok=True)
+                with open(self._filepath, 'w', encoding='utf-8') as f:
+                    json.dump(data_to_save, f, indent=4, ensure_ascii=False)
+
+            await loop.run_in_executor(None, _write)
         except Exception as e:
             logger.error(f"保存状态文件'{self._filepath}'失败: {e}", exc_info=True)
 

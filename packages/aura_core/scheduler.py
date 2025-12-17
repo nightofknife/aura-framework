@@ -128,6 +128,8 @@ class Scheduler:
         self.all_tasks_definitions: Dict[str, Any] = {}
         self.ui_event_queue = queue.Queue(maxsize=200)
         self.ui_update_queue: Optional[queue.Queue] = None
+        # 确保核心事件订阅不会重复注册
+        self._core_subscriptions_ready = False
 
         # --- 可观测性内存索引 ---
         self._obs_runs: Dict[str, Dict[str, Any]] = {}
@@ -269,35 +271,36 @@ class Scheduler:
 
     async def _async_reload_subscriptions(self):
         """(私有) 异步地重新加载所有事件总线的订阅。"""
-        # ✅ 修复：不要清除所有订阅，只清除那些由 Scheduler 自己注册的
-        # await self.event_bus.clear_subscriptions()  # ❌ 移除这行
+        # 只在首次注册核心订阅，避免重复叠加回调
+        if not self._core_subscriptions_ready:
+            await self.event_bus.subscribe(
+                event_pattern='*',
+                callback=self._mirror_event_to_ui_queue,
+                channel='*',
+                persistent=True
+            )
+            await self.event_bus.subscribe(
+                event_pattern='task.*',
+                callback=self._obs_ingest_event,
+                channel='*',
+                persistent=True
+            )
+            await self.event_bus.subscribe(
+                event_pattern='node.*',
+                callback=self._obs_ingest_event,
+                channel='*',
+                persistent=True
+            )
+            await self.event_bus.subscribe(
+                event_pattern='queue.*',
+                callback=self._obs_ingest_event,
+                channel='*',
+                persistent=True
+            )
+            self._core_subscriptions_ready = True
 
-        # ✅ 只重新注册 Scheduler 自己的订阅
-        await self.event_bus.subscribe(
-            event_pattern='*',
-            callback=self._mirror_event_to_ui_queue,
-            channel='*',
-            persistent=True  # ✅ 标记为持久化
-        )
+        # 计划/触发器订阅需要在 reload 时刷新
         await self._subscribe_event_triggers()
-        await self.event_bus.subscribe(
-            event_pattern='task.*',
-            callback=self._obs_ingest_event,
-            channel='*',
-            persistent=True
-        )
-        await self.event_bus.subscribe(
-            event_pattern='node.*',
-            callback=self._obs_ingest_event,
-            channel='*',
-            persistent=True
-        )
-        await self.event_bus.subscribe(
-            event_pattern='queue.*',
-            callback=self._obs_ingest_event,
-            channel='*',
-            persistent=True
-        )
 
     def start_scheduler(self):
         """启动调度器的主事件循环和所有后台服务。"""
@@ -350,6 +353,13 @@ class Scheduler:
         except Exception as e:
             logger.critical(f"调度器主事件循环崩溃: {e}", exc_info=True)
         finally:
+            try:
+                # 确保执行器池被释放，防止异常退出后资源泄漏
+                self.execution_manager.shutdown()
+            except Exception as e:
+                logger.warning(f"关闭执行管理器时发生异常: {e}")
+            # 清理运行中任务记录
+            self.running_tasks.clear()
             logger.info("调度器事件循环已终止。")
             self.startup_complete_event.set()
 
@@ -1444,10 +1454,24 @@ class Scheduler:
         """根据变动的 Python 文件热重载其所属的整个插件。"""
         async with self.get_async_lock():
             try:
-                plan_name = file_path.relative_to(self.base_path / 'plans').parts[0]
-                plugin_def = self.plan_manager.plugin_manager.plugin_registry.get(plan_name)
+                # 尝试解析出所属的 plan 目录名
+                try:
+                    plan_dir_name = file_path.relative_to(self.base_path / 'plans').parts[0]
+                except ValueError:
+                    logger.error(f"热重载失败：文件 '{file_path}' 不在 plans 目录下。")
+                    return
+
+                plan_dir = (self.base_path / 'plans' / plan_dir_name).resolve()
+
+                # 根据目录路径在 plugin_registry 中查找对应的插件定义
+                plugin_def = next(
+                    (p for p in self.plan_manager.plugin_manager.plugin_registry.values()
+                     if p.path.resolve() == plan_dir),
+                    None
+                )
+
                 if not plugin_def:
-                    logger.error(f"热重载失败：找不到与文件 '{file_path.name}' 关联的插件 '{plan_name}'。")
+                    logger.error(f"热重载失败：找不到与目录 '{plan_dir}' 关联的插件定义。")
                     return
 
                 plugin_id = plugin_def.canonical_id
@@ -1465,7 +1489,8 @@ class Scheduler:
                 modules_to_remove = [name for name in sys.modules if name.startswith(module_prefix)]
                 if modules_to_remove:
                     logger.debug(
-                        f"--> 从 sys.modules 中移除 {len(modules_to_remove)} 个模块 (前缀: {module_prefix})...")
+                        f"--> 从 sys.modules 中移除 {len(modules_to_remove)} 个模块 (前缀: {module_prefix})..."
+                    )
                     for mod_name in modules_to_remove:
                         del sys.modules[mod_name]
 
@@ -1476,7 +1501,7 @@ class Scheduler:
                 logger.info(f"插件 '{plugin_id}' 已成功热重载。")
 
             except Exception as e:
-                logger.error(f"热重载插件 '{plan_name}' 时出错: {e}", exc_info=True)
+                logger.error(f"热重载插件时出错: {e}", exc_info=True)
 
     def get_active_runs_snapshot(self) -> List[Dict[str, Any]]:
         """

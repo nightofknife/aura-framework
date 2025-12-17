@@ -455,7 +455,6 @@ onMounted(async () => {
   await loadPlans();
   if (!ui.planSelected && plans.value.length) ui.planSelected = plans.value[0].name;
   await loadAllTasks();
-  window.addEventListener('keydown', onGlobalKey);
 });
 
 function onGlobalKey(e) {

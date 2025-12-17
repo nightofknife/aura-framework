@@ -112,7 +112,7 @@ class Orchestrator:
             if not task_data:
                 raise ValueError(f"Task definition not found: {full_task_id}")
 
-            root_context = ExecutionContext(inputs=inputs)
+            root_context = ExecutionContext(inputs=inputs, cid=parent_cid)
 
             async def step_event_callback(event_name: str, payload: Dict):
                 payload['run_id'] = run_id
@@ -209,7 +209,10 @@ class Orchestrator:
             renderer = TemplateRenderer(temp_context, self.state_store)
             injector = ActionInjector(temp_context, self, renderer, self.services)
 
-            result = await injector.execute(action_name, condition_data.get('params', {}))
+            params = condition_data.get('params', {})
+            rendered_params = await renderer.render(params)
+            result = await injector.execute(action_name, rendered_params)
+
             return bool(result)
         except Exception as e:
             logger.error(f"条件检查 '{action_name}' 失败: {e}", exc_info=False)

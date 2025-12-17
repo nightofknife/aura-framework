@@ -11,7 +11,7 @@ from functools import partial
 from typing import Callable, List, Any, Dict, Awaitable
 
 from packages.aura_core.api import ActionDefinition
-from packages.aura_core.context import Context
+from packages.aura_core.context import ExecutionContext
 from packages.aura_core.logger import logger
 
 
@@ -21,7 +21,7 @@ class Middleware:
     所有自定义中间件都应继承自此类，并覆盖 `handle` 方法。
     """
 
-    async def handle(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any],
+    async def handle(self, action_def: ActionDefinition, context: ExecutionContext, params: Dict[str, Any],
                      next_handler: Callable[..., Awaitable[Any]]) -> Any:
         """异步处理一个 Action 的执行。
 
@@ -62,7 +62,7 @@ class MiddlewareManager:
         """
         self._middlewares.append(middleware)
 
-    async def process(self, action_def: ActionDefinition, context: Context, params: Dict[str, Any],
+    async def process(self, action_def: ActionDefinition, context: ExecutionContext, params: Dict[str, Any],
                       final_handler: Callable[..., Awaitable[Any]]) -> Any:
         """异步处理一个 Action，使其依次通过所有已注册的中间件。
 

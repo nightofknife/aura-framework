@@ -186,6 +186,8 @@ class TaskQueue:
             for i, tasklet in enumerate(self._queue):
                 if tasklet.cid == cid:
                     del self._queue[i]
+                    if self._unfinished_tasks > 0:
+                        self._unfinished_tasks -= 1
                     self._not_full.notify()
                     return True
             return False
@@ -204,6 +206,8 @@ class TaskQueue:
             for i in reversed(to_remove):
                 del self._queue[i]
             if to_remove:
+                # 将计数与实际队列同步，避免 join() 永久阻塞
+                self._unfinished_tasks = max(0, self._unfinished_tasks - len(to_remove))
                 self._not_full.notify()
             return len(to_remove)
 
@@ -272,6 +276,8 @@ class TaskQueue:
         async with self._lock:
             count = len(self._queue)
             self._queue.clear()
+            # 清空时重置未完成计数，防止后续 join() 悬挂
+            self._unfinished_tasks = 0
             self._not_full.notify_all()
             return count
 
@@ -296,4 +302,5 @@ class TaskQueue:
             new_queue.extend(cid_to_task.values())
 
             self._queue = deque(new_queue)
+            # 重排不影响未完成计数
             return True

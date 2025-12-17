@@ -415,7 +415,15 @@ class ExecutionEngine:
                 })
 
     async def _execute_single_action(self, node_data: Dict, node_context: ExecutionContext) -> Any:
-        """(私有) 执行节点中定义的单个 action。"""
+        """(私有) 执行节点中定义的单个 action。
+
+        此方法会：
+        1. 从节点定义中提取 action 名称和原始参数
+        2. 使用 TemplateRenderer 渲染参数（解析 Jinja2 模板）
+        3. 通过 ActionInjector 执行 action 并返回结果
+
+        参数渲染的职责统一由 ActionInjector.execute 完成，避免重复渲染。
+        """
         renderer = TemplateRenderer(node_context, self.state_store)
         injector = ActionInjector(node_context, self, renderer, self.services)
 
@@ -424,6 +432,8 @@ class ExecutionEngine:
             raise ValueError("节点定义中缺少'action'。")
 
         raw_params = node_data.get('params', {})
+
+        # 不在这里预先渲染，渲染逻辑交给 ActionInjector.execute
         return await injector.execute(action_name, raw_params)
 
     async def _execute_loop(self, node_id: str, node_data: Dict, node_context: ExecutionContext, loop_config: Dict) -> \
