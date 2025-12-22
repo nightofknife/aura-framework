@@ -11,15 +11,15 @@
           :style="{ width }"
           role="dialog"
           aria-modal="true"
-          :aria-label="title || 'Panel'"
+          :aria-label="title || '面板'"
           @keydown.esc.stop.prevent="requestClose"
       >
         <header class="drawer-head">
           <div class="title">
-            <span class="badge">CONFIG</span>
+            <span class="badge">详情</span>
             <strong>{{ title }}</strong>
           </div>
-          <button class="btn-icon" aria-label="Close" @click="requestClose">✕</button>
+          <button class="btn-icon" aria-label="关闭" @click="requestClose">×</button>
         </header>
 
         <div class="drawer-body">

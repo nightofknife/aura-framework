@@ -33,6 +33,9 @@ class Tasklet:
     """
     task_name: str
     cid: Optional[str] = None
+    trace_id: Optional[str] = None
+    trace_label: Optional[str] = None
+    source: Optional[str] = None
     payload: Optional[Dict[str, Any]] = None
     is_ad_hoc: bool = False
     triggering_event: Optional[Event] = None

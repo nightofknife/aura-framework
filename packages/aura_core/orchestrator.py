@@ -21,6 +21,7 @@ import asyncio
 import os
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
 import aiofiles
@@ -67,7 +68,11 @@ class Orchestrator:
             task_name_in_plan: str,
             triggering_event: Optional[Event] = None,
             inputs: Optional[Dict[str, Any]] = None,
-            parent_cid: Optional[str] = None  # ✅ 新增参数
+            cid: Optional[str] = None,
+            parent_cid: Optional[str] = None,
+            trace_id: Optional[str] = None,
+            trace_label: Optional[str] = None,
+            source: Optional[str] = None
     ) -> Dict[str, Any]:
         """执行一个任务并返回一个标准化的 TFR (Task Final Result) 对象。
 
@@ -86,14 +91,27 @@ class Orchestrator:
         logger.debug(f"Configuration context set to: '{self.plan_name}'")
 
         task_start_time = time.time()
-        _run_ms = int(task_start_time * 1000)
-        run_id = f"{self.plan_name}/{task_name_in_plan}:{_run_ms}"
+        cid = cid or str(uuid.uuid4())
+
+        if source is None:
+            source = "internal"
+
+        if not trace_id:
+            time_part = time.strftime("%y%m%d-%H%M%S", time.localtime(task_start_time))
+            suffix = (cid[-4:] if cid else "0000")
+            trace_id = f"{self.plan_name}/{task_name_in_plan}@{time_part}-{suffix}"
+
+        if not trace_label:
+            trace_label = f"{self.plan_name}/{task_name_in_plan}"
 
         await self.event_bus.publish(Event(
             name='task.started',
             payload={
-                'run_id': run_id,
-                'cid': parent_cid,
+                'cid': cid,
+                    'parent_cid': parent_cid,
+                'trace_id': trace_id,
+                'trace_label': trace_label,
+                'source': source,
                 'plan_name': self.plan_name,
                 'task_name': task_name_in_plan,
                 'start_time': task_start_time,
@@ -112,11 +130,14 @@ class Orchestrator:
             if not task_data:
                 raise ValueError(f"Task definition not found: {full_task_id}")
 
-            root_context = ExecutionContext(inputs=inputs, cid=parent_cid)
+            root_context = ExecutionContext(inputs=inputs, cid=cid)
 
             async def step_event_callback(event_name: str, payload: Dict):
-                payload['run_id'] = run_id
-                payload['cid'] = parent_cid
+                payload['cid'] = cid
+                payload['parent_cid'] = parent_cid
+                payload['trace_id'] = trace_id
+                payload['trace_label'] = trace_label
+                payload['source'] = source
                 payload['plan_name'] = self.plan_name
                 payload['task_name'] = task_name_in_plan
                 await self.event_bus.publish(Event(name=event_name, payload=payload))
@@ -175,8 +196,11 @@ class Orchestrator:
             await self.event_bus.publish(Event(
                 name='task.finished',
                 payload={
-                    'run_id': run_id,
-                    'cid': parent_cid,
+                    'cid': cid,
+                    'parent_cid': parent_cid,
+                    'trace_id': trace_id,
+                    'trace_label': trace_label,
+                    'source': source,
                     'plan_name': self.plan_name, 'task_name': task_name_in_plan,
                     'end_time': time.time(),
                     'duration': time.time() - task_start_time,

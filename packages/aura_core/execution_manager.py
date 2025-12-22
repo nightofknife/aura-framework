@@ -28,6 +28,7 @@ from contextlib import AsyncExitStack
 from packages.aura_core.api import hook_manager
 from packages.aura_core.task_queue import Tasklet
 from packages.aura_core.logger import logger
+from packages.aura_core.config_loader import get_config_value
 
 if TYPE_CHECKING:
     from packages.aura_core.scheduler import Scheduler
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
 
 class ExecutionManager:
     """管理执行池和任务提交的核心类。"""
-    def __init__(self, scheduler: 'Scheduler', max_concurrent_tasks: int = 32, io_workers: int = 16,
+    def __init__(self, scheduler: 'Scheduler', max_concurrent_tasks: int = 1, io_workers: int = 16,
                  cpu_workers: int = 4):
         """初始化 ExecutionManager。
 
@@ -192,7 +193,7 @@ class ExecutionManager:
             return False
 
         state_planner = orchestrator.state_planner
-        max_replans = 10
+        max_replans = int(get_config_value("execution.state_planning.max_replans", 10))
 
         for attempt in range(max_replans):
             logger.info(f"【规划循环 {attempt + 1}/{max_replans}】正在确定当前状态 (目标: '{target_state}')...")
@@ -248,7 +249,7 @@ class ExecutionManager:
                     logger.warning(
                         f"路径执行完毕，但最终状态为 '{current_state}'，与目标 '{target_state}' 不符。将重新规划。")
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(float(get_config_value("execution.state_planning.replanning_sleep_sec", 1)))
 
         logger.critical(f"重规划次数达到上限 ({max_replans})，但仍未到达目标状态 '{target_state}'。")
         return False
@@ -294,7 +295,10 @@ class ExecutionManager:
             task_name_in_plan,
             tasklet.triggering_event,
             tasklet.initial_context,
-            parent_cid=tasklet.cid
+            cid=tasklet.cid,
+            trace_id=tasklet.trace_id,
+            trace_label=tasklet.trace_label,
+            source=tasklet.source
         )
 
     def startup(self):

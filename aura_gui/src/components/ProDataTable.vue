@@ -12,7 +12,7 @@
             <span v-else>▲▼</span>
           </span>
         </th>
-        <th v-if="$slots.actions" style="width:1%; white-space:nowrap;">Actions</th>
+        <th v-if="$slots.actions" style="width:1%; white-space:nowrap;">操作</th>
       </tr>
       </thead>
       <tbody>
@@ -29,7 +29,7 @@
         </td>
       </tr>
       <tr v-if="!viewRows.length">
-        <td :colspan="columns.length + ($slots.actions?1:0)" style="color:var(--text-3);">No data.</td>
+        <td :colspan="columns.length + ($slots.actions?1:0)" style="color:var(--text-3);">暂无数据</td>
       </tr>
       </tbody>
     </table>

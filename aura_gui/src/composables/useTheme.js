@@ -1,7 +1,9 @@
 // === src/composables/useTheme.js ===
 import { ref, onMounted, computed } from 'vue';
+import { getGuiConfig } from '../config.js';
 
-const THEME_KEY = 'aura_theme';
+const cfg = getGuiConfig();
+const THEME_KEY = cfg?.theme?.storage_key || 'aura_theme';
 const isDark = ref(false);
 
 export function useTheme() {
@@ -20,8 +22,15 @@ export function useTheme() {
         if (savedTheme) {
             applyTheme(savedTheme === 'dark');
         } else {
-            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            applyTheme(prefersDark);
+            const pref = (cfg?.theme?.default || 'system').toLowerCase();
+            if (pref === 'dark') {
+                applyTheme(true);
+            } else if (pref === 'light') {
+                applyTheme(false);
+            } else {
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                applyTheme(prefersDark);
+            }
         }
     });
 

@@ -44,7 +44,8 @@
         <div v-else-if="tab==='params'" style="display:grid; gap:12px;">
           <div><b>Plan:</b> {{ run.plan_name }}</div>
           <div><b>Task:</b> {{ run.task_name }}</div>
-          <div><b>Run ID (CID):</b> <code>{{ run.cid || run.id }}</code></div>
+          <div><b>Trace Label:</b> {{ run.trace_label || '-' }}</div>
+          <div><b>Trace ID / CID:</b> <code>{{ run.trace_id || run.cid || run.id }}</code></div>
           <div>
             <div style="color:var(--text-3); font-size:12px;">Inputs</div>
             <pre class="json">{{ pretty(run.inputs || {}) }}</pre>
@@ -103,12 +104,16 @@ watch(() => logSocket.lastMessage.value, (msg) => {
   if (!logEntry) return;
 
   // 从日志条目中获取 run_id 或 cid
-  const logRunId = logEntry.extra?.run_id || logEntry.extra?.cid;
-  if (!logRunId) return;
+  const logTraceId = logEntry.extra?.trace_id || null;
+  const logCid = logEntry.extra?.cid || null;
+  if (!logTraceId && !logCid) return;
 
   // 检查这条日志是否属于当前正在查看的 run
-  const currentRunId = props.run?.cid || props.run?.id;
-  if (logRunId !== currentRunId) return;
+  const currentTraceId = props.run?.trace_id || null;
+  const currentCid = props.run?.cid || props.run?.id || null;
+  const matchByTrace = logTraceId && currentTraceId && logTraceId === currentTraceId;
+  const matchByCid = logCid && currentCid && logCid === currentCid;
+  if (!matchByTrace && !matchByCid) return;
 
   // 追加到本地日志列表
   localLogs.value.push({

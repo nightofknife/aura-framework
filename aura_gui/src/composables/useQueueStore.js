@@ -1,12 +1,17 @@
 import { ref } from 'vue';
 import axios from 'axios';
+import { getGuiConfig } from '../config.js';
 
 // 纯粹的数据存储
 const overview = ref(null);
 const ready = ref([]);
 const delayed = ref([]);
 
-const api = axios.create({ baseURL: 'http://127.0.0.1:18098/api', timeout: 5000 });
+const cfg = getGuiConfig();
+const api = axios.create({
+    baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
+    timeout: cfg?.api?.timeout_ms || 5000,
+});
 
 /**
  * 主动获取队列概览。
@@ -27,7 +32,8 @@ async function fetchOverview() {
  */
 async function fetchList(state) { // 'ready'|'delayed'
     try {
-        const { data } = await api.get('/queue/list', { params: { state, limit: 200 } });
+        const limit = cfg?.api?.queue_list_limit || 200;
+        const { data } = await api.get('/queue/list', { params: { state, limit } });
         const arr = data?.items || [];
         if (state === 'ready') ready.value = arr;
         if (state === 'delayed') delayed.value = arr;

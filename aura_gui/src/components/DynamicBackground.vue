@@ -5,6 +5,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
+import { getGuiConfig } from '../config.js'
 
 const props = defineProps({
   density:   { type: Number, default: 2.0 },  // 1.4~2.0 建议，越大越密
@@ -36,7 +37,9 @@ onMounted(() => {
 
   // 画布尺寸
   const resize = () => {
-    dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1))
+    const cfg = getGuiConfig()
+    const maxDpr = cfg?.background?.max_dpr || 2
+    dpr = Math.max(1, Math.min(maxDpr, window.devicePixelRatio || 1))
     W = cvs.width  = Math.floor(window.innerWidth  * dpr)
     H = cvs.height = Math.floor(window.innerHeight * dpr)
     cvs.style.width  = window.innerWidth  + 'px'

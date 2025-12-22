@@ -13,7 +13,39 @@
           :class="{ active: i.key === active }"
           @click.prevent="$emit('navigate', i.key)"
       >
-        <span class="icon">{{ i.icon }}</span>
+        <span class="icon" aria-hidden="true">
+          <svg v-if="i.icon === 'dashboard'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6">
+            <rect x="3" y="3" width="8" height="8" rx="2" />
+            <rect x="13" y="3" width="8" height="5" rx="2" />
+            <rect x="13" y="10" width="8" height="11" rx="2" />
+            <rect x="3" y="13" width="8" height="8" rx="2" />
+          </svg>
+          <svg v-else-if="i.icon === 'execute'" viewBox="0 0 24 24" class="icon-svg" fill="currentColor">
+            <path d="M8 5l11 7-11 7z" />
+          </svg>
+          <svg v-else-if="i.icon === 'runs'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="8" />
+            <path d="M12 8v4l3 2" />
+          </svg>
+          <svg v-else-if="i.icon === 'plans'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+          </svg>
+          <svg v-else-if="i.icon === 'task_editor'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="2" />
+            <circle cx="18" cy="6" r="2" />
+            <circle cx="12" cy="18" r="2" />
+            <path d="M8 7.5l4 8M16 7.5l-4 8M8 6h8" />
+          </svg>
+          <svg v-else-if="i.icon === 'settings'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 6h16" />
+            <path d="M4 12h16" />
+            <path d="M4 18h16" />
+            <circle cx="9" cy="6" r="2" />
+            <circle cx="15" cy="12" r="2" />
+            <circle cx="7" cy="18" r="2" />
+          </svg>
+          <span v-else>{{ i.icon }}</span>
+        </span>
         <span class="label">{{ i.label }}</span>
         <div class="glow-indicator"></div>
       </a>
@@ -28,11 +60,12 @@ defineProps({
   items: {
     type: Array,
     default: () => [
-      { key: 'dashboard', label: 'Dashboard', icon: '📊' },
-      { key: 'execute', label: 'Execute', icon: '⚡️' },
-      { key: 'runs', label: 'Runs', icon: '🏃' },
-      { key: 'plans', label: 'Plans', icon: '🗂️' },
-      { key: 'settings', label: 'Settings', icon: '⚙️' },
+      { key: 'dashboard', label: '仪表盘', icon: 'dashboard' },
+      { key: 'execute', label: '执行台', icon: 'execute' },
+      { key: 'runs', label: '运行中', icon: 'runs' },
+      { key: 'plans', label: '方案/任务', icon: 'plans' },
+      { key: 'task_editor', label: '任务编辑', icon: 'task_editor' },
+      { key: 'settings', label: '设置', icon: 'settings' },
     ]
   }
 });
@@ -72,7 +105,19 @@ defineEmits(['navigate']);
   color: var(--text-primary);
   background: rgba(88, 101, 242, 0.1);
 }
-.icon { font-size: 18px; }
+.icon {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+.icon-svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
 .label { line-height: 1; }
 
 /* 辉光流动效果 */

@@ -30,6 +30,7 @@
 <script setup>
 import {ref, onMounted} from 'vue';
 import axios from 'axios';
+import { getGuiConfig } from '../config.js';
 
 defineProps({selectedPlan: String});
 const emit = defineEmits(['plan-selected']);
@@ -37,7 +38,11 @@ const emit = defineEmits(['plan-selected']);
 const plans = ref([]);
 const loading = ref(true);
 const error = ref(null);
-const apiClient = axios.create({baseURL: 'http://127.0.0.1:18098/api', timeout: 5000});
+const cfg = getGuiConfig();
+const apiClient = axios.create({
+  baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
+  timeout: cfg?.api?.timeout_ms || 5000,
+});
 
 const fetchPlans = async () => {
   loading.value = true;

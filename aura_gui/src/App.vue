@@ -2,7 +2,7 @@
 <template>
   <div class="app">
     <!-- 动态背景 -->
-    <DynamicBackground />
+    <DynamicBackground v-if="bgEnabled" />
 
     <!-- 自定义窗口标题栏 -->
     <Titlebar />
@@ -43,47 +43,58 @@ import DashboardView from './pages/DashboardView.vue'
 import PlansView from './pages/PlansView.vue'
 import RunsView from './pages/RunsView.vue'
 import ExecuteView from './pages/ExecuteView.vue'
+import TaskWorkspaceView from './pages/TaskWorkspaceView.vue'
+import SettingsView from './pages/SettingsView.vue'
 
 // Composables
 import { useToasts } from './composables/useToasts.js'
 import { useAuraSockets } from './composables/useAuraSockets.js'
 import { useStagingRunner } from './composables/useStagingRunner.js'
 import { useTheme } from './composables/useTheme.js'
+import { getGuiConfig } from './config.js'
 
 // 初始化主题 & 单例 Runner
 useTheme()
 useStagingRunner()
 
 const { push: toast } = useToasts()
-const route = ref('execute')
+const cfg = getGuiConfig()
+const route = ref(cfg?.navigation?.default_route || 'execute')
 const activeView = computed(() => {
   const views = {
     dashboard: DashboardView,
     runs: RunsView,
     execute: ExecuteView,
     plans: PlansView,
+    task_editor: TaskWorkspaceView,
+    settings: SettingsView,
   };
   return views[route.value] || PlansView;
 })
 
-const sidebarItems = [
-  { key: 'dashboard', label: 'Dashboard', icon: '📊' },
-  { key: 'execute', label: 'Execute', icon: '⚡️' },
-  { key: 'runs', label: 'Runs', icon: '🏃' },
-  { key: 'plans', label: 'Plans', icon: '🗂️' },
-  { key: 'settings', label: 'Settings', icon: '⚙️' },
+const sidebarItems = cfg?.navigation?.items || [
+  { key: 'dashboard', label: '仪表盘', icon: 'dashboard' },
+  { key: 'execute', label: '执行台', icon: 'execute' },
+  { key: 'runs', label: '运行中', icon: 'runs' },
+  { key: 'plans', label: '方案/任务', icon: 'plans' },
+  { key: 'task_editor', label: '任务编辑', icon: 'task_editor' },
+  { key: 'settings', label: '设置', icon: 'settings' },
 ]
 
-// ✅ 从 useAuraSockets 获取 logs 通道（用于显示连接状态）
+// ? 从 useAuraSockets 获取 logs 通道（用于显示连接状态）
 const { logs } = useAuraSockets()
 const logsConnected = computed(() => logs.isConnected.value)
+const bgEnabled = computed(() => cfg?.background?.dynamic_enabled !== false)
 
 // App.vue 自身维护的全局状态
 const isSystemRunning = ref(false)
-const api = axios.create({ baseURL: 'http://127.0.0.1:18098/api', timeout: 5000 })
+const api = axios.create({
+  baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
+  timeout: cfg?.api?.timeout_ms || 5000,
+})
 
 let statusPollTimer = null
-const STATUS_POLL_INTERVAL = 2000 // 2秒轮询一次系统状态
+const STATUS_POLL_INTERVAL = cfg?.api?.status_poll_ms || 2000 // 2秒轮询一次系统状态
 
 // --- API 调用 ---
 async function fetchSystemStatus() {
@@ -151,7 +162,7 @@ onUnmounted(() => {
   stopStatusPolling()
 })
 
-// ✅ 热更新清理（可选）
+// ? 热更新清理（可选）
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     stopStatusPolling()

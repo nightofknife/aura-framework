@@ -61,6 +61,12 @@ class PlanManager:
         self.plans.clear()
         for plugin_def in self.plugin_manager.plugin_registry.values():
             if plugin_def.plugin_type == 'plan':
+                if plugin_def.canonical_id not in self.plugin_manager.loaded_plugin_ids:
+                    logger.warning(
+                        "Skipping plan '%s' because its plugin failed to load.",
+                        plugin_def.canonical_id,
+                    )
+                    continue
                 plan_name = plugin_def.path.name
                 plan_path = plugin_def.path
 

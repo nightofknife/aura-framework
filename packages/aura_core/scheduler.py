@@ -18,6 +18,7 @@
   任务或整个插件的实时、动态重载。
 """
 import asyncio
+import os
 import queue
 import threading
 import time
@@ -43,6 +44,7 @@ from .interrupt_service import InterruptService
 from .plan_manager import PlanManager
 from .scheduling_service import SchedulingService
 from packages.aura_core.id_generator import SnowflakeGenerator
+from packages.aura_core.config_loader import get_config_value
 
 if TYPE_CHECKING:
     from packages.aura_core.orchestrator import Orchestrator
@@ -90,16 +92,21 @@ class Scheduler:
         此构造函数会初始化所有核心服务和状态属性，并执行首次的资源加载。
         """
         # --- 核心属性与状态 (非异步部分) ---
-        self.base_path = Path(__file__).resolve().parents[2]
+        self.base_path = self._resolve_base_path()
+        if str(self.base_path) not in sys.path:
+            sys.path.insert(0, str(self.base_path))
         self._main_task: Optional[asyncio.Task] = None
         self._scheduler_thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self.num_event_workers = 4
+        self.num_event_workers = int(get_config_value("scheduler.num_event_workers", 1))
         self.startup_complete_event = threading.Event()
         self._pre_start_task_buffer: List[Tasklet] = []
         self.fallback_lock = threading.RLock()
         self.pause_event = asyncio.Event()
-        self.id_generator = SnowflakeGenerator(instance=1)
+        self.id_generator = SnowflakeGenerator(
+            instance=int(get_config_value("id_generator.instance_id", 1)),
+            epoch=int(get_config_value("id_generator.epoch_ms", 1609459200000)),
+        )
         # --- 异步组件 (运行时初始化) ---
         self.is_running: Optional[asyncio.Event] = None
         self.task_queue: Optional[TaskQueue] = None
@@ -107,26 +114,33 @@ class Scheduler:
         self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
         self.async_data_lock: Optional[asyncio.Lock] = None
 
-        self.api_log_queue: queue.Queue = queue.Queue(maxsize=500)
+        # 改为无界队列，避免日志激增时阻塞/抛 queue.Full
+        self.api_log_queue: queue.Queue = queue.Queue(maxsize=0)
 
         # --- 服务实例 ---
         self.config_service = ConfigService()
         self.event_bus = EventBus()
         self.state_store = StateStoreService(config=self.config_service)
         self.plan_manager = PlanManager(str(self.base_path), self.pause_event)
-        self.execution_manager = ExecutionManager(self)
+        self.execution_manager = ExecutionManager(
+            self,
+            max_concurrent_tasks=int(get_config_value("execution.max_concurrent_tasks", 1)),
+            io_workers=int(get_config_value("execution.io_workers", 16)),
+            cpu_workers=int(get_config_value("execution.cpu_workers", 4)),
+        )
         self.scheduling_service = SchedulingService(self)
         self.interrupt_service = InterruptService(self)
 
         # --- 运行/调度状态 ---
         self.run_statuses: Dict[str, Dict[str, Any]] = {}
         self.running_tasks: Dict[str, asyncio.Task] = {}
-        self.max_concurrency: int = 1
+        self._running_task_meta: Dict[str, Dict[str, Any]] = {}
         self.schedule_items: List[Dict[str, Any]] = []
         self.interrupt_definitions: Dict[str, Dict[str, Any]] = {}
         self.user_enabled_globals: set[str] = set()
         self.all_tasks_definitions: Dict[str, Any] = {}
-        self.ui_event_queue = queue.Queue(maxsize=200)
+        # UI 事件队列改为无界，避免 queue.Full 导致状态事件丢失
+        self.ui_event_queue = queue.Queue(maxsize=0)
         self.ui_update_queue: Optional[queue.Queue] = None
         # 确保核心事件订阅不会重复注册
         self._core_subscriptions_ready = False
@@ -135,27 +149,25 @@ class Scheduler:
         self._obs_runs: Dict[str, Dict[str, Any]] = {}
         self._obs_ready: Dict[str, Dict[str, Any]] = {}
         self._obs_delayed: Dict[str, Dict[str, Any]] = {}
-
-        def _mk_run_id_from_payload(p: Dict[str, Any]) -> str:
-            rid = p.get('run_id')
-            if rid:
-                return rid
-            plan = p.get('plan_name') or 'plan'
-            task = p.get('task_name') or 'task'
-            st = p.get('start_time')
-            if st is None:
-                import time
-                st = int(time.time() * 1000)
-            else:
-                st = int(st * 1000) if st < 1e12 else int(st)
-            return f"{plan}/{task}:{st}"
-
-        self._mk_run_id_from_payload = _mk_run_id_from_payload
+        self._obs_runs_by_trace: Dict[str, str] = {}
 
         # --- 初始化流程 ---
-        logger.setup(log_dir='logs', task_name='aura_session', api_log_queue=self.api_log_queue)
+        logger.setup(
+            log_dir=str(get_config_value("logging.log_dir", "logs")),
+            task_name=str(get_config_value("logging.task_name.default", "aura_session")),
+            api_log_queue=self.api_log_queue
+        )
         self._register_core_services()
         self.reload_plans()
+
+    @staticmethod
+    def _resolve_base_path() -> Path:
+        env_base = os.getenv("AURA_BASE_PATH")
+        if env_base:
+            return Path(env_base).resolve()
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return Path(__file__).resolve().parents[2]
 
     def _initialize_async_components(self):
         """(私有) 在事件循环内部初始化所有需要事件循环的组件。"""
@@ -164,9 +176,9 @@ class Scheduler:
         if self.async_data_lock is None:
             self.async_data_lock = asyncio.Lock()
 
-        self.task_queue = TaskQueue(maxsize=1000)
-        self.event_task_queue = TaskQueue(maxsize=2000)
-        self.interrupt_queue = asyncio.Queue(maxsize=100)
+        self.task_queue = TaskQueue(maxsize=int(get_config_value("scheduler.queue.main_maxsize", 1000)))
+        self.event_task_queue = TaskQueue(maxsize=int(get_config_value("scheduler.queue.event_maxsize", 2000)))
+        self.interrupt_queue = asyncio.Queue(maxsize=int(get_config_value("scheduler.queue.interrupt_maxsize", 100)))
 
     def get_async_lock(self) -> asyncio.Lock:
         """获取一个线程安全的异步锁，用于保护共享状态。"""
@@ -174,6 +186,83 @@ class Scheduler:
             self.async_data_lock = asyncio.Lock()
             logger.debug("异步数据锁初始化。")
         return self.async_data_lock
+
+    def _base36_encode(self, num: int) -> str:
+        if num == 0:
+            return "0"
+        chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        out = []
+        n = num
+        while n > 0:
+            n, r = divmod(n, 36)
+            out.append(chars[r])
+        return "".join(reversed(out))
+
+    def _short_cid_suffix(self, cid: Optional[str]) -> str:
+        if not cid:
+            return "0000"
+        try:
+            return self._base36_encode(int(cid))[-4:].rjust(4, "0")
+        except Exception:
+            return (cid[-4:] if len(cid) >= 4 else cid.rjust(4, "0"))
+
+    def _make_trace_id(self, plan_name: str, task_name: str, cid: str,
+                       when: Optional[datetime] = None) -> str:
+        ts = when or datetime.now()
+        time_part = ts.strftime("%y%m%d-%H%M%S")
+        suffix = self._short_cid_suffix(cid)
+        return f"{plan_name}/{task_name}@{time_part}-{suffix}"
+
+    def _make_trace_label(self, plan_name: Optional[str], task_name: Optional[str]) -> str:
+        full_task_id = f"{plan_name}/{task_name}" if plan_name and task_name else (plan_name or task_name or "")
+        task_def = self.all_tasks_definitions.get(full_task_id, {}) if full_task_id else {}
+        title = task_def.get("meta", {}).get("title") if isinstance(task_def, dict) else None
+        return title or full_task_id
+
+    def _ensure_tasklet_identifiers(self, tasklet: Tasklet,
+                                    plan_name: Optional[str] = None,
+                                    task_name: Optional[str] = None,
+                                    source: Optional[str] = None) -> Tasklet:
+        payload = tasklet.payload if isinstance(tasklet.payload, dict) else {}
+
+        if not plan_name:
+            plan_name = payload.get("plan_name")
+        if not task_name:
+            task_name = payload.get("task_name") or payload.get("task") or payload.get("handler_task")
+
+        if (not plan_name or not task_name) and tasklet.task_name:
+            if "/" in tasklet.task_name:
+                parts = tasklet.task_name.split("/", 1)
+                plan_name = plan_name or parts[0]
+                task_name = task_name or parts[1]
+
+        if not tasklet.cid:
+            tasklet.cid = str(next(self.id_generator))
+
+        if not tasklet.trace_id and plan_name and task_name:
+            tasklet.trace_id = self._make_trace_id(plan_name, task_name, tasklet.cid)
+        if not tasklet.trace_label and plan_name and task_name:
+            tasklet.trace_label = self._make_trace_label(plan_name, task_name)
+        if source and not tasklet.source:
+            tasklet.source = source
+        if not tasklet.source and payload.get("source"):
+            tasklet.source = payload.get("source")
+
+        if tasklet.cid:
+            payload.setdefault("cid", tasklet.cid)
+        if tasklet.trace_id:
+            payload.setdefault("trace_id", tasklet.trace_id)
+        if tasklet.trace_label:
+            payload.setdefault("trace_label", tasklet.trace_label)
+        if tasklet.source:
+            payload.setdefault("source", tasklet.source)
+        if plan_name:
+            payload.setdefault("plan_name", plan_name)
+        if task_name:
+            payload.setdefault("task_name", task_name)
+
+        tasklet.payload = payload
+        return tasklet
 
     async def _async_update_run_status(self, item_id: str, status_update: Dict[str, Any]):
         """(私有) 异步地更新一个计划任务的运行状态。"""
@@ -220,7 +309,10 @@ class Scheduler:
             try:
                 self.ui_update_queue.put_nowait({'type': msg_type, 'data': data})
             except queue.Full:
+                # 队列满时丢弃，避免抛到事件循环
                 logger.warning(f"UI更新队列已满，丢弃消息: {msg_type}")
+            except Exception as e:
+                logger.warning(f"推送UI更新失败: {e}")
 
     def _register_core_services(self):
         """(私有) 向服务注册表注册所有框架核心服务。"""
@@ -360,6 +452,7 @@ class Scheduler:
                 logger.warning(f"关闭执行管理器时发生异常: {e}")
             # 清理运行中任务记录
             self.running_tasks.clear()
+            self._running_task_meta.clear()
             logger.info("调度器事件循环已终止。")
             self.startup_complete_event.set()
 
@@ -441,7 +534,9 @@ class Scheduler:
 
     async def _consume_main_task_queue(self):
         """(私有) 主任务队列的消费者循环。"""
-        max_cc = int(getattr(self, "max_concurrency", 1) or 1)
+        max_cc = int(getattr(self.execution_manager, "max_concurrent_tasks", 1) or 1)
+        queue_full_sleep = float(get_config_value("scheduler.loop_sleep_sec.queue_full", 0.2))
+        consumer_error_sleep = float(get_config_value("scheduler.loop_sleep_sec.consumer_error", 0.5))
 
         while True:
             try:
@@ -458,10 +553,11 @@ class Scheduler:
 
                 if len(self.running_tasks) >= max_cc:
                     logger.warning(f"[Queue Consumer] 达到并发上限，等待中...")
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(queue_full_sleep)
                     continue
 
                 tasklet = await self.task_queue.get()
+                self._ensure_tasklet_identifiers(tasklet)
 
                 try:
                     payload = {}
@@ -476,6 +572,10 @@ class Scheduler:
                         task_name = getattr(tasklet, "task_name", None)
 
                     payload.update({
+                        "cid": tasklet.cid,
+                        "trace_id": tasklet.trace_id,
+                        "trace_label": tasklet.trace_label,
+                        "source": tasklet.source,
                         "plan_name": plan_name,
                         "task_name": task_name,
                         "start_time": time.time(),
@@ -486,18 +586,26 @@ class Scheduler:
 
                 submit_task = asyncio.create_task(self.execution_manager.submit(tasklet))
 
-                key = tasklet.cid if hasattr(tasklet, 'cid') and tasklet.cid else f"task:{int(time.time() * 1000)}"
+                key = tasklet.cid
 
                 logger.info(f"[Queue Consumer] ✅ 任务入队: key={key}")
                 self.running_tasks[key] = submit_task
+                self._running_task_meta[key] = {
+                    "plan_name": plan_name,
+                    "task_name": task_name,
+                    "source": tasklet.source,
+                    "trace_id": tasklet.trace_id,
+                    "trace_label": tasklet.trace_label,
+                }
 
                 def _cleanup(_fut: asyncio.Task):
                     try:
                         removed = self.running_tasks.pop(key, None)
                         if removed:
-                            logger.debug(f"[_consume_main_task_queue] 任务已从 running_tasks 清除，key={key}")
+                            logger.debug(f"[_consume_main_task_queue] ???????????? running_tasks ?????????key={key}")
                         else:
-                            logger.warning(f"[_consume_main_task_queue] 清理失败：找不到 key={key}")
+                            logger.warning(f"[_consume_main_task_queue] ???????????????????????? key={key}")
+                        self._running_task_meta.pop(key, None)
                     finally:
                         try:
                             self.task_queue.task_done()
@@ -510,7 +618,7 @@ class Scheduler:
                 break
             except Exception:
                 logger.exception("Error consuming main task queue")
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(consumer_error_sleep)
 
     async def _consume_interrupt_queue(self):
         """(私有) 中断队列的消费者循环。"""
@@ -519,16 +627,27 @@ class Scheduler:
                 handler_rule = await asyncio.wait_for(self.interrupt_queue.get(), timeout=1.0)
                 rule_name = handler_rule.get('name', 'unknown_interrupt')
                 logger.info(f"指挥官: 开始处理中断 '{rule_name}'...")
+                scope = handler_rule.get('scope') or 'plan'
+                target_plan = handler_rule.get('plan_name')
                 tasks_to_cancel = []
                 async with self.get_async_lock():
-                    for task_id, task in self.running_tasks.items():
-                        if not task_id.startswith('interrupt/'):
-                            tasks_to_cancel.append(task)
+                    for cid, task in self.running_tasks.items():
+                        meta = self._running_task_meta.get(cid, {})
+                        if meta.get('source') == 'interrupt':
+                            continue
+                        if scope != 'global' and target_plan and meta.get('plan_name') != target_plan:
+                            continue
+                        tasks_to_cancel.append(task)
                 for task in tasks_to_cancel:
                     task.cancel()
-                handler_task_id = f"interrupt/{rule_name}/{uuid.uuid4()}"
-                handler_item = {'plan_name': handler_rule['plan_name'], 'handler_task': handler_rule['handler_task']}
+                handler_task_id = f"{handler_rule['plan_name']}/{handler_rule['handler_task']}"
+                handler_item = {
+                    'plan_name': handler_rule['plan_name'],
+                    'task_name': handler_rule['handler_task'],
+                    'handler_task': handler_rule['handler_task']
+                }
                 tasklet = Tasklet(task_name=handler_task_id, payload=handler_item, is_ad_hoc=True, execution_mode='sync')
+                self._ensure_tasklet_identifiers(tasklet, source="interrupt")
                 await asyncio.create_task(self.execution_manager.submit(tasklet, is_interrupt_handler=True))
                 self.interrupt_queue.task_done()
             except asyncio.TimeoutError:
@@ -542,6 +661,7 @@ class Scheduler:
         while self.is_running.is_set():
             try:
                 tasklet = await asyncio.wait_for(self.event_task_queue.get(), timeout=1.0)
+                self._ensure_tasklet_identifiers(tasklet)
                 await self.execution_manager.submit(tasklet)
                 self.event_task_queue.task_done()
             except asyncio.TimeoutError:
@@ -678,6 +798,7 @@ class Scheduler:
         task_def = self.all_tasks_definitions.get(task_id, {})
         tasklet = Tasklet(task_name=task_id, triggering_event=event,
                           execution_mode=task_def.get('execution_mode', 'sync'))
+        self._ensure_tasklet_identifiers(tasklet, source="event")
         await self.event_task_queue.put(tasklet)
 
     def _load_schedule_file(self, plan_dir: Path, plan_name: str):
@@ -730,7 +851,7 @@ class Scheduler:
     def run_manual_task(self, task_id: str):
         """将一个预定义的计划任务（通过其ID）手动加入执行队列。"""
         if not self.is_running or self._loop is None or not self._loop.is_running():
-            return {"ok": False, "message": "Scheduler is not running."}
+            return {"status": "error", "message": "Scheduler is not running."}
 
         schedule_item = None
         for it in self.schedule_items:
@@ -738,12 +859,12 @@ class Scheduler:
                 schedule_item = it
                 break
         if not schedule_item:
-            return {"ok": False, "message": f"Task id '{task_id}' not found in schedule."}
+            return {"status": "error", "message": f"Task id '{task_id}' not found in schedule."}
 
         plan_name = schedule_item.get("plan_name")
         task_name = schedule_item.get("task_name")
         if not plan_name or not task_name:
-            return {"ok": False, "message": "Schedule item missing plan_name/task_name."}
+            return {"status": "error", "message": "Schedule item missing plan_name/task_name."}
 
         full_task_id = f"{plan_name}/{task_name}"
 
@@ -777,7 +898,7 @@ class Scheduler:
 
         missing = [k for k in required_keys if (merged_inputs.get(k) is None or merged_inputs.get(k) == "")]
         if missing:
-            return {"ok": False, "message": f"Missing required inputs: {', '.join(missing)}"}
+            return {"status": "error", "message": f"Missing required inputs: {', '.join(missing)}"}
 
         try:
             tasklet = Tasklet(
@@ -788,15 +909,20 @@ class Scheduler:
                     "inputs": merged_inputs
                 }
             )
+            self._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=task_name, source="manual")
         except Exception as e:
             logger.exception("Create Tasklet failed")
-            return {"ok": False, "message": f"Create Tasklet failed: {e}"}
+            return {"status": "error", "message": f"Create Tasklet failed: {e}"}
 
         async def _enqueue():
             try:
                 await self.event_bus.publish(Event(
                     name="queue.enqueued",
                     payload={
+                        "cid": tasklet.cid,
+                        "trace_id": tasklet.trace_id,
+                        "trace_label": tasklet.trace_label,
+                        "source": tasklet.source,
                         "plan_name": plan_name,
                         "task_name": task_name,
                         "priority": None,
@@ -813,9 +939,15 @@ class Scheduler:
             fut.result(timeout=5.0)
         except Exception as e:
             logger.exception("Enqueue task failed")
-            return {"ok": False, "message": f"Enqueue failed: {e}"}
+            return {"status": "error", "message": f"Enqueue failed: {e}"}
 
-        return {"ok": True, "message": "Task enqueued."}
+        return {
+            "status": "success",
+            "message": "Task enqueued.",
+            "cid": tasklet.cid,
+            "trace_id": tasklet.trace_id,
+            "trace_label": tasklet.trace_label
+        }
 
     def run_ad_hoc_task(self, plan_name: str, task_name: str, params: Optional[Dict[str, Any]] = None, temp_id: Optional[str] = None):
         """临时（Ad-hoc）运行一个任何已定义的任务。"""
@@ -877,6 +1009,7 @@ class Scheduler:
                     execution_mode=task_def.get('execution_mode', 'sync'),
                     initial_context=full_params
                 )
+                self._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=task_name, source="manual")
 
             if self.task_queue:
                 await self.task_queue.put(tasklet)
@@ -886,7 +1019,10 @@ class Scheduler:
                     await self.event_bus.publish(Event(
                         name='queue.enqueued',
                         payload={
-                            'cid': canonical_id,
+                            'cid': tasklet.cid,
+                            'trace_id': tasklet.trace_id,
+                            'trace_label': tasklet.trace_label,
+                            'source': tasklet.source,
                             'plan_name': plan_name,
                             'task_name': task_name,
                             'priority': (self.all_tasks_definitions.get(full_task_id) or {}).get('priority'),
@@ -898,7 +1034,7 @@ class Scheduler:
                     pass
 
             return {"status": "success", "message": f"Task '{full_task_id}' queued for execution.","temp_id": temp_id,
-                "cid": canonical_id}
+                "cid": tasklet.cid, "trace_id": tasklet.trace_id, "trace_label": tasklet.trace_label}
 
         if self._loop and self._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(async_run(), self._loop)
@@ -921,6 +1057,7 @@ class Scheduler:
                     execution_mode=task_def.get('execution_mode', 'sync'),
                     initial_context=params or {}
                 )
+                self._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=task_name, source="manual")
                 self._pre_start_task_buffer.append(tasklet)
                 self.run_statuses.setdefault(full_task_id, {}).update(
                     {'status': 'queued', 'queued_at': datetime.now()}
@@ -929,7 +1066,9 @@ class Scheduler:
                     "status": "success",
                     "message": f"Task '{full_task_id}' queued for execution.",
                     "temp_id": temp_id,
-                    "cid": canonical_id
+                    "cid": tasklet.cid,
+                    "trace_id": tasklet.trace_id,
+                    "trace_label": tasklet.trace_label
                 }
 
 
@@ -977,12 +1116,25 @@ class Scheduler:
         """(私有) 内部可观测性事件的处理器。"""
         name = (event.name or '').lower()
         p = event.payload or {}
-        rid = self._mk_run_id_from_payload(p)
+        cid = p.get('cid') or p.get('trace_id')
+        trace_id = p.get('trace_id')
+        trace_label = p.get('trace_label')
+        source = p.get('source')
+
+        if trace_id and cid:
+            self._obs_runs_by_trace.setdefault(trace_id, cid)
+
+        if not cid:
+            return
 
         async with self.get_async_lock():
             if name == 'task.started':
-                run = self._obs_runs.setdefault(rid, {
-                    'run_id': rid,
+                run = self._obs_runs.setdefault(cid, {
+                    'cid': cid,
+                    'trace_id': trace_id,
+                    'trace_label': trace_label,
+                    'source': source,
+                    'parent_cid': p.get('parent_cid'),
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'started_at': int((p.get('start_time') or 0) * 1000) if p.get('start_time') and p.get('start_time') < 1e12 else int(p.get('start_time') or 0),
@@ -990,11 +1142,23 @@ class Scheduler:
                     'status': 'running',
                     'nodes': []
                 })
-                self._obs_ready.pop(rid, None)
+                if trace_id:
+                    run['trace_id'] = trace_id
+                if trace_label:
+                    run['trace_label'] = trace_label
+                if source:
+                    run['source'] = source
+                if p.get('parent_cid') is not None:
+                    run['parent_cid'] = p.get('parent_cid')
+                self._obs_ready.pop(cid, None)
 
             elif name == 'task.finished':
-                run = self._obs_runs.setdefault(rid, {
-                    'run_id': rid,
+                run = self._obs_runs.setdefault(cid, {
+                    'cid': cid,
+                    'trace_id': trace_id,
+                    'trace_label': trace_label,
+                    'source': source,
+                    'parent_cid': p.get('parent_cid'),
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'started_at': None,
@@ -1006,10 +1170,22 @@ class Scheduler:
                 run['finished_at'] = end_ms or run.get('finished_at')
                 status = (p.get('final_status') or 'unknown').lower()
                 run['status'] = 'success' if status == 'success' else ('error' if status == 'error' else status)
+                if trace_id:
+                    run['trace_id'] = trace_id
+                if trace_label:
+                    run['trace_label'] = trace_label
+                if source:
+                    run['source'] = source
+                if p.get('parent_cid') is not None:
+                    run['parent_cid'] = p.get('parent_cid')
 
             elif name == 'node.started':
-                run = self._obs_runs.setdefault(rid, {
-                    'run_id': rid,
+                run = self._obs_runs.setdefault(cid, {
+                    'cid': cid,
+                    'trace_id': trace_id,
+                    'trace_label': trace_label,
+                    'source': source,
+                    'parent_cid': p.get('parent_cid'),
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'started_at': None, 'finished_at': None, 'status': 'running', 'nodes': []
@@ -1025,8 +1201,12 @@ class Scheduler:
                     nodes.append(item)
 
             elif name in ('node.finished', 'node.failed'):
-                run = self._obs_runs.setdefault(rid, {
-                    'run_id': rid,
+                run = self._obs_runs.setdefault(cid, {
+                    'cid': cid,
+                    'trace_id': trace_id,
+                    'trace_label': trace_label,
+                    'source': source,
+                    'parent_cid': p.get('parent_cid'),
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'started_at': None, 'finished_at': None, 'status': 'running', 'nodes': []
@@ -1043,7 +1223,11 @@ class Scheduler:
 
             elif name == 'queue.enqueued':
                 item = {
-                    'run_id': rid,
+                    'cid': cid,
+                    'trace_id': trace_id,
+                    'trace_label': trace_label,
+                    'source': source,
+                    'parent_cid': p.get('parent_cid'),
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'priority': p.get('priority'),
@@ -1051,22 +1235,22 @@ class Scheduler:
                     'delay_until': p.get('delay_until')
                 }
                 if item['delay_until']:
-                    self._obs_delayed[rid] = item
+                    self._obs_delayed[cid] = item
                 else:
-                    self._obs_ready[rid] = item
+                    self._obs_ready[cid] = item
 
             elif name in ('queue.dequeued', 'task.started'):
-                self._obs_ready.pop(rid, None)
+                self._obs_ready.pop(cid, None)
 
             elif name == 'queue.promoted':
-                it = self._obs_delayed.pop(rid, None)
+                it = self._obs_delayed.pop(cid, None)
                 if it:
                     it['delay_until'] = None
-                    self._obs_ready[rid] = it
+                    self._obs_ready[cid] = it
 
             elif name in ('queue.dropped',):
-                self._obs_ready.pop(rid, None)
-                self._obs_delayed.pop(rid, None)
+                self._obs_ready.pop(cid, None)
+                self._obs_delayed.pop(cid, None)
 
     def get_queue_overview(self) -> Dict[str, Any]:
         """获取任务队列的概览信息。"""
@@ -1122,19 +1306,30 @@ class Scheduler:
                 items = list(self._obs_delayed.values())
                 items.sort(key=lambda x: x.get('delay_until') or 0)
 
-        items = items[:max(1, int(limit))]
+        # 过滤缺少 cid 的条目，避免前端出现“无标识”任务
+        filtered = [it for it in items if it.get('cid')]
+        if len(filtered) != len(items):
+            logger.warning(f"[list_queue] 过滤掉 {len(items) - len(filtered)} 条缺少 cid 的任务条目")
+
+        items = filtered[:max(1, int(limit))]
         for it in items:
-            it['__key'] = it.get('run_id') or f"{it.get('plan_name')}/{it.get('task_name')}:{it.get('enqueued_at') or it.get('delay_until')}"
+            it['__key'] = it.get('trace_id') or it.get('cid') or f"{it.get('plan_name')}/{it.get('task_name')}:{it.get('enqueued_at') or it.get('delay_until')}"
         return {'items': items, 'next_cursor': None}
 
-    def get_run_timeline(self, run_id: str) -> Dict[str, Any]:
-        """获取一次任务运行的详细时间线数据。"""
+    def get_run_timeline(self, cid_or_trace: str) -> Dict[str, Any]:
+        """???????????????????????????"""
         with self.fallback_lock:
-            run = self._obs_runs.get(run_id)
+            cid = cid_or_trace
+            if cid_or_trace in self._obs_runs_by_trace:
+                cid = self._obs_runs_by_trace.get(cid_or_trace, cid_or_trace)
+            run = self._obs_runs.get(cid)
             if not run:
                 return {}
             return {
-                'run_id': run_id,
+                'cid': cid,
+                'trace_id': run.get('trace_id'),
+                'trace_label': run.get('trace_label'),
+                'parent_cid': run.get('parent_cid'),
                 'plan_name': run.get('plan_name'),
                 'task_name': run.get('task_name'),
                 'started_at': run.get('started_at'),
@@ -1482,6 +1677,22 @@ class Scheduler:
 
                 logger.info(f"开始热重载插件: '{plugin_id}'...")
 
+                if plugin_def.plugin_type == "plan":
+                    result = self.plan_manager.plugin_manager.dependency_manager.ensure_plan_dependencies(plugin_def.path)
+                    if not result.ok:
+                        on_missing = str(get_config_value("dependencies.on_missing", "skip_plan")).lower()
+                        if on_missing == "skip_plan":
+                            logger.warning(
+                                "跳过热重载：插件 '%s' 缺少依赖: %s",
+                                plugin_id,
+                                ", ".join(result.missing),
+                            )
+                            return
+                        logger.warning(
+                            "继续热重载：插件 '%s' 缺少依赖",
+                            plugin_id,
+                        )
+
                 ACTION_REGISTRY.remove_actions_by_plugin(plugin_id)
                 service_registry.remove_services_by_prefix(f"{plugin_id}/")
 
@@ -1530,7 +1741,8 @@ class Scheduler:
 
                     active_list.append({
                         'cid': cid,
-                        'run_id': cid,
+                        'trace_id': ready_item.get('trace_id'),
+                        'trace_label': ready_item.get('trace_label'),
                         'plan_name': ready_item.get('plan_name'),
                         'task_name': ready_item.get('task_name'),
                         'status': 'starting',  # ← 标记为启动中
@@ -1544,7 +1756,8 @@ class Scheduler:
                 if cid not in self.running_tasks:  # 避免重复
                     active_list.append({
                         'cid': cid,
-                        'run_id': item.get('run_id', cid),
+                        'trace_id': item.get('trace_id'),
+                        'trace_label': item.get('trace_label'),
                         'plan_name': item.get('plan_name'),
                         'task_name': item.get('task_name'),
                         'status': 'queued',
@@ -1590,7 +1803,9 @@ class Scheduler:
                     "task_name": task.get("task_name"),
                     "status": result.get("status"),
                     "message": result.get("message"),
-                    "cid": result.get("cid")
+                    "cid": result.get("cid"),
+                    "trace_id": result.get("trace_id"),
+                    "trace_label": result.get("trace_label")
                 })
             except Exception as e:
                 failed_count += 1
@@ -1599,7 +1814,9 @@ class Scheduler:
                     "task_name": task.get("task_name"),
                     "status": "error",
                     "message": str(e),
-                    "cid": None
+                    "cid": None,
+                    "trace_id": None,
+                    "trace_label": None
                 })
 
         return {
@@ -1710,6 +1927,7 @@ class Scheduler:
             execution_mode=task_def.get('execution_mode', 'sync'),
             initial_context=params or {}
         )
+        self._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=task_name, source="manual")
 
         success = await self.task_queue.insert_at(index, tasklet)
 

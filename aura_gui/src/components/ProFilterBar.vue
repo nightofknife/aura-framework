@@ -1,17 +1,17 @@
 <template>
   <div class="filterbar">
-    <input class="input" v-model="local.query" placeholder="Search…" style="min-width:220px;" @input="emitChange"/>
+    <input class="input" v-model="local.query" placeholder="搜索…" style="min-width:220px;" @input="emitChange"/>
     <select class="select" v-if="statusOptions?.length" v-model="local.status" @change="emitChange">
-      <option value="">All statuses</option>
+      <option value="">全部状态</option>
       <option v-for="s in statusOptions" :key="s" :value="s">{{ s }}</option>
     </select>
     <select class="select" v-if="planOptions?.length" v-model="local.plan" @change="emitChange">
-      <option value="">All plans</option>
+      <option value="">全部方案</option>
       <option v-for="p in planOptions" :key="p" :value="p">{{ p }}</option>
     </select>
     <slot/>
     <div style="flex:1"></div>
-    <button class="btn btn-ghost" @click="onReset">Reset</button>
+    <button class="btn btn-ghost" @click="onReset">重置</button>
   </div>
 </template>
 

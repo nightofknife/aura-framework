@@ -19,6 +19,8 @@ from resolvelib import Resolver, BaseReporter
 
 from .api import service_registry, ServiceDefinition, ACTION_REGISTRY, ActionDefinition, hook_manager
 from .builder import build_package_from_source, clear_build_cache, API_FILE_NAME
+from .config_loader import get_config_value
+from .dependency_manager import DependencyManager
 from .plugin_definition import PluginDefinition
 from .logger import logger
 from .plugin_provider import PluginProvider
@@ -40,6 +42,8 @@ class PluginManager:
         """
         self.base_path = base_path
         self.plugin_registry: Dict[str, PluginDefinition] = {}
+        self.loaded_plugin_ids: set[str] = set()
+        self.dependency_manager = DependencyManager(self.base_path)
 
     def load_all_plugins(self):
         """同步执行完整的插件加载流程。
@@ -74,6 +78,7 @@ class PluginManager:
         hook_manager.clear()
         clear_build_cache()
         self.plugin_registry.clear()
+        self.loaded_plugin_ids.clear()
         logger.info("插件注册表清理完毕。")
 
     def _discover_and_parse_plugins(self):
@@ -122,12 +127,29 @@ class PluginManager:
             plugin_def = self.plugin_registry.get(plugin_id)
             if not plugin_def: continue
 
+            if plugin_def.plugin_type == "plan":
+                result = self.dependency_manager.ensure_plan_dependencies(plugin_def.path)
+                if not result.ok:
+                    on_missing = str(get_config_value("dependencies.on_missing", "skip_plan")).lower()
+                    if on_missing == "skip_plan":
+                        logger.warning(
+                            "Skipping plan '%s' due to missing dependencies: %s",
+                            plugin_def.canonical_id,
+                            ", ".join(result.missing),
+                        )
+                        continue
+                    logger.warning(
+                        "Continuing to load plan '%s' despite missing dependencies.",
+                        plugin_def.canonical_id,
+                    )
+
             api_file_path = plugin_def.path / API_FILE_NAME
             if not api_file_path.exists():
                 build_package_from_source(plugin_def)
 
             self._load_package_from_api_file(plugin_def, api_file_path)
             self._load_hooks_for_package(plugin_def)
+            self.loaded_plugin_ids.add(plugin_def.canonical_id)
 
     def _load_package_from_api_file(self, plugin_def: PluginDefinition, api_file_path: Path):
         """(私有) 从插件的 `api.yaml` 文件中加载其暴露的 Service 和 Action。"""
@@ -203,6 +225,14 @@ class PluginManager:
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
             return module
+        except ModuleNotFoundError as e:
+            logger.error(
+                "Missing dependency while loading module '%s' (%s): %s",
+                file_path,
+                getattr(e, "name", "unknown"),
+                e,
+            )
+            raise
         except Exception as e:
             logger.error(f"延迟加载模块 '{file_path}' 失败: {e}", exc_info=True)
             raise

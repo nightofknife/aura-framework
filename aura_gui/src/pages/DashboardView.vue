@@ -105,13 +105,15 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import axios from 'axios';
+import { getGuiConfig } from '../config.js';
 import { useAuraSockets } from '../composables/useAuraSockets.js';
 import { useRuns } from '../composables/useRuns.js';
 import { useQueueStore } from '../composables/useQueueStore.js';
 
 // --- 配置 ---
-const API_BASE = 'http://127.0.0.1:18098/api';
-const api = axios.create({ baseURL: API_BASE, timeout: 5000 });
+const cfg = getGuiConfig();
+const API_BASE = cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1';
+const api = axios.create({ baseURL: API_BASE, timeout: cfg?.api?.timeout_ms || 5000 });
 
 // --- 获取响应式数据源 ---
 const { logs } = useAuraSockets(); // ✅ 改用 logs 通道

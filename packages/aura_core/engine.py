@@ -20,6 +20,7 @@ import asyncio
 import time
 import traceback
 import uuid
+from collections import deque
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Callable, Coroutine
 
@@ -73,6 +74,8 @@ class ExecutionEngine:
         self.dependencies: Dict[str, Any] = {}
         self.reverse_dependencies: Dict[str, Set[str]] = {}
         self.step_states: Dict[str, StepState] = {}
+        self.ready_queue: deque[str] = deque()
+        self._ready_set: Set[str] = set()
 
         # 上下文管理
         self.root_context: Optional[ExecutionContext] = None
@@ -174,31 +177,45 @@ class ExecutionEngine:
         return deps
 
     async def _run_dag_scheduler(self):
-        """(私有) 启动并管理 DAG 调度器，直到所有可达节点执行完毕。"""
+        """(??????) ???????????????DAG ???????????????????????????????????????????????????"""
         self.completion_event = asyncio.Event()
         await self._schedule_ready_nodes()
 
         if not self.running_tasks and self.nodes:
             if all(state == StepState.PENDING for state in self.step_states.values()):
-                raise ValueError("任务图中没有可作为起点的节点（所有节点都有依赖）。")
+                raise ValueError("???????????????????????????????????????????????????????????????????????????")
 
         if self.running_tasks:
             await self.completion_event.wait()
 
     async def _schedule_ready_nodes(self):
-        """(私有) 检查并调度所有当前满足依赖条件的节点。"""
-        ready_nodes = []
+        """(??????) ?????????????????????????????????????????????????????????"""
         for node_id in self.nodes:
-            if self.step_states[node_id] == StepState.PENDING and await self._are_dependencies_met(node_id):
-                ready_nodes.append(node_id)
+            await self._enqueue_ready_node(node_id)
+        await self._drain_ready_queue()
 
-        for node_id in ready_nodes:
+    async def _enqueue_ready_node(self, node_id: str):
+        if node_id in self._ready_set:
+            return
+        if self.step_states.get(node_id) != StepState.PENDING:
+            return
+        if await self._are_dependencies_met(node_id):
+            self.ready_queue.append(node_id)
+            self._ready_set.add(node_id)
+
+    async def _drain_ready_queue(self):
+        while self.ready_queue:
+            node_id = self.ready_queue.popleft()
+            self._ready_set.discard(node_id)
+            if self.step_states.get(node_id) != StepState.PENDING:
+                continue
+
             node_context = self._prepare_node_context(node_id)
             self.node_contexts[node_id] = node_context
 
             task = asyncio.create_task(self._execute_dag_node(node_id, node_context))
             self.running_tasks.add(task)
-            task.add_done_callback(self._on_task_completed)
+            task.add_done_callback(lambda t, nid=node_id: self._on_task_completed(t, nid))
 
     def _prepare_node_context(self, node_id: str) -> ExecutionContext:
         """(私有) 为即将执行的节点准备其执行上下文（通过分支和合并父上下文）。"""
@@ -218,19 +235,21 @@ class ExecutionEngine:
 
         return new_context
 
-    def _on_task_completed(self, task: asyncio.Task):
-        """(私有) 一个节点执行任务完成后的回调。"""
+    def _on_task_completed(self, task: asyncio.Task, node_id: str):
+        """(??????) ?????????????????????????????????????????????"""
         self.running_tasks.discard(task)
         try:
             task.result()
         except Exception as e:
-            logger.critical(f"DAG调度器捕获到未处理的任务异常: {e}", exc_info=True)
+            logger.critical(f"DAG??????????????????????????????????????????: {e}", exc_info=True)
 
         async def reschedule_and_maybe_finish():
             try:
-                await self._schedule_ready_nodes()
+                for downstream_id in self.reverse_dependencies.get(node_id, set()):
+                    await self._enqueue_ready_node(downstream_id)
+                await self._drain_ready_queue()
             finally:
-                if not self.running_tasks and self.completion_event:
+                if not self.running_tasks and not self.ready_queue and self.completion_event:
                     self.completion_event.set()
 
         asyncio.create_task(reschedule_and_maybe_finish())

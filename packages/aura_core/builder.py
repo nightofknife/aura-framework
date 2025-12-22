@@ -249,6 +249,15 @@ def _load_module_from_path(file_path: Path, module_name: str) -> Optional[Any]:
         spec.loader.exec_module(module)
         logger.debug(f"已加载模块: {module_name}")
         return module
+    except ModuleNotFoundError as e:
+        logger.error(
+            "Missing dependency while importing '%s' for API build: %s",
+            file_path,
+            getattr(e, "name", "unknown"),
+        )
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+        raise
     except Exception:
         logger.error(f"从路径 '{file_path}' 加载模块时发生未知错误。", exc_info=True)
         if module_name in sys.modules: del sys.modules[module_name]

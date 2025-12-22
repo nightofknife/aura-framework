@@ -13,6 +13,7 @@ from croniter import croniter
 from packages.aura_core.task_queue import Tasklet
 from packages.aura_core.logger import logger
 from .asynccontext import plan_context
+from packages.aura_core.config_loader import get_config_value
 
 class SchedulingService:
     """异步的时间基准调度服务。
@@ -29,6 +30,7 @@ class SchedulingService:
         """
         self.scheduler = scheduler
         self.is_running = asyncio.Event()
+        self.tick_sec = int(get_config_value("scheduling_service.tick_sec", 60))
 
     async def run(self):
         """服务的主循环，每分钟检查一次所有定时任务。
@@ -44,7 +46,8 @@ class SchedulingService:
                     await self._check_and_enqueue_tasks(datetime.now())
 
                 now = datetime.now()
-                await asyncio.sleep(60 - now.second)
+                sleep_for = max(1, self.tick_sec - (now.second % self.tick_sec))
+                await asyncio.sleep(sleep_for)
         except asyncio.CancelledError:
             logger.info("时间基准调度服务 (SchedulingService) 已停止。")
         finally:
@@ -79,6 +82,12 @@ class SchedulingService:
                             task_name=full_task_id,
                             payload=item,
                             execution_mode=task_def.get('execution_mode', 'sync')
+                        )
+                        self.scheduler._ensure_tasklet_identifiers(
+                            tasklet,
+                            plan_name=plan_name,
+                            task_name=item.get('task'),
+                            source="schedule"
                         )
                         await self.scheduler.task_queue.put(tasklet)
 

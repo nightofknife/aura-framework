@@ -13,6 +13,7 @@ from typing import Dict, Set, Optional
 from packages.aura_core.logger import logger
 from plans.aura_base.services.config_service import current_plan_name
 from .asynccontext import plan_context
+from packages.aura_core.config_loader import get_config_value
 
 class InterruptService:
     """异步中断服务（守护者）。
@@ -31,6 +32,7 @@ class InterruptService:
         self.is_running = asyncio.Event()
         self.interrupt_last_check_times: Dict[str, datetime] = {}
         self.interrupt_cooldown_until: Dict[str, datetime] = {}
+        self.poll_interval = float(get_config_value("interrupt_service.poll_sec", 1))
 
     async def run(self):
         """服务的主循环，负责持续监控中断条件。
@@ -67,38 +69,37 @@ class InterruptService:
                             except Exception as e:
                                 logger.error(f"守护者在检查中断 '{rule_name}' 时出错: {e}", exc_info=True)
 
-                await asyncio.sleep(1)
+                await asyncio.sleep(self.poll_interval)
         except asyncio.CancelledError:
             logger.info("中断监控服务 (InterruptService/Guardian) 已停止。")
         finally:
             self.is_running.clear()
 
     async def _get_active_interrupts(self) -> Set[str]:
-        """(私有) 异步地确定当前需要监控哪些中断规则。
-
-        一个中断规则被认为是“活跃的”如果：
-        - 它是一个被用户手动启用的全局中断。
-        - 或者，当前有一个正在运行的任务在其定义中声明要激活此中断。
-
-        Returns:
-            一个包含所有活跃中断规则名称的集合。
-        """
+        """Determine currently active interrupts based on running tasks and global toggles."""
         async def async_get():
             async with self.scheduler.get_async_lock():
                 interrupt_definitions = dict(self.scheduler.interrupt_definitions)
                 user_enabled_globals = self.scheduler.user_enabled_globals.copy()
-                running_task_ids = list(self.scheduler.running_tasks.keys())
+                runs_snapshot = list(self.scheduler._obs_runs.values())
                 all_tasks_defs = dict(self.scheduler.all_tasks_definitions)
 
             active_set = set(user_enabled_globals)
 
-            for task_id in running_task_ids:
-                task_def = all_tasks_defs.get(task_id)
+            for run in runs_snapshot:
+                if run.get('status') != 'running':
+                    continue
+                plan_name = run.get('plan_name')
+                task_name = run.get('task_name')
+                if not plan_name or not task_name:
+                    continue
+                full_task_id = f"{plan_name}/{task_name}"
+                task_def = all_tasks_defs.get(full_task_id)
                 if task_def:
                     interrupts_to_activate = task_def.get('activates_interrupts')
                     if isinstance(interrupts_to_activate, list) and interrupts_to_activate:
                         active_set.update(interrupts_to_activate)
-                        logger.debug(f"任务 '{task_id}' 激活了中断: {interrupts_to_activate}")
+                        logger.debug(f"Task '{full_task_id}' activates interrupts: {interrupts_to_activate}")
 
             return {rule_name for rule_name in active_set if rule_name in interrupt_definitions}
 
@@ -106,20 +107,27 @@ class InterruptService:
             return await async_get()
         except RuntimeError as e:
             if "event loop is already running" in str(e).lower():
-                logger.warning("嵌套事件循环检测到，fallback 到同步实现。")
+                logger.warning("Nested event loop detected, falling back to sync mode.")
                 with self.scheduler.fallback_lock:
                     interrupt_definitions = dict(self.scheduler.interrupt_definitions)
                     user_enabled_globals = self.scheduler.user_enabled_globals.copy()
-                    running_task_ids = list(self.scheduler.running_tasks.keys())
+                    runs_snapshot = list(self.scheduler._obs_runs.values())
                     all_tasks_defs = dict(self.scheduler.all_tasks_definitions)
                     active_set = set(user_enabled_globals)
-                    for task_id in running_task_ids:
-                        task_def = all_tasks_defs.get(task_id)
+                    for run in runs_snapshot:
+                        if run.get('status') != 'running':
+                            continue
+                        plan_name = run.get('plan_name')
+                        task_name = run.get('task_name')
+                        if not plan_name or not task_name:
+                            continue
+                        full_task_id = f"{plan_name}/{task_name}"
+                        task_def = all_tasks_defs.get(full_task_id)
                         if task_def:
                             interrupts_to_activate = task_def.get('activates_interrupts')
                             if isinstance(interrupts_to_activate, list) and interrupts_to_activate:
                                 active_set.update(interrupts_to_activate)
-                                logger.debug(f"任务 '{task_id}' 激活了中断: {interrupts_to_activate}")
+                                logger.debug(f"Task '{full_task_id}' activates interrupts: {interrupts_to_activate}")
                     return {rule_name for rule_name in active_set if rule_name in interrupt_definitions}
             else:
                 logger.error(f"RuntimeError in _get_active_interrupts: {e}")

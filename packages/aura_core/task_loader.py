@@ -13,6 +13,7 @@ from cachetools import TTLCache
 from cachetools.keys import hashkey
 
 from packages.aura_core.logger import logger
+from packages.aura_core.config_loader import get_config_value
 
 
 class TaskLoader:
@@ -31,7 +32,9 @@ class TaskLoader:
         """
         self.plan_name = plan_name
         self.tasks_dir = plan_path / "tasks"
-        self.cache = TTLCache(maxsize=1024, ttl=300)
+        cache_maxsize = int(get_config_value("task_loader.cache_maxsize", 1024))
+        cache_ttl = int(get_config_value("task_loader.cache_ttl_sec", 300))
+        self.cache = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
 
     def _load_and_parse_file(self, file_path: Path) -> Dict[str, Any]:
         """(私有) 加载并解析一个 YAML 文件，同时填充默认值并进行缓存。"""

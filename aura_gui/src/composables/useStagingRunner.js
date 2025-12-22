@@ -1,27 +1,32 @@
 // === src/composables/useStagingRunner.js ===
 import { ref, watch, effectScope } from 'vue';
 import axios from 'axios';
+import { getGuiConfig } from '../config.js';
 import { useStagingQueue, GUI_STATUS } from './useStagingQueue.js';
 import { useToasts } from './useToasts.js';
 import { useRuns } from './useRuns.js';
 import { useQueueStore } from './useQueueStore.js';
 
-const API_BASE = 'http://127.0.0.1:18098/api';
-const api = axios.create({ baseURL: API_BASE, timeout: 10000 });
+const cfg = getGuiConfig();
+const API_BASE = cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1';
+const api = axios.create({
+    baseURL: API_BASE,
+    timeout: cfg?.api?.dispatch_timeout_ms || cfg?.api?.timeout_ms || 10000,
+});
 
 const running = ref(false);
 const autoMode = ref(false);
 const isDispatching = ref(false);
 
-const AUTO_LS = 'aura_runner_auto';
+const AUTO_LS = cfg?.staging?.storage_keys?.auto || 'aura_runner_auto';
 try { autoMode.value = JSON.parse(localStorage.getItem(AUTO_LS) || 'false'); } catch {}
 
 let booted = false;
 let scope = null;
 let pollingTimer = null;
 
-const POLL_INTERVAL = 1000;
-const DISPATCH_DELAY = 50;
+const POLL_INTERVAL = cfg?.staging?.poll_interval_ms || 1000;
+const DISPATCH_DELAY = cfg?.staging?.dispatch_delay_ms || 50;
 
 function generateTempId() {
     return `temp_${Math.random().toString(36).slice(2, 11)}_${Date.now()}`;
@@ -57,7 +62,8 @@ export function useStagingRunner() {
         updateTask(nextItem.id, { status: 'dispatching', temp_id });
         setGuiStatus(nextItem.id, GUI_STATUS.DISPATCHING);
 
-        const repeatCount = Math.max(1, Math.min(500, nextItem.repeat || 1));
+        const repeatMax = cfg?.staging?.repeat_max || 500;
+        const repeatCount = Math.max(1, Math.min(repeatMax, nextItem.repeat || 1));
 
         try {
             const results = [];
@@ -70,7 +76,11 @@ export function useStagingRunner() {
                 });
 
                 if (data.status === 'success') {
-                    results.push(data.cid);
+                    results.push({
+                        cid: data.cid,
+                        trace_id: data.trace_id || null,
+                        trace_label: data.trace_label || null,
+                    });
                 } else {
                     throw new Error(data.message || 'Dispatch failed');
                 }
@@ -81,9 +91,12 @@ export function useStagingRunner() {
             }
 
             // ✅ 派发成功 → 标记为 queued（不移除）
+            const primary = results[0] || {};
             updateTask(nextItem.id, {
                 status: 'queued',
-                cid: results[0],
+                cid: primary.cid || null,
+                trace_id: primary.trace_id || null,
+                trace_label: primary.trace_label || null,
                 dispatchedAt: Date.now(),
             });
             setGuiStatus(nextItem.id, GUI_STATUS.QUEUED);
@@ -132,9 +145,10 @@ export function useStagingRunner() {
                 pushHistory({ ...localItem, status: 'success', finishedAt: Date.now() });
 
                 // ✅ 延迟 2 秒后才移除（让用户看到完成状态）
+                const removeDelay = cfg?.staging?.remove_after_ms || 2000;
                 setTimeout(() => {
                     removeTask(localItem.id);
-                }, 2000);
+                }, removeDelay);
             }
         }
     }

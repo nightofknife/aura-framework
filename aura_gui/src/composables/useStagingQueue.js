@@ -1,5 +1,6 @@
 // === src/composables/useStagingQueue.js ===
 import {ref} from 'vue';
+import { getGuiConfig } from '../config.js';
 
 /**
  * GUI 独立状态集（与引擎内部状态解耦）
@@ -55,8 +56,9 @@ export const GUI_PHASE = {
     POST: 'post',
 };
 
-const LS_KEY = 'aura_staging_queue_v1';
-const LS_KEY_HISTORY = 'aura_staging_history_v1';
+const cfg = getGuiConfig();
+const LS_KEY = cfg?.staging?.storage_keys?.queue || 'aura_staging_queue_v1';
+const LS_KEY_HISTORY = cfg?.staging?.storage_keys?.history || 'aura_staging_history_v1';
 
 function readLS() {
     try {
@@ -70,14 +72,15 @@ function readLS() {
 
             priority: it.priority ?? null,
             note: it.note ?? '',
-            repeat: Math.max(1, Math.min(500, it.repeat || 1)),
+            repeat: Math.max(1, Math.min(cfg?.staging?.repeat_max || 500, it.repeat || 1)),
 
             status: it.status || 'pending',
 
             toDispatch: !!it.toDispatch,
             toDispatchEpoch: it.toDispatchEpoch ?? null,
 
-            run_id: it.run_id ?? null,
+            trace_id: it.trace_id ?? it.run_id ?? null,
+            trace_label: it.trace_label ?? null,
             cid: it.cid ?? null, // ✅ 添加 cid
 
             gui_status: it.gui_status || GUI_STATUS.IDLE,
@@ -107,7 +110,12 @@ function readHistory() {
     try {
         const raw = localStorage.getItem(LS_KEY_HISTORY);
         const arr = raw ? JSON.parse(raw) : [];
-        return Array.isArray(arr) ? arr : [];
+        return (Array.isArray(arr) ? arr : []).map(it => ({
+            ...it,
+            trace_id: it.trace_id ?? it.run_id ?? null,
+            trace_label: it.trace_label ?? null,
+            cid: it.cid ?? null,
+        }));
     } catch {
         return [];
     }
@@ -145,14 +153,15 @@ function addTask({plan_name, task_name, inputs = {}, priority = null, note = '',
         inputs,
         priority,
         note,
-        repeat: Math.max(1, Math.min(500, repeat || 1)),
+        repeat: Math.max(1, Math.min(cfg?.staging?.repeat_max || 500, repeat || 1)),
 
         status: 'pending',
 
         toDispatch: false,
         toDispatchEpoch: null,
 
-        run_id: null,
+        trace_id: null,
+        trace_label: null,
 
         gui_status: GUI_STATUS.IDLE,
         phase: GUI_PHASE.PRE,
@@ -200,7 +209,8 @@ function duplicate(id) {
         status: 'pending',
         toDispatch: false,
         toDispatchEpoch: null,
-        run_id: null,
+        trace_id: null,
+        trace_label: null,
         cid: null,
 
         gui_status: GUI_STATUS.IDLE,
@@ -314,7 +324,7 @@ function setGuiStatus(id, gui_status, extraPatch = {}) {
     });
 }
 
-function pushHistory(entry, max = 300) {
+function pushHistory(entry, max = cfg?.staging?.history_max || 300) {
     const rec = {
         id: entry.id || uid(),
         plan_name: entry.plan_name || '',
@@ -324,7 +334,8 @@ function pushHistory(entry, max = 300) {
         note: entry.note || '',
         repeat: entry.repeat || 1,
         status: entry.status || 'success',
-        run_id: entry.run_id || null,
+        trace_id: entry.trace_id || entry.run_id || null,
+        trace_label: entry.trace_label || null,
         cid: entry.cid || null,
         finishedAt: entry.finishedAt || Date.now(),
     };

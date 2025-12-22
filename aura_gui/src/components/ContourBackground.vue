@@ -4,6 +4,7 @@
 
 <script setup>
 import { onMounted, onBeforeUnmount, ref } from 'vue';
+import { getGuiConfig } from '../config.js';
 
 const props = defineProps({
   scale: { type: Number, default: 40.0 },        // 地形尺度
@@ -247,7 +248,9 @@ function init(){
 }
 
 function onResize(){
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cfg = getGuiConfig();
+  const maxDpr = cfg?.background?.max_dpr || 2;
+  const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
   const w = Math.floor(window.innerWidth  * dpr);
   const h = Math.floor(window.innerHeight * dpr);
   if (cv.value.width !== w || cv.value.height !== h){

@@ -53,7 +53,11 @@ def get_scheduler() -> Scheduler:
     if scheduler_instance is None:
         print("正在初始化Aura框架，加载所有定义...")
         try:
-            logger.setup(log_dir='logs', task_name='aura_cli_session')
+            from packages.aura_core.config_loader import get_config_value
+            logger.setup(
+                log_dir=str(get_config_value("logging.log_dir", "logs")),
+                task_name=str(get_config_value("logging.task_name.cli", "aura_cli_session")),
+            )
             scheduler_instance = Scheduler()
             print("框架初始化完毕。\n")
             time.sleep(1)
