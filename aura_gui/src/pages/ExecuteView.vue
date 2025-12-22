@@ -387,11 +387,29 @@ const {items: guiItems, add: addGui, update: updateGui, remove: removeGuiItem, c
 const pushHistory = ref([]);
 let pollTimer = null;
 let activeSnapshot = new Map();
-const filteredHistory = computed(() =>
-    pushHistory.value.filter(
-        h => h.plan && h.task && h.status && !String(h.status).toLowerCase().includes('starting')
-    )
-);
+const pendingFinish = new Map();
+const FINAL_STATUS_MAP = new Map([
+  ['success', 'success'],
+  ['succeeded', 'success'],
+  ['ok', 'success'],
+  ['error', 'error'],
+  ['failed', 'error'],
+  ['fail', 'error'],
+  ['timeout', 'error'],
+  ['cancelled', 'cancelled'],
+  ['canceled', 'cancelled'],
+  ['aborted', 'cancelled'],
+  ['skipped', 'skipped'],
+]);
+const TRANSIENT_STATUSES = new Set(['running', 'starting', 'queued', 'pending', 'pushing', 'unknown']);
+const filteredHistory = computed(() => {
+  const excluded = new Set(['已推送', 'queued', '运行中', 'starting', 'unknown']);
+  return pushHistory.value.filter(h => {
+    if (!h.plan || !h.task || !h.status) return false;
+    const s = String(h.status).toLowerCase();
+    return !excluded.has(h.status) && !excluded.has(s) && !s.includes('starting');
+  });
+});
 
 async function refreshQueue() {
   await fetchReady();
@@ -399,22 +417,93 @@ async function refreshQueue() {
 async function refreshRuns() {
   const prev = new Map(activeSnapshot);
   await fetchActiveRuns();
-  // 识别已完成的运行，移动到历史
+  // Identify finished runs and move to history
   activeSnapshot = new Map();
   for (const run of activeRuns.value) {
     const key = run.trace_id || run.cid || `${run.plan_name}/${run.task_name}`;
     activeSnapshot.set(key, run);
     prev.delete(key);
   }
-  // prev 中剩下的是已完成的
+  // Remaining items in prev need final status confirmation
   prev.forEach((run, key) => {
-    pushHistory.value = [
-      {id: `hist_${key}_${Date.now()}`, plan: run.plan_name, task: run.task_name, status: run.status || '完成', at: Date.now()},
-      ...pushHistory.value
-    ].slice(0, 100);
-    console.log('[Execute] run finished -> history:', key, run);
+    if (!pendingFinish.has(key)) pendingFinish.set(key, run);
   });
+  await resolvePendingFinished();
 }
+
+function normalizeFinalStatus(status) {
+  if (!status) return null;
+  const s = String(status).toLowerCase();
+  return FINAL_STATUS_MAP.get(s) || null;
+}
+
+function isTransientStatus(status) {
+  if (!status) return true;
+  const s = String(status).toLowerCase();
+  return TRANSIENT_STATUSES.has(s);
+}
+
+function pushHistoryEntry(run, status, finishedAt) {
+  const key = run.trace_id || run.cid || `${run.plan_name}/${run.task_name}`;
+  pushHistory.value = [
+    {
+      id: `hist_${key}_${Date.now()}`,
+      plan: run.plan_name,
+      task: run.task_name,
+      status,
+      at: finishedAt || run.finished_at || Date.now(),
+    },
+    ...pushHistory.value
+  ].slice(0, 100);
+}
+
+async function resolvePendingFinished() {
+  if (!pendingFinish.size) return;
+  const pending = [...pendingFinish.entries()];
+  const cids = pending.map(([, run]) => run.cid).filter(Boolean);
+  const statusByCid = new Map();
+
+  if (cids.length) {
+    try {
+      const {data} = await api.post('/tasks/status/batch', {cids});
+      for (const item of data?.tasks || []) {
+        if (item?.cid) statusByCid.set(item.cid, item);
+      }
+    } catch (e) {
+      console.warn('[Execute] batch status failed', e);
+    }
+  }
+
+  for (const [key, run] of pending) {
+    const info = run.cid ? statusByCid.get(run.cid) : null;
+    const rawStatus = info?.status || run.status;
+    const finalStatus = normalizeFinalStatus(rawStatus);
+    if (finalStatus) {
+      pushHistoryEntry({
+        ...run,
+        plan_name: info?.plan_name || run.plan_name,
+        task_name: info?.task_name || run.task_name,
+        finished_at: info?.finished_at || run.finished_at,
+      }, finalStatus, info?.finished_at);
+      pendingFinish.delete(key);
+      console.log('[Execute] run finished -> history:', key, info || run);
+      continue;
+    }
+    if (rawStatus && String(rawStatus).toLowerCase() == 'not_found') {
+      pendingFinish.delete(key);
+      continue;
+    }
+    if (isTransientStatus(rawStatus)) {
+      continue;
+    }
+    if (rawStatus) {
+      pushHistoryEntry(run, rawStatus, info?.finished_at);
+      pendingFinish.delete(key);
+      console.log('[Execute] run finished -> history:', key, info || run);
+    }
+  }
+}
+
 async function removeQueue(cid) {
   await removeQueueApi(cid);
   await fetchReady();
@@ -466,7 +555,6 @@ async function pushToBackend(item) {
       cid = data?.cid || null;
     }
     updateGui(item.id, {status: 'queued', lastCid: cid, pushedAt: Date.now()});
-    pushHistory.value = [{id: item.id, plan: item.plan, task: item.task, status: '已推送', at: Date.now()}, ...pushHistory.value].slice(0, 50);
     // 推送成功后从 GUI 队列移除
     removeGuiItem(item.id);
     toast({type: 'success', title: '已推送', message: `${item.plan} / ${item.task}`});

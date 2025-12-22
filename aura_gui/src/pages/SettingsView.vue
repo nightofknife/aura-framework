@@ -177,7 +177,7 @@ const DEFAULT_CONFIG = {
       ],
     },
     task_editor: { viewport: { default_zoom: 1, min_zoom: 0.2 } },
-    background: { dynamic_enabled: true, max_dpr: 2 },
+    background: { dynamic_enabled: true, max_dpr: 2, density: 2.0, speed: 0.4, strength: 0.8, mouse_push: 30, dust: 50 },
   },
 };
 
@@ -359,6 +359,11 @@ const sections = [
       { path: 'gui.task_editor.viewport.min_zoom', label: '编辑器最小缩放', type: 'number', step: 0.1, min: 0.05 },
       { path: 'gui.background.dynamic_enabled', label: '动态背景', type: 'boolean' },
       { path: 'gui.background.max_dpr', label: '背景最大 DPR', type: 'number', step: 0.1, min: 1 },
+      { path: 'gui.background.density', label: '动态线条密度', type: 'number', step: 0.1, min: 0.5, max: 4 },
+      { path: 'gui.background.speed', label: '动态线条速度', type: 'number', step: 0.05, min: 0, max: 3 },
+      { path: 'gui.background.strength', label: '动态线条振幅', type: 'number', step: 0.05, min: 0, max: 2 },
+      { path: 'gui.background.mouse_push', label: '鼠标扰动强度', type: 'number', step: 1, min: 0, max: 80 },
+      { path: 'gui.background.dust', label: '星尘数量', type: 'number', step: 1, min: 0, max: 200 },
     ],
   },
 ];

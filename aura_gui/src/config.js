@@ -52,6 +52,11 @@ const DEFAULT_CONFIG = {
   background: {
     dynamic_enabled: true,
     max_dpr: 2,
+    density: 2.0,
+    speed: 0.4,
+    strength: 0.8,
+    mouse_push: 30,
+    dust: 50,
   },
 };
 
