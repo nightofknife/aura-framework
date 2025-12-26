@@ -7,8 +7,13 @@
 
     <div class="panel-body plan-task-grid">
       <div class="panel plan-panel">
-        <div class="panel-header">
-          <strong>方案列表</strong>
+        <div class="panel-header plan-header-actions">
+          <div class="plan-header-title">
+            <strong>方案列表</strong>
+            <button class="btn btn-danger btn-mini" :disabled="!selectedPlan || deletingPlan" @click.stop="confirmDeletePlan">
+              删除方案
+            </button>
+          </div>
           <input class="input" v-model="planQuery" placeholder="搜索方案…" style="min-width:140px;">
         </div>
         <div class="panel-body" style="padding:0;">
@@ -359,6 +364,7 @@ const selectedPlan = ref('');
 const tasks = ref([]);
 const filters = ref({ query:'', status:'', plan:'' });
 const density = ref('comfy');
+const deletingPlan = ref(false);
 
 const taskColumns = [
   { key:'title', label:'任务', sortable:true, width:'36%' },
@@ -728,6 +734,29 @@ function selectPlan(name) {
 }
 function onResetFilters() {}
 
+async function confirmDeletePlan() {
+  if (!selectedPlan.value) return;
+  const ok = window.confirm(`确认删除方案「${selectedPlan.value}」吗？将卸载该方案独有的依赖并删除文件。`);
+  if (!ok) return;
+  deletingPlan.value = true;
+  try {
+    await api.delete(`/plans/${selectedPlan.value}`);
+    await loadPlans();
+    tasks.value = [];
+    if (plans.value.length) {
+      selectPlan(plans.value[0].name);
+    } else {
+      selectedPlan.value = '';
+    }
+    alert('方案已删除');
+  } catch (e) {
+    console.error(e);
+    alert(`删除方案失败：${e?.response?.data?.detail || e.message}`);
+  } finally {
+    deletingPlan.value = false;
+  }
+}
+
 function openDetail(row) {
   if (!row || !row.definition) return;
   const def = row.definition || {};
@@ -786,6 +815,17 @@ onMounted(loadPlans);
   grid-template-columns: 320px 1fr;
   gap: 16px;
   min-height: 60vh;
+}
+.plan-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.plan-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .plan-panel {
   display: flex;
@@ -1178,6 +1218,11 @@ onMounted(loadPlans);
 .btn-mini {
   padding: 4px 10px;
   font-size: 12px;
+}
+.btn-danger {
+  background: #d14343;
+  border: 1px solid #d14343;
+  color: #fff;
 }
 .empty-panel {
   color: var(--text-secondary);

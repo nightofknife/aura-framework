@@ -20,9 +20,13 @@
 import asyncio
 import os
 import queue
+import shutil
+import subprocess
 import threading
 import time
 import uuid
+import json
+import re
 from asyncio import TaskGroup
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +37,7 @@ import yaml
 import sys
 
 from packages.aura_core.event_bus import EventBus, Event
+from packages.aura_core.dependency_manager import DependencyManager
 from packages.aura_core.state_store_service import StateStoreService
 from packages.aura_core.task_queue import TaskQueue, Tasklet
 from packages.aura_core.logger import logger
@@ -49,6 +54,7 @@ from packages.aura_core.config_loader import get_config_value
 if TYPE_CHECKING:
     from packages.aura_core.orchestrator import Orchestrator
 
+_MISSING = object()
 
 class HotReloadHandler(FileSystemEventHandler):
     """一个响应式的文件系统事件处理器，用于监控文件变动并触发相应的热重载。"""
@@ -98,11 +104,13 @@ class Scheduler:
         self._main_task: Optional[asyncio.Task] = None
         self._scheduler_thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._hot_reload_observer: Optional[Observer] = None
         self.num_event_workers = int(get_config_value("scheduler.num_event_workers", 1))
         self.startup_complete_event = threading.Event()
         self._pre_start_task_buffer: List[Tasklet] = []
         self.fallback_lock = threading.RLock()
         self.pause_event = asyncio.Event()
+        self.pause_event.set()
         self.id_generator = SnowflakeGenerator(
             instance=int(get_config_value("id_generator.instance_id", 1)),
             epoch=int(get_config_value("id_generator.epoch_ms", 1609459200000)),
@@ -130,6 +138,8 @@ class Scheduler:
         )
         self.scheduling_service = SchedulingService(self)
         self.interrupt_service = InterruptService(self)
+        from packages.aura_core.file_watcher_service import FileWatcherService
+        self.file_watcher_service = FileWatcherService(self.event_bus)
 
         # --- 运行/调度状态 ---
         self.run_statuses: Dict[str, Dict[str, Any]] = {}
@@ -150,6 +160,28 @@ class Scheduler:
         self._obs_ready: Dict[str, Dict[str, Any]] = {}
         self._obs_delayed: Dict[str, Dict[str, Any]] = {}
         self._obs_runs_by_trace: Dict[str, str] = {}
+        runs_dir_cfg = get_config_value("observability.runs.dir", str(self.base_path / "logs" / "runs"))
+        self.persist_runs = bool(get_config_value("observability.persist_runs", False))
+        self.run_history_dir = Path(runs_dir_cfg).resolve()
+
+        # --- 基础指标 ---
+        self.metrics: Dict[str, Any] = {
+            "tasks_started": 0,
+            "tasks_finished": 0,
+            "tasks_success": 0,
+            "tasks_error": 0,
+            "tasks_failed": 0,
+            "tasks_timeout": 0,
+            "tasks_cancelled": 0,
+            "tasks_running": 0,
+            "nodes_total": 0,
+            "nodes_succeeded": 0,
+            "nodes_failed": 0,
+            "nodes_duration_ms_sum": 0.0,
+            "nodes_duration_ms_avg": 0.0,
+            "updated_at": time.time(),
+        }
+
 
         # --- 初始化流程 ---
         logger.setup(
@@ -197,6 +229,86 @@ class Scheduler:
             n, r = divmod(n, 36)
             out.append(chars[r])
         return "".join(reversed(out))
+
+    def _collect_requirement_names(self, req_file: Path, dep_mgr: DependencyManager) -> set[str]:
+        """读取 requirements 文件中的包名集合（小写），忽略无效行。"""
+        if not req_file.is_file():
+            return set()
+        try:
+            requirements = dep_mgr._read_requirements(req_file)
+        except Exception:
+            return set()
+        names: set[str] = set()
+        for req in requirements:
+            name = getattr(req, "name", None)
+            if name:
+                names.add(name.lower())
+        return names
+
+    def delete_plan(self, plan_name: str, *, dry_run: bool = False, backup: bool = True, force: bool = False) -> Dict[str, Any]:
+        """删除方案：卸载独有依赖（相对其他方案与全局requirements），备份后删除目录并重载计划。"""
+        plan_dir = (self.base_path / "plans" / plan_name).resolve()
+        plans_root = (self.base_path / "plans").resolve()
+        if not plan_dir.is_dir() or plans_root not in plan_dir.parents:
+            return {"status": "error", "message": f"Plan '{plan_name}' not found."}
+
+        dep_mgr = DependencyManager(self.base_path)
+        req_name = dep_mgr._requirements_file_name()
+
+        target_requirements = self._collect_requirement_names(plan_dir / req_name, dep_mgr)
+
+        other_requirements: set[str] = set()
+        # 其他方案
+        for child in plans_root.iterdir():
+            if child.is_dir() and child.name != plan_name:
+                other_requirements |= self._collect_requirement_names(child / req_name, dep_mgr)
+
+        # 全局 requirements.txt 作为基础框架依赖
+        other_requirements |= self._collect_requirement_names(self.base_path / "requirements.txt", dep_mgr)
+
+        unique_packages = sorted(target_requirements - other_requirements)
+
+        uninstall_output = ""
+        if unique_packages and not dry_run:
+            cmd = [sys.executable, "-m", "pip", "uninstall", "-y", *unique_packages]
+            try:
+                logger.info("Uninstalling unique dependencies for plan '%s': %s", plan_name, ", ".join(unique_packages))
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                uninstall_output = (result.stdout or "") + (result.stderr or "")
+                if result.returncode != 0 and not force:
+                    return {
+                        "status": "error",
+                        "message": f"Failed to uninstall dependencies (code {result.returncode}).",
+                        "uninstall_output": uninstall_output,
+                        "packages": unique_packages,
+                    }
+            except Exception as exc:
+                if not force:
+                    return {"status": "error", "message": f"Uninstall failed: {exc}", "packages": unique_packages}
+                uninstall_output = str(exc)
+
+        backup_path = None
+        if backup and not dry_run:
+            backup_root = self.base_path / "backups"
+            backup_root.mkdir(exist_ok=True)
+            backup_path = backup_root / f"{plan_name}-{int(time.time())}"
+            shutil.copytree(plan_dir, backup_path)
+
+        if not dry_run:
+            shutil.rmtree(plan_dir, ignore_errors=False)
+            try:
+                self.reload_plans()
+            except Exception as exc:
+                return {"status": "error", "message": f"Plan removed but reload failed: {exc}", "backup_path": str(backup_path) if backup_path else None}
+
+        return {
+            "status": "success",
+            "message": f"Plan '{plan_name}' removed" + (" (dry-run)" if dry_run else ""),
+            "packages_uninstalled": unique_packages,
+            "backup_path": str(backup_path) if backup_path else None,
+            "dry_run": dry_run,
+            "uninstall_output": uninstall_output,
+        }
 
     def _short_cid_suffix(self, cid: Optional[str]) -> str:
         if not cid:
@@ -331,6 +443,11 @@ class Scheduler:
                                            fqid='core/scheduling_service')
         service_registry.register_instance('interrupt_service', self.interrupt_service, public=False,
                                            fqid='core/interrupt_service')
+        service_registry.register_instance('file_watcher_service', self.file_watcher_service, public=False,
+                                           fqid='core/file_watcher_service')
+
+        # 手动注入 EventBus 到 StateStore
+        self.state_store.set_event_bus(self.event_bus)
 
     def reload_plans(self):
         """重新加载所有 Plan 和相关配置。"""
@@ -521,12 +638,14 @@ class Scheduler:
                     tg.create_task(self._event_worker_loop(i + 1))
                 tg.create_task(self.scheduling_service.run())
                 tg.create_task(self.interrupt_service.run())
+                self.file_watcher_service.start()
                 logger.info("所有核心后台服务已启动，向主线程发出信号。")
                 self.startup_complete_event.set()
         except asyncio.CancelledError:
             logger.info("调度器主任务被取消，正在优雅关闭...")
         finally:
             self.is_running.clear()
+            self.file_watcher_service.stop()
             self._loop = None
             self._main_task = None
             logger.info("调度器主循环 (Commander) 已安全退出。")
@@ -558,6 +677,9 @@ class Scheduler:
 
                 tasklet = await self.task_queue.get()
                 self._ensure_tasklet_identifiers(tasklet)
+                dequeued_at = time.time()
+                queued_at = getattr(tasklet, "enqueued_at", None) or dequeued_at
+                queue_wait_ms = max(0.0, (dequeued_at - queued_at) * 1000)
 
                 try:
                     payload = {}
@@ -578,7 +700,8 @@ class Scheduler:
                         "source": tasklet.source,
                         "plan_name": plan_name,
                         "task_name": task_name,
-                        "start_time": time.time(),
+                        "start_time": dequeued_at,
+                        "queue_wait_ms": queue_wait_ms,
                     })
                     await self.event_bus.publish(Event(name="queue.dequeued", payload=payload))
                 except Exception:
@@ -596,6 +719,8 @@ class Scheduler:
                     "source": tasklet.source,
                     "trace_id": tasklet.trace_id,
                     "trace_label": tasklet.trace_label,
+                    "dequeued_at": dequeued_at,
+                    "queued_at": queued_at,
                 }
 
                 def _cleanup(_fut: asyncio.Task):
@@ -605,12 +730,36 @@ class Scheduler:
                             logger.debug(f"[_consume_main_task_queue] ???????????? running_tasks ?????????key={key}")
                         else:
                             logger.warning(f"[_consume_main_task_queue] ???????????????????????? key={key}")
-                        self._running_task_meta.pop(key, None)
                     finally:
                         try:
                             self.task_queue.task_done()
                         except Exception:
                             pass
+                        try:
+                            end_ts = time.time()
+                            meta = self._running_task_meta.pop(key, {})
+                            start_ts = meta.get("dequeued_at") or end_ts
+                            q_at = meta.get("queued_at") or start_ts
+                            exec_ms = max(0.0, (end_ts - start_ts) * 1000)
+                            q_wait = max(0.0, (start_ts - q_at) * 1000)
+                            evt_payload = {
+                                "cid": key,
+                                "trace_id": meta.get("trace_id"),
+                                "trace_label": meta.get("trace_label"),
+                                "plan_name": meta.get("plan_name"),
+                                "task_name": meta.get("task_name"),
+                                "source": meta.get("source"),
+                                "dequeued_at": start_ts,
+                                "completed_at": end_ts,
+                                "queue_wait_ms": q_wait,
+                                "exec_ms": exec_ms,
+                            }
+                            try:
+                                asyncio.create_task(self.event_bus.publish(Event(name="queue.completed", payload=evt_payload)))
+                            except Exception:
+                                pass
+                        except Exception:
+                            logger.debug("queue.completed emit failed", exc_info=True)
 
                 submit_task.add_done_callback(_cleanup)
 
@@ -748,6 +897,9 @@ class Scheduler:
                                 task_definition.setdefault('execution_mode', 'sync')
                                 full_task_id = f"{plan_name}/{base_id}/{task_key}".replace("//", "/")
                                 self.all_tasks_definitions[full_task_id] = task_definition
+                                if task_key == Path(base_id).name:
+                                    alias_id = f"{plan_name}/{base_id}".replace("//", "/")
+                                    self.all_tasks_definitions.setdefault(alias_id, task_definition)
 
                     if 'steps' in data:
                         task_name_from_file = task_file_path.relative_to(tasks_dir).with_suffix('').as_posix()
@@ -763,43 +915,375 @@ class Scheduler:
         logger.info(f"任务定义加载完毕，共找到 {len(self.all_tasks_definitions)} 个任务。")
 
     async def _subscribe_event_triggers(self):
-        """(私有) 订阅所有任务定义中声明的事件触发器。"""
-        logger.info("--- 订阅事件触发器 ---")
+        """(私有) 订阅所有调度规则中的事件类触发器。"""
+        logger.info("--- 订阅调度触发器 ---")
+
         async with self.get_async_lock():
             subscribed_count = 0
-            for task_id, task_data in self.all_tasks_definitions.items():
-                triggers = task_data.get('triggers')
-                if not isinstance(triggers, list):
+            schedule_items = list(self.schedule_items)
+
+        for item in schedule_items:
+            plan_name = item.get('plan_name')
+            triggers = item.get('triggers') or []
+            if not plan_name or not isinstance(triggers, list):
+                continue
+            for idx, trigger in enumerate(triggers):
+                if not isinstance(trigger, dict):
                     continue
-                for trigger in triggers:
-                    if not isinstance(trigger, dict) or 'event' not in trigger:
+                trigger_type = trigger.get('type')
+                if trigger_type == 'cron':
+                    continue
+                if trigger_type == 'variable':
+                    key = trigger.get('key')
+                    target_value = trigger.get('value')
+                    operator = trigger.get('operator', 'eq')
+                    if key:
+                        async def var_handler(event, sched_item=item, k=key, v=target_value, op=operator):
+                            if event.payload.get('key') == k:
+                                current_val = event.payload.get('new_value')
+                                match = False
+                                if v is None:
+                                    match = True
+                                elif op == 'eq' and str(current_val) == str(v):
+                                    match = True
+                                elif op == 'neq' and str(current_val) != str(v):
+                                    match = True
+                                if match:
+                                    await self._enqueue_schedule_item(
+                                        sched_item,
+                                        source="schedule_trigger",
+                                        triggering_event=event
+                                    )
+
+                        await self.event_bus.subscribe('state.changed', var_handler)
+                        subscribed_count += 1
+                elif trigger_type == 'task':
+                    target_task = trigger.get('task')
+                    target_status = trigger.get('status', 'completed')
+                    if target_task and target_status == 'completed':
+                        target_full = f"{plan_name}/{target_task}"
+
+                        async def task_handler(event, sched_item=item, target=target_full):
+                            completed_task = f"{event.payload.get('plan_name')}/{event.payload.get('task_name')}"
+                            if completed_task == target:
+                                await self._enqueue_schedule_item(
+                                    sched_item,
+                                    source="schedule_trigger",
+                                    triggering_event=event
+                                )
+
+                        await self.event_bus.subscribe('queue.completed', task_handler)
+                        subscribed_count += 1
+                elif trigger_type == 'file':
+                    path = trigger.get('path')
+                    pattern = trigger.get('pattern', '*')
+                    events = trigger.get('events')
+                    recursive = trigger.get('recursive', False)
+                    if path:
+                        watch_id = f"watch_{item.get('id', 'schedule')}_{idx}_{int(time.time())}"
+                        self.file_watcher_service.add_watch(watch_id, path, events, recursive)
+
+                        async def file_handler(event, sched_item=item, p=pattern, w_id=watch_id):
+                            if event.payload.get('watch_id') == w_id:
+                                import fnmatch
+                                file_name = Path(event.payload.get('path')).name
+                                if fnmatch.fnmatch(file_name, p):
+                                    await self._enqueue_schedule_item(
+                                        sched_item,
+                                        source="schedule_trigger",
+                                        triggering_event=event
+                                    )
+
+                        await self.event_bus.subscribe('file.changed', file_handler, channel='file_watcher')
+                        subscribed_count += 1
+                elif trigger_type == 'event':
+                    event_pattern = trigger.get('event')
+                    if not event_pattern:
                         continue
-                    event_pattern = trigger['event']
-                    plan_name = task_id.split('/')[0]
-                    plugin_def = next((p for p in self.plan_manager.plugin_manager.plugin_registry.values() if
-                                       p.path.name == plan_name), None)
+                    plugin_def = next(
+                        (p for p in self.plan_manager.plugin_manager.plugin_registry.values()
+                         if p.path.name == plan_name),
+                        None
+                    )
                     if not plugin_def:
                         continue
-                    channel = trigger.get('channel', plugin_def.canonical_id)
+                    channel = plugin_def.canonical_id
 
                     from functools import partial
-                    async def handler(event, task_id_to_run):
-                        await self._handle_event_triggered_task(event, task_id_to_run)
 
-                    callback = partial(handler, task_id_to_run=task_id)
-                    callback.__name__ = f"event_trigger_for_{task_id.replace('/', '_')}"
+                    async def handler(event, sched_item):
+                        await self._enqueue_schedule_item(
+                            sched_item,
+                            source="schedule_trigger",
+                            triggering_event=event
+                        )
+
+                    callback = partial(handler, sched_item=item)
+                    callback.__name__ = f"schedule_event_trigger_for_{item.get('id', 'schedule')}"
                     await self.event_bus.subscribe(event_pattern, callback, channel=channel)
                     subscribed_count += 1
-        logger.info(f"事件触发器订阅完成，共 {subscribed_count} 个订阅。")
 
-    async def _handle_event_triggered_task(self, event: Event, task_id: str):
-        """(私有) 当事件触发任务时，创建 Tasklet 并放入事件任务队列。"""
-        logger.info(f"事件 '{event.name}' (频道: {event.channel}) 触发了任务 '{task_id}'")
-        task_def = self.all_tasks_definitions.get(task_id, {})
-        tasklet = Tasklet(task_name=task_id, triggering_event=event,
-                          execution_mode=task_def.get('execution_mode', 'sync'))
-        self._ensure_tasklet_identifiers(tasklet, source="event")
-        await self.event_task_queue.put(tasklet)
+        if subscribed_count:
+            logger.info(f"--- 已订阅 {subscribed_count} 个调度触发器 ---")
+
+    async def _enqueue_schedule_item(self, item: Dict[str, Any], *, source: str,
+                                     triggering_event: Optional[Event] = None) -> bool:
+        """(私有) 将一个调度项放入主任务队列。"""
+        plan_name = item.get('plan_name')
+        task_name = item.get('task')
+        item_id = item.get('id')
+        if not plan_name or not task_name or not item_id:
+            return False
+        if not item.get('enabled', False):
+            return False
+
+        now = datetime.now()
+        async with self.get_async_lock():
+            status = self.run_statuses.get(item_id, {})
+            if status.get('status') in ('queued', 'running'):
+                return False
+            cooldown = item.get('run_options', {}).get('cooldown', 0)
+            last_run = status.get('last_run')
+            if last_run and (now - last_run).total_seconds() < cooldown:
+                return False
+            self.run_statuses.setdefault(item_id, {}).update({
+                'status': 'queued',
+                'queued_at': now
+            })
+
+        full_task_id = f"{plan_name}/{task_name}"
+        task_def = self.all_tasks_definitions.get(full_task_id, {})
+        provided_inputs = item.get('inputs') if isinstance(item, dict) else None
+        if not isinstance(provided_inputs, dict):
+            provided_inputs = {}
+        inputs_meta = (task_def.get('meta', {}) or {}).get('inputs', [])
+        initial_context = provided_inputs
+        if isinstance(inputs_meta, list):
+            ok, validated_inputs = self._validate_inputs_against_meta(inputs_meta, provided_inputs)
+            if not ok:
+                logger.error(f"Schedule '{item_id}' inputs invalid: {validated_inputs}")
+                return False
+            initial_context = validated_inputs
+
+        payload = dict(item)
+        if isinstance(initial_context, dict):
+            payload['inputs'] = initial_context
+        tasklet = Tasklet(
+            task_name=full_task_id,
+            payload=payload,
+            triggering_event=triggering_event,
+            initial_context=initial_context,
+            execution_mode=task_def.get('execution_mode', 'sync')
+        )
+        self._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=task_name, source=source)
+        await self.task_queue.put(tasklet)
+        return True
+
+    def _infer_enum_type(self, enum_vals: Any) -> Optional[str]:
+        if not isinstance(enum_vals, list) or not enum_vals:
+            return None
+        kinds = set()
+        for val in enum_vals:
+            if isinstance(val, bool):
+                kinds.add("boolean")
+            elif isinstance(val, (int, float)):
+                kinds.add("number")
+            elif isinstance(val, str):
+                kinds.add("string")
+            else:
+                return None
+        return kinds.pop() if len(kinds) == 1 else None
+
+    def _normalize_input_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """规范化 meta.inputs 字段定义，支持 list<type>/dict/enum 等写法。"""
+        if not isinstance(schema, dict):
+            return {"type": "string"}
+        normalized = dict(schema)
+        enum_vals = normalized.get("enum")
+        if enum_vals is None and "options" in normalized:
+            enum_vals = normalized.get("options")
+        if enum_vals is not None:
+            normalized["enum"] = enum_vals or []
+
+        type_raw = normalized.get("type")
+        if type_raw is None or type_raw == "":
+            type_raw = self._infer_enum_type(normalized.get("enum")) or "string"
+        else:
+            type_raw = str(type_raw).lower()
+        if type_raw == "enum":
+            type_raw = self._infer_enum_type(normalized.get("enum")) or "string"
+
+        list_match = re.match(r"^list<(.+)>$", type_raw)
+        if list_match:
+            normalized["type"] = "list"
+            item_schema = normalized.get("item") or normalized.get("items") or {"type": list_match.group(1)}
+            normalized["item"] = self._normalize_input_schema(item_schema)
+        else:
+            if type_raw in {"array"}:
+                type_raw = "list"
+            elif type_raw in {"object"}:
+                type_raw = "dict"
+            allowed = {"string", "number", "boolean", "list", "dict"}
+            normalized["type"] = type_raw if type_raw in allowed else "string"
+            if normalized["type"] == "list":
+                item_schema = normalized.get("item") or normalized.get("items")
+                if item_schema is not None:
+                    normalized["item"] = self._normalize_input_schema(item_schema)
+            if normalized["type"] == "dict":
+                props = {}
+                for k, v in (normalized.get("properties") or {}).items():
+                    if isinstance(v, dict):
+                        props[k] = self._normalize_input_schema(v)
+                normalized["properties"] = props
+        return normalized
+
+    def _build_default_from_schema(self, schema: Dict[str, Any]):
+        """递归构造默认值（若有），用于填充缺失字段。"""
+        schema_n = self._normalize_input_schema(schema or {})
+        if "default" in schema_n:
+            try:
+                return json.loads(json.dumps(schema_n.get("default")))
+            except Exception:
+                return schema_n.get("default")
+        enum_vals = schema_n.get("enum") or []
+        if enum_vals:
+            try:
+                return json.loads(json.dumps(enum_vals[0]))
+            except Exception:
+                return enum_vals[0]
+        t = schema_n.get("type")
+        if t == "list":
+            if isinstance(schema_n.get("default"), list):
+                try:
+                    return json.loads(json.dumps(schema_n.get("default")))
+                except Exception:
+                    return list(schema_n.get("default"))
+            return []
+        if t == "dict":
+            if isinstance(schema_n.get("default"), dict):
+                try:
+                    return json.loads(json.dumps(schema_n.get("default")))
+                except Exception:
+                    return dict(schema_n.get("default"))
+            result = {}
+            for k, v in (schema_n.get("properties") or {}).items():
+                child_default = self._build_default_from_schema(v)
+                if child_default is not None:
+                    result[k] = child_default
+            return result
+        if t == "boolean":
+            return False
+        if t == "number":
+            return 0
+        return ""
+
+    def _validate_input_value(self, schema: Dict[str, Any], value: Any, path: str):
+        """递归校验单个字段值，返回 (ok, normalized_value, error_message)。"""
+        s = self._normalize_input_schema(schema or {})
+        required = bool(s.get("required"))
+        has_default = "default" in s
+        if value is _MISSING or value is None:
+            if value is None and not required and not has_default:
+                return True, None, None
+            if has_default:
+                return True, self._build_default_from_schema(s), None
+            if required:
+                return False, None, f"Missing required input: {path}"
+            return True, None, None
+
+        t = s.get("type", "string")
+        if t == "string":
+            val = str(value)
+        elif t == "number":
+            try:
+                if isinstance(value, bool):
+                    val = 1 if value else 0
+                elif isinstance(value, (int, float)):
+                    val = value
+                else:
+                    val = float(value)
+            except Exception:
+                return False, None, f"Input '{path}' must be a number."
+            if "min" in s and val < s["min"]:
+                return False, None, f"Input '{path}' must be >= {s['min']}."
+            if "max" in s and val > s["max"]:
+                return False, None, f"Input '{path}' must be <= {s['max']}."
+        elif t == "boolean":
+            if isinstance(value, bool):
+                val = value
+            elif isinstance(value, str):
+                low = value.lower()
+                if low in {"true", "1", "yes", "y"}:
+                    val = True
+                elif low in {"false", "0", "no", "n"}:
+                    val = False
+                else:
+                    return False, None, f"Input '{path}' must be a boolean."
+            else:
+                val = bool(value)
+        elif t == "list":
+            if not isinstance(value, list):
+                return False, None, f"Input '{path}' must be a list."
+            min_items = s.get("min_items") if s.get("min_items") is not None else s.get("minItems")
+            max_items = s.get("max_items") if s.get("max_items") is not None else s.get("maxItems")
+            if min_items is not None and len(value) < min_items:
+                return False, None, f"Input '{path}' must contain at least {min_items} items."
+            if max_items is not None and len(value) > max_items:
+                return False, None, f"Input '{path}' must contain no more than {max_items} items."
+            item_schema = s.get("item") or s.get("items") or {}
+            validated_list = []
+            for idx, item in enumerate(value):
+                ok, v, err = self._validate_input_value(item_schema, item, f"{path}[{idx}]")
+                if not ok:
+                    return False, None, err
+                validated_list.append(v)
+            val = validated_list
+        elif t == "dict":
+            if not isinstance(value, dict):
+                return False, None, f"Input '{path}' must be an object."
+            properties = s.get("properties") or {}
+            extra = set(value.keys()) - set(properties.keys())
+            if extra:
+                return False, None, f"Input '{path}' has unexpected fields: {', '.join(sorted(extra))}."
+            validated = {}
+            for key, subschema in properties.items():
+                ok, v, err = self._validate_input_value(subschema, value.get(key, _MISSING), f"{path}.{key}")
+                if not ok:
+                    return False, None, err
+                if v is not None or "default" in subschema or subschema.get("required"):
+                    validated[key] = v
+            val = validated
+        else:
+            val = value
+        allowed = s.get("enum")
+        if allowed is not None:
+            allowed = allowed or []
+            if val not in allowed:
+                return False, None, f"Input '{path}' must be one of {allowed}."
+        return True, val, None
+
+    def _validate_inputs_against_meta(self, inputs_meta: List[Dict[str, Any]], provided_inputs: Dict[str, Any]):
+        """基于 meta.inputs 递归校验/填充用户输入。"""
+        if not isinstance(inputs_meta, list):
+            return False, "Task meta.inputs must be a list."
+        provided_inputs = provided_inputs or {}
+        if not isinstance(provided_inputs, dict):
+            return False, "Inputs must be an object/dict."
+        expected_names = [item.get("name") for item in inputs_meta if isinstance(item, dict) and item.get("name")]
+        extra = set(provided_inputs.keys()) - set(expected_names)
+        if extra:
+            return False, f"Unexpected inputs provided: {', '.join(extra)}"
+        full_params = {}
+        for item in inputs_meta:
+            if not isinstance(item, dict) or "name" not in item:
+                continue
+            name = item["name"]
+            ok, val, err = self._validate_input_value(item, provided_inputs.get(name, _MISSING), name)
+            if not ok:
+                return False, err
+            if val is not None or "default" in item or item.get("required"):
+                full_params[name] = val
+        return True, full_params
 
     def _load_schedule_file(self, plan_dir: Path, plan_name: str):
         """(私有) 从 Plan 的 `schedule.yaml` 文件中加载计划任务项。"""
@@ -807,11 +1291,28 @@ class Scheduler:
         if schedule_path.exists():
             try:
                 with open(schedule_path, 'r', encoding='utf-8') as f:
-                    for item in yaml.safe_load(f) or []:
-                        item['plan_name'] = plan_name
-                        self.schedule_items.append(item)
-                        if 'id' in item:
-                            self.run_statuses.setdefault(item['id'], {'status': 'idle'})
+                    data = yaml.safe_load(f) or {}
+                if not isinstance(data, dict):
+                    logger.error(f"Schedule file '{schedule_path}' should define a mapping with 'schedules'.")
+                    return
+                items = data.get('schedules', [])
+                if not isinstance(items, list):
+                    logger.error(f"Schedule file '{schedule_path}' has invalid 'schedules' format.")
+                    return
+                for idx, item in enumerate(items):
+                    if not isinstance(item, dict):
+                        continue
+                    task_name = item.get('task')
+                    if not task_name:
+                        logger.warning(f"Schedule item missing task in '{schedule_path}'.")
+                        continue
+                    item = dict(item)
+                    item['plan_name'] = plan_name
+                    item.setdefault('triggers', [])
+                    item_id = item.get('id') or f"{plan_name}:{task_name}:{idx}"
+                    item['id'] = item_id
+                    self.schedule_items.append(item)
+                    self.run_statuses.setdefault(item_id, {'status': 'idle'})
             except Exception as e:
                 logger.error(f"加载调度文件 '{schedule_path}' 失败: {e}")
 
@@ -862,9 +1363,9 @@ class Scheduler:
             return {"status": "error", "message": f"Task id '{task_id}' not found in schedule."}
 
         plan_name = schedule_item.get("plan_name")
-        task_name = schedule_item.get("task_name")
+        task_name = schedule_item.get("task")
         if not plan_name or not task_name:
-            return {"status": "error", "message": "Schedule item missing plan_name/task_name."}
+            return {"status": "error", "message": "Schedule item missing plan_name/task."}
 
         full_task_id = f"{plan_name}/{task_name}"
 
@@ -970,34 +1471,9 @@ class Scheduler:
                     return {"status": "error", "message": f"Task '{task_name}' not found in plan '{plan_name}'."}
 
                 inputs_meta = task_def.get('meta', {}).get('inputs', [])
-                if not isinstance(inputs_meta, list):
-                    msg = f"Task '{full_task_id}' has malformed meta.inputs (must be a list)."
-                    logger.error(msg)
-                    return {"status": "error", "message": msg}
-
-                expected_input_names = {item['name'] for item in inputs_meta
-                                        if isinstance(item, dict) and 'name' in item}
-                extra_params = set(params.keys()) - expected_input_names
-                if extra_params:
-                    msg = f"Unexpected inputs provided for task '{full_task_id}': {', '.join(extra_params)}"
-                    logger.warning(msg)
-                    return {"status": "error", "message": msg}
-
-                full_params = {}
-                for item in inputs_meta:
-                    if not isinstance(item, dict) or 'name' not in item:
-                        continue
-                    name = item['name']
-                    if name in params:
-                        full_params[name] = params[name]
-                    elif 'default' in item:
-                        full_params[name] = item['default']
-
-                required_inputs = {item['name'] for item in inputs_meta
-                                   if isinstance(item, dict) and 'name' in item and 'default' not in item}
-                missing_params = required_inputs - set(full_params.keys())
-                if missing_params:
-                    msg = f"Missing required inputs for task '{full_task_id}': {', '.join(missing_params)}"
+                ok, validated_inputs = self._validate_inputs_against_meta(inputs_meta, params)
+                if not ok:
+                    msg = f"Task '{full_task_id}' inputs invalid: {validated_inputs}"
                     logger.error(msg)
                     return {"status": "error", "message": msg}
 
@@ -1007,7 +1483,7 @@ class Scheduler:
                     is_ad_hoc=True,
                     payload={'plan_name': plan_name, 'task_name': task_name},
                     execution_mode=task_def.get('execution_mode', 'sync'),
-                    initial_context=full_params
+                    initial_context=validated_inputs
                 )
                 self._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=task_name, source="manual")
 
@@ -1049,13 +1525,17 @@ class Scheduler:
                 logger.info(f"调度器未运行，临时任务 '{plan_name}/{task_name}' 已加入启动前缓冲区。")
                 full_task_id = f"{plan_name}/{task_name}"
                 task_def = self.all_tasks_definitions.get(full_task_id, {})
+                inputs_meta = task_def.get('meta', {}).get('inputs', [])
+                ok, validated_inputs = self._validate_inputs_against_meta(inputs_meta, params or {})
+                if not ok:
+                    return {"status": "error", "message": f"Task '{full_task_id}' inputs invalid: {validated_inputs}"}
                 tasklet = Tasklet(
                     task_name=full_task_id,
                     cid=canonical_id,
                     is_ad_hoc=True,
                     payload={'plan_name': plan_name, 'task_name': task_name},
                     execution_mode=task_def.get('execution_mode', 'sync'),
-                    initial_context=params or {}
+                    initial_context=validated_inputs
                 )
                 self._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=task_name, source="manual")
                 self._pre_start_task_buffer.append(tasklet)
@@ -1104,6 +1584,53 @@ class Scheduler:
         """获取对 Action 注册表的只读访问。"""
         return ACTION_REGISTRY
 
+    def _update_metrics_from_event(self, name: str, payload: Dict[str, Any]) -> bool:
+        """????/??/????????????????????"""
+        changed = False
+        m = self.metrics
+        now = time.time()
+        if name == 'task.started':
+            m["tasks_started"] += 1
+            m["tasks_running"] = max(0, m.get("tasks_running", 0)) + 1
+            changed = True
+        elif name == 'task.finished':
+            m["tasks_finished"] += 1
+            m["tasks_running"] = max(0, m.get("tasks_running", 0) - 1)
+            status = (payload.get('final_status') or payload.get('status') or '').lower()
+            if status == 'success':
+                m["tasks_success"] += 1
+            elif status == 'error':
+                m["tasks_error"] += 1
+            elif status == 'failed':
+                m["tasks_failed"] += 1
+            elif status == 'timeout':
+                m["tasks_timeout"] += 1
+            elif status == 'cancelled':
+                m["tasks_cancelled"] += 1
+            changed = True
+        elif name in ('node.finished', 'node.failed'):
+            m["nodes_total"] += 1
+            duration_ms = payload.get("duration_ms")
+            if duration_ms is not None:
+                try:
+                    dur_val = float(duration_ms)
+                    m["nodes_duration_ms_sum"] = m.get("nodes_duration_ms_sum", 0.0) + dur_val
+                    if m["nodes_total"] > 0:
+                        m["nodes_duration_ms_avg"] = m["nodes_duration_ms_sum"] / max(1, m["nodes_total"])
+                except Exception:
+                    pass
+            status = (payload.get("status") or payload.get("final_status") or '').lower()
+            if status == 'success':
+                m["nodes_succeeded"] += 1
+            elif status in ('error', 'failed'):
+                m["nodes_failed"] += 1
+            changed = True
+        elif name.startswith('queue.'):
+            changed = True
+        if changed:
+            m["updated_at"] = now
+        return changed
+
     async def _mirror_event_to_ui_queue(self, event: Event):
         """(私有) 将事件总线中的事件镜像到一个同步队列，供 UI 使用。"""
         if self.ui_event_queue:
@@ -1120,6 +1647,7 @@ class Scheduler:
         trace_id = p.get('trace_id')
         trace_label = p.get('trace_label')
         source = p.get('source')
+        parent_cid = p.get('parent_cid')
 
         if trace_id and cid:
             self._obs_runs_by_trace.setdefault(trace_id, cid)
@@ -1127,6 +1655,9 @@ class Scheduler:
         if not cid:
             return
 
+        run_snapshot = None
+        metrics_changed = False
+        persist_event = False
         async with self.get_async_lock():
             if name == 'task.started':
                 run = self._obs_runs.setdefault(cid, {
@@ -1134,13 +1665,15 @@ class Scheduler:
                     'trace_id': trace_id,
                     'trace_label': trace_label,
                     'source': source,
-                    'parent_cid': p.get('parent_cid'),
+                    'parent_cid': parent_cid,
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'started_at': int((p.get('start_time') or 0) * 1000) if p.get('start_time') and p.get('start_time') < 1e12 else int(p.get('start_time') or 0),
                     'finished_at': None,
                     'status': 'running',
-                    'nodes': []
+                    'nodes': [],
+                    'queue_wait_ms': p.get('queue_wait_ms'),
+                    'dequeued_at': p.get('start_time'),
                 })
                 if trace_id:
                     run['trace_id'] = trace_id
@@ -1148,9 +1681,15 @@ class Scheduler:
                     run['trace_label'] = trace_label
                 if source:
                     run['source'] = source
-                if p.get('parent_cid') is not None:
-                    run['parent_cid'] = p.get('parent_cid')
+                if parent_cid is not None:
+                    run['parent_cid'] = parent_cid
+                if p.get('queue_wait_ms') is not None:
+                    run['queue_wait_ms'] = p.get('queue_wait_ms')
                 self._obs_ready.pop(cid, None)
+
+                persist_event = True
+                run_snapshot = run
+                metrics_changed = metrics_changed or self._update_metrics_from_event(name, p)
 
             elif name == 'task.finished':
                 run = self._obs_runs.setdefault(cid, {
@@ -1158,7 +1697,7 @@ class Scheduler:
                     'trace_id': trace_id,
                     'trace_label': trace_label,
                     'source': source,
-                    'parent_cid': p.get('parent_cid'),
+                    'parent_cid': parent_cid,
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'started_at': None,
@@ -1170,14 +1709,26 @@ class Scheduler:
                 run['finished_at'] = end_ms or run.get('finished_at')
                 status = (p.get('final_status') or 'unknown').lower()
                 run['status'] = 'success' if status == 'success' else ('error' if status == 'error' else status)
+                if run.get('started_at') and end_ms:
+                    run['duration_ms'] = max(0, end_ms - int(run.get('started_at') or 0))
+                if p.get('duration') is not None:
+                    run['duration_ms'] = int(float(p.get('duration')) * 1000)
                 if trace_id:
                     run['trace_id'] = trace_id
                 if trace_label:
                     run['trace_label'] = trace_label
                 if source:
                     run['source'] = source
-                if p.get('parent_cid') is not None:
-                    run['parent_cid'] = p.get('parent_cid')
+                if parent_cid is not None:
+                    run['parent_cid'] = parent_cid
+                if p.get('queue_wait_ms') is not None:
+                    run['queue_wait_ms'] = p.get('queue_wait_ms')
+                if p.get('duration_ms') is not None:
+                    run['duration_ms'] = int(p.get('duration_ms') or 0)
+
+                persist_event = True
+                run_snapshot = run
+                metrics_changed = metrics_changed or self._update_metrics_from_event(name, p)
 
             elif name == 'node.started':
                 run = self._obs_runs.setdefault(cid, {
@@ -1185,7 +1736,7 @@ class Scheduler:
                     'trace_id': trace_id,
                     'trace_label': trace_label,
                     'source': source,
-                    'parent_cid': p.get('parent_cid'),
+                    'parent_cid': parent_cid,
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'started_at': None, 'finished_at': None, 'status': 'running', 'nodes': []
@@ -1194,11 +1745,20 @@ class Scheduler:
                 start_ms = int((p.get('start_time') or event.timestamp) * 1000) if (p.get('start_time') or event.timestamp) and (p.get('start_time') or event.timestamp) < 1e12 else int(p.get('start_time') or event.timestamp or 0)
                 nodes = run['nodes']
                 idx = next((i for i,n in enumerate(nodes) if n.get('node_id') == node_id), -1)
-                item = {'node_id': node_id, 'startMs': start_ms, 'endMs': None, 'status': 'running'}
+                item = {
+                    'node_id': node_id,
+                    'node_name': p.get('node_name'),
+                    'startMs': start_ms,
+                    'endMs': None,
+                    'status': 'running',
+                    'loop_index': p.get('loop_index', 0),
+                    'loop_item': p.get('loop_item')
+                }
                 if idx >= 0:
                     nodes[idx].update(item)
                 else:
                     nodes.append(item)
+                metrics_changed = metrics_changed or self._update_metrics_from_event(name, p)
 
             elif name in ('node.finished', 'node.failed'):
                 run = self._obs_runs.setdefault(cid, {
@@ -1206,7 +1766,7 @@ class Scheduler:
                     'trace_id': trace_id,
                     'trace_label': trace_label,
                     'source': source,
-                    'parent_cid': p.get('parent_cid'),
+                    'parent_cid': parent_cid,
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'started_at': None, 'finished_at': None, 'status': 'running', 'nodes': []
@@ -1217,17 +1777,66 @@ class Scheduler:
                 nodes = run['nodes']
                 idx = next((i for i,n in enumerate(nodes) if n.get('node_id') == node_id), -1)
                 if idx >= 0:
-                    nodes[idx].update({'endMs': end_ms, 'status': status})
+                    nodes[idx].update({
+                        'endMs': end_ms,
+                        'status': status,
+                        'duration_ms': p.get('duration_ms'),
+                        'retry_count': p.get('retry_count'),
+                        'exception_type': p.get('exception_type'),
+                        'exception_message': p.get('exception_message'),
+                        'loop_index': p.get('loop_index', nodes[idx].get('loop_index', 0)),
+                        'loop_item': p.get('loop_item', nodes[idx].get('loop_item'))
+                    })
                 else:
-                    nodes.append({'node_id': node_id, 'startMs': end_ms, 'endMs': end_ms, 'status': status})
+                    nodes.append({
+                        'node_id': node_id,
+                        'node_name': p.get('node_name'),
+                        'startMs': end_ms,
+                        'endMs': end_ms,
+                        'status': status,
+                        'duration_ms': p.get('duration_ms'),
+                        'retry_count': p.get('retry_count'),
+                        'exception_type': p.get('exception_type'),
+                        'exception_message': p.get('exception_message'),
+                        'loop_index': p.get('loop_index', 0),
+                        'loop_item': p.get('loop_item')
+                    })
+
+                run_snapshot = run
+                persist_event = True
+                metrics_changed = metrics_changed or self._update_metrics_from_event(name, p)
+
+            elif name == 'queue.completed':
+                run = self._obs_runs.setdefault(cid, {
+                    'cid': cid,
+                    'trace_id': trace_id,
+                    'trace_label': trace_label,
+                    'source': source,
+                    'parent_cid': parent_cid,
+                    'plan_name': p.get('plan_name'),
+                    'task_name': p.get('task_name'),
+                    'started_at': None, 'finished_at': None, 'status': 'running', 'nodes': []
+                })
+                if p.get('queue_wait_ms') is not None:
+                    run['queue_wait_ms'] = p.get('queue_wait_ms')
+                if p.get('exec_ms') is not None:
+                    run['exec_ms'] = p.get('exec_ms')
+                if p.get('dequeued_at'):
+                    run['dequeued_at'] = int(float(p.get('dequeued_at')) * 1000)
+                if p.get('completed_at'):
+                    run['completed_at'] = int(float(p.get('completed_at')) * 1000)
+
+                run_snapshot = run
+                metrics_changed = metrics_changed or self._update_metrics_from_event(name, p)
 
             elif name == 'queue.enqueued':
+
                 item = {
                     'cid': cid,
                     'trace_id': trace_id,
                     'trace_label': trace_label,
                     'source': source,
-                    'parent_cid': p.get('parent_cid'),
+                    'parent_cid': parent_cid,
                     'plan_name': p.get('plan_name'),
                     'task_name': p.get('task_name'),
                     'priority': p.get('priority'),
@@ -1239,18 +1848,30 @@ class Scheduler:
                 else:
                     self._obs_ready[cid] = item
 
+                metrics_changed = metrics_changed or self._update_metrics_from_event(name, p)
+
             elif name in ('queue.dequeued', 'task.started'):
                 self._obs_ready.pop(cid, None)
+                metrics_changed = metrics_changed or self._update_metrics_from_event(name, p)
 
             elif name == 'queue.promoted':
                 it = self._obs_delayed.pop(cid, None)
                 if it:
                     it['delay_until'] = None
                     self._obs_ready[cid] = it
+                metrics_changed = metrics_changed or self._update_metrics_from_event(name, p)
 
             elif name in ('queue.dropped',):
                 self._obs_ready.pop(cid, None)
                 self._obs_delayed.pop(cid, None)
+                metrics_changed = metrics_changed or self._update_metrics_from_event(name, p)
+
+        if persist_event and run_snapshot and self.persist_runs:
+            await self._persist_run_snapshot(cid, run_snapshot)
+        if metrics_changed:
+            snap = self.get_metrics_snapshot()
+            await self.event_bus.publish(Event(name="metrics.update", payload=snap))
+
 
     def get_queue_overview(self) -> Dict[str, Any]:
         """获取任务队列的概览信息。"""
@@ -1316,6 +1937,88 @@ class Scheduler:
             it['__key'] = it.get('trace_id') or it.get('cid') or f"{it.get('plan_name')}/{it.get('task_name')}:{it.get('enqueued_at') or it.get('delay_until')}"
         return {'items': items, 'next_cursor': None}
 
+    def get_metrics_snapshot(self) -> Dict[str, Any]:
+        """返回当前基础指标的拷贝（线程安全）。"""
+        with self.fallback_lock:
+            snap = dict(self.metrics)
+            snap["queue_ready"] = len(self._obs_ready)
+            snap["queue_delayed"] = len(self._obs_delayed)
+            snap["running_tasks"] = len(self.running_tasks)
+        return snap
+
+    async def _persist_run_snapshot(self, cid: str, run: Dict[str, Any]):
+        """将运行快照持久化到磁盘（可选开启）。"""
+        if not self.persist_runs:
+            return
+        if not cid or not run:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        try:
+            run_copy = json.loads(json.dumps(run, default=str))
+        except Exception:
+            run_copy = dict(run)
+        run_copy.setdefault("cid", cid)
+        run_copy.setdefault("trace_id", run_copy.get("trace_id"))
+        run_copy["persisted_at"] = int(time.time() * 1000)
+        target_path = self.run_history_dir / f"{cid}.json"
+
+        def _write():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(run_copy, f, ensure_ascii=False, indent=2)
+
+        try:
+            await loop.run_in_executor(None, _write)
+        except Exception as exc:
+            logger.error(f"Failed to persist run {cid}: {exc}", exc_info=True)
+
+    def list_persisted_runs(self, limit: int = 50, plan_name: Optional[str] = None,
+                            task_name: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """读取磁盘上已持久化的运行记录（按修改时间倒序，限制条数）。"""
+        if not self.persist_runs:
+            return []
+        if not self.run_history_dir.exists():
+            return []
+        try:
+            files = sorted(self.run_history_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except Exception:
+            return []
+
+        out: List[Dict[str, Any]] = []
+        status_lower = status.lower() if status else None
+        for path in files:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if plan_name and data.get("plan_name") != plan_name:
+                continue
+            if task_name and data.get("task_name") != task_name:
+                continue
+            if status_lower and (data.get("status") or data.get("final_status") or "").lower() != status_lower:
+                continue
+            data.setdefault("cid", path.stem)
+            out.append(data)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+
+    def get_persisted_run(self, cid: str) -> Dict[str, Any]:
+        """读取单个持久化运行记录。"""
+        if not self.persist_runs or not cid:
+            return {}
+        target = self.run_history_dir / f"{cid}.json"
+        if not target.is_file():
+            return {}
+        try:
+            return json.loads(target.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
     def get_run_timeline(self, cid_or_trace: str) -> Dict[str, Any]:
         """???????????????????????????"""
         with self.fallback_lock:
@@ -1334,6 +2037,9 @@ class Scheduler:
                 'task_name': run.get('task_name'),
                 'started_at': run.get('started_at'),
                 'finished_at': run.get('finished_at'),
+                'queue_wait_ms': run.get('queue_wait_ms'),
+                'duration_ms': run.get('duration_ms'),
+                'exec_ms': run.get('exec_ms'),
                 'status': run.get('status'),
                 'nodes': run.get('nodes') or []
             }
@@ -1602,33 +2308,37 @@ class Scheduler:
                 return {"status": "error", "message": f"A critical error occurred during reload: {e}"}
 
     def enable_hot_reload(self):
-        """启用文件系统监控以实现自动热重载。"""
+        """Enable file-system watch to hot reload plan/task files."""
         if not self._loop or not self._loop.is_running():
             return {"status": "error", "message": "Scheduler is not running, cannot enable hot reload."}
 
         if self._hot_reload_observer and self._hot_reload_observer.is_alive():
             return {"status": "already_enabled", "message": "Hot reloading is already active."}
 
-        logger.info("正在启用热重载功能...")
+        logger.info("Enabling hot reload watcher...")
         event_handler = HotReloadHandler(self)
         self._hot_reload_observer = Observer()
-        plans_path = str(self.base_path / 'plans')
+        plans_path = str(self.base_path / "plans")
         self._hot_reload_observer.schedule(event_handler, plans_path, recursive=True)
         self._hot_reload_observer.start()
-        logger.info(f"热重载已启动，正在监控目录: {plans_path}")
+        logger.info(f"Hot reload started; watching {plans_path}")
         return {"status": "enabled", "message": "Hot reloading has been enabled."}
 
     def disable_hot_reload(self):
-        """禁用文件系统监控。"""
+        """Disable file-system watch for hot reload."""
         if self._hot_reload_observer and self._hot_reload_observer.is_alive():
-            logger.info("正在禁用热重载功能...")
+            logger.info("Disabling hot reload watcher...")
             self._hot_reload_observer.stop()
             self._hot_reload_observer.join()
             self._hot_reload_observer = None
-            logger.info("热重载已禁用。")
+            logger.info("Hot reload watcher stopped.")
             return {"status": "disabled", "message": "Hot reloading has been disabled."}
 
         return {"status": "not_active", "message": "Hot reloading was not active."}
+
+    def is_hot_reload_enabled(self) -> bool:
+        """Return True if the hot reload watcher is running."""
+        return bool(self._hot_reload_observer and self._hot_reload_observer.is_alive())
 
     async def reload_task_file(self, file_path: Path):
         """热重载单个任务文件。"""

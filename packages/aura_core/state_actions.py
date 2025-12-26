@@ -5,6 +5,7 @@
 提供了一种标准化的方式来读取、写入和删除需要跨任务、跨会话持久化的数据。
 它们底层都依赖于 `StateStoreService` 服务。
 """
+import asyncio
 from typing import Any
 from pydantic import BaseModel, Field
 
@@ -76,3 +77,28 @@ async def state_delete(params: StateDeleteParams, state_store: StateStoreService
     """
     await state_store.delete(params.key)
     return True
+
+
+
+# ---- ?? demo action ----
+class EchoParams(BaseModel):
+    """???? action ??"""
+    message: Any = Field(..., description="??????")
+
+
+@register_action(name="sample.echo")
+async def sample_echo(params: EchoParams):
+    """???????????? demo?"""
+    return params.message
+
+
+class SleepParams(BaseModel):
+    """???? action ??"""
+    seconds: float = Field(..., description="?????????")
+
+
+@register_action(name="sample.sleep")
+async def sample_sleep(params: SleepParams):
+    """????????????"""
+    await asyncio.sleep(max(0.0, float(params.seconds)))
+    return {"slept": float(params.seconds)}

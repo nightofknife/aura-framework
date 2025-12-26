@@ -19,6 +19,7 @@ import queue
 import sys
 import time
 import asyncio
+from contextvars import ContextVar
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
@@ -59,6 +60,42 @@ def trace(self, message, *args, **kwargs):
 
 logging.Logger.trace = trace
 # --- TRACE 配置结束 ---
+
+
+# ?? CID ??????????
+_cid_context: ContextVar[str] = ContextVar("aura_cid", default="-")
+
+
+def set_cid(cid: Optional[str]):
+    """????????? CID ?????? token ????"""
+    return _cid_context.set(str(cid) if cid else "-")
+
+
+def reset_cid(token):
+    """????? CID ???"""
+    try:
+        _cid_context.reset(token)
+    except Exception:
+        pass
+
+
+def current_cid() -> str:
+    """????? CID ?"""
+    try:
+        return _cid_context.get()
+    except Exception:
+        return "-"
+
+
+class CIDLogFilter(logging.Filter):
+    """????????? cid ????? formatter ??? key"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.cid = current_cid()
+        except Exception:
+            record.cid = "-"
+        return True
 
 
 class AsyncioQueueHandler(logging.Handler):
@@ -139,13 +176,14 @@ class Logger:
             logger_obj = logging.getLogger("AuraFramework")
             logger_obj.setLevel(TRACE_LEVEL_NUM)
             logger_obj.propagate = False
+            logger_obj.addFilter(CIDLogFilter())
             # 默认创建一个控制台处理器，作为未调用 setup 时的后备
             if not any(h.name == "console" for h in logger_obj.handlers):
                 console_handler = logging.StreamHandler(sys.stdout)
                 console_handler.set_name("console")
                 console_handler.setLevel(logging.INFO)
                 console_formatter = logging.Formatter(
-                    '%(asctime)s - %(levelname)-8s - %(message)s',
+                    '%(asctime)s - %(levelname)-8s - [cid:%(cid)s] - %(message)s',
                     datefmt='%H:%M:%S'
                 )
                 console_handler.setFormatter(console_formatter)
@@ -193,13 +231,17 @@ class Logger:
             queue_handler = QueueLogHandler(ui_log_queue)
             queue_handler.set_name("ui_queue")
             queue_handler.setLevel(logging.DEBUG)
-            ui_formatter = logging.Formatter('%(asctime)s - %(levelname)-8s - %(message)s', datefmt='%H:%M:%S')
+            ui_formatter = logging.Formatter('%(asctime)s - %(levelname)-8s - [cid:%(cid)s] - %(message)s', datefmt='%H:%M:%S')
             queue_handler.setFormatter(ui_formatter)
             self.logger.addHandler(queue_handler)
 
         # --- API WebSocket 日志流处理器 ---
         if api_log_queue and not self._get_handler("api_queue"):
-            api_queue_handler = AsyncioQueueHandler(api_log_queue)
+            if isinstance(api_log_queue, queue.Queue):
+                api_queue_handler = QueueLogHandler(api_log_queue)
+                api_queue_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)-8s - [cid:%(cid)s] - %(message)s', datefmt='%H:%M:%S'))
+            else:
+                api_queue_handler = AsyncioQueueHandler(api_log_queue)
             api_queue_handler.set_name("api_queue")
             api_queue_handler.setLevel(logging.DEBUG)
             self.logger.addHandler(api_queue_handler)
@@ -224,7 +266,7 @@ class Logger:
             file_handler.set_name("task_file")
             file_handler.setLevel(logging.DEBUG)
             file_formatter = logging.Formatter(
-                '%(asctime)s - %(levelname)-8s - %(name)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s'
+                '%(asctime)s - %(levelname)-8s - [cid:%(cid)s] - %(name)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s'
             )
             file_handler.setFormatter(file_formatter)
             self.logger.addHandler(file_handler)
@@ -240,10 +282,14 @@ class Logger:
         """
         api_handler = self._get_handler("api_queue")
         if api_handler and isinstance(api_handler, AsyncioQueueHandler):
-            api_handler.log_queue = new_queue
+            api_handler.log_queue = new_queue  # type: ignore[assignment]
             self.info("API log queue has been updated.")
         elif new_queue:
-            api_queue_handler = AsyncioQueueHandler(new_queue)
+            if isinstance(new_queue, queue.Queue):
+                api_queue_handler = QueueLogHandler(new_queue)
+                api_queue_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)-8s - [cid:%(cid)s] - %(message)s', datefmt='%H:%M:%S'))
+            else:
+                api_queue_handler = AsyncioQueueHandler(new_queue)
             api_queue_handler.set_name("api_queue")
             api_queue_handler.setLevel(logging.DEBUG)
             self.logger.addHandler(api_queue_handler)

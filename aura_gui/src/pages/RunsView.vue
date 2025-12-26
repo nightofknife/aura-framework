@@ -1,9 +1,9 @@
-<!-- src/pages/RunsView.vue -->
+<!-- 运行记录（点击行加载 /run/{id}/detail 展示抽屉） -->
 <template>
   <div class="panel">
     <div class="panel-header">
-      <strong>Runs</strong>
-      <div style="color:var(--text-3); font-size:13px;">Filter and inspect task runs</div>
+      <strong>运行记录</strong>
+      <div style="color:var(--text-3); font-size:13px;">筛选并查看任务运行详情</div>
     </div>
     <div class="panel-body" style="display:flex; flex-direction:column; gap:12px;">
       <ProFilterBar
@@ -24,9 +24,10 @@
           <span class="pill" :class="statusClass(row.status)">{{ safeUpper(row.status) }}</span>
         </template>
         <template #actions="{ row }">
-          <button class="btn btn-outline" @click.stop="openRun(row)">Open</button>
+          <button class="btn btn-outline" @click.stop="openRun(row)">详情</button>
         </template>
       </ProDataTable>
+      <div v-if="detailError" class="error">{{ detailError }}</div>
     </div>
   </div>
 
@@ -35,20 +36,24 @@
 
 <script setup>
 import { computed, ref } from 'vue';
+import axios from 'axios';
+import { getGuiConfig } from '../config.js';
 import ProFilterBar from '../components/ProFilterBar.vue';
 import ProDataTable from '../components/ProDataTable.vue';
 import RunDetailDrawer from '../components/RunDetailDrawer.vue';
 import { useRuns } from '../composables/useRuns.js';
 
 const { activeRuns, recentRuns, runsById } = useRuns();
+const cfg = getGuiConfig();
+const api = axios.create({ baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1', timeout: cfg?.api?.timeout_ms || 5000 });
 
 const columns = [
-  { key: 'status', label: 'Status', width: '110px' },
-  { key: 'plan_name', label: 'Plan', sortable: true, width: '180px' },
-  { key: 'task_name', label: 'Task', sortable: true },
-  { key: 'startedAt', label: 'Started', sortable: true, width: '180px' },
-  { key: 'finishedAt', label: 'Finished', sortable: true, width: '180px' },
-  { key: 'elapsed', label: 'Duration', sortable: true, width: '110px' },
+  { key: 'status', label: '状态', width: '110px' },
+  { key: 'plan_name', label: '计划', sortable: true, width: '180px' },
+  { key: 'task_name', label: '任务', sortable: true },
+  { key: 'startedAt', label: '开始时间', sortable: true, width: '180px' },
+  { key: 'finishedAt', label: '结束时间', sortable: true, width: '180px' },
+  { key: 'elapsed', label: '耗时', sortable: true, width: '110px' },
 ];
 
 const filters = ref({ query: '', status: '', plan: '' });
@@ -110,23 +115,25 @@ function safeUpper(s) {
 
 const drawerOpen = ref(false);
 const current = ref(null);
+const detailError = ref('');
 
-function openRun(row) {
+async function openRun(row) {
+  detailError.value = '';
   const runId = row.cid || row.id;
   const r = runsById.value[runId] || row;
-  current.value = r;
-  drawerOpen.value = true;
+  try {
+    const { data } = await api.get(`/run/${runId}/detail`);
+    const merged = { ...r, ...(data?.run || {}), nodes: data?.timeline || [], logs: data?.logs || [] };
+    current.value = merged;
+    drawerOpen.value = true;
+  } catch (err) {
+    detailError.value = err?.response?.data?.detail || err?.message || '获取详情失败';
+  }
 }
 </script>
 
 <style scoped>
-.panel {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-.panel-body {
-  flex: 1;
-  overflow: hidden;
-}
+.panel { height: 100%; display: flex; flex-direction: column; }
+.panel-body { flex: 1; overflow: hidden; }
+.error { color: var(--red-400); font-size: 12px; }
 </style>

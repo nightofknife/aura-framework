@@ -1,4 +1,4 @@
-const DEFAULT_CONFIG = {
+﻿const DEFAULT_CONFIG = {
   api: {
     base_url: 'http://127.0.0.1:18098/api/v1',
     timeout_ms: 5000,
@@ -9,6 +9,9 @@ const DEFAULT_CONFIG = {
   ws: {
     base_url: 'ws://127.0.0.1:18098',
     heartbeat_ms: 25000,
+    events_path: '/ws/v1/events',
+    logs_path: '/ws/logs',
+    logs_enabled: true,
     reconnect: {
       base_ms: 5000,
       multiplier: 2,
@@ -39,6 +42,7 @@ const DEFAULT_CONFIG = {
       { key: 'execute', label: '执行台', icon: 'execute' },
       { key: 'runs', label: '运行中', icon: 'runs' },
       { key: 'plans', label: '方案/任务', icon: 'plans' },
+      { key: 'automation', label: '自动化', icon: 'automation' },
       { key: 'task_editor', label: '任务编辑', icon: 'task_editor' },
       { key: 'settings', label: '设置', icon: 'settings' },
     ],
@@ -48,6 +52,9 @@ const DEFAULT_CONFIG = {
       default_zoom: 1,
       min_zoom: 0.2,
     },
+  },
+  logs: {
+    display_level: 'warning',
   },
   background: {
     dynamic_enabled: true,
@@ -100,3 +107,4 @@ export async function loadGuiConfig() {
 export function getGuiConfig() {
   return cachedConfig;
 }
+

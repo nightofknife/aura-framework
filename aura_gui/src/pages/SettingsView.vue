@@ -3,12 +3,13 @@
     <div class="header-bar">
       <div>
         <strong class="view-title">系统配置</strong>
-        <div class="view-subtitle">参数会写入 config.yaml，部分配置需要重启后端才能完全生效</div>
+        <div class="view-subtitle">参数会写入 config.yaml，部分配置需重启后端生效</div>
       </div>
       <div class="toolbar">
         <button class="btn btn-ghost" @click="loadConfig" :disabled="loading">重新加载</button>
         <button class="btn btn-ghost" @click="resetDefaults" :disabled="loading || saving">恢复默认</button>
         <button class="btn btn-primary" @click="saveConfig" :disabled="saving">保存配置</button>
+        <button class="btn btn-warning" @click="applyUpdate" :disabled="updating">检查更新</button>
       </div>
     </div>
 
@@ -80,7 +81,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import axios from 'axios';
 import { getGuiConfig } from '../config.js';
 import { useToasts } from '../composables/useToasts.js';
@@ -102,13 +103,13 @@ const DEFAULT_CONFIG = {
       allow_methods: ['*'],
       allow_headers: ['*'],
     },
-    websocket: { events_path: '/ws/v1/events' },
+    websocket: { events_path: '/ws/v1/events', logs_path: '/ws/logs' },
     scheduler_startup_timeout_sec: 10,
     server: {
       host: '0.0.0.0',
       port: 18098,
       reload: true,
-      log_level: 'info',
+      log_level: 'warning',
       workers: 1,
       access_log: false,
     },
@@ -139,6 +140,12 @@ const DEFAULT_CONFIG = {
   interrupt_service: { poll_sec: 1 },
   id_generator: { instance_id: 1, epoch_ms: 1609459200000 },
   state_store: { type: 'file', path: './project_state.json' },
+  framework_update: {
+    download_dir: 'updates',
+    backup_dir: 'backups/framework',
+    source_url: '',
+    preserve: ['config.yaml', 'backups', 'updates', 'logs', 'node_modules', '.venv', '.venv-backend', '.git'],
+  },
   gui: {
     api: {
       base_url: 'http://127.0.0.1:18098/api/v1',
@@ -150,8 +157,12 @@ const DEFAULT_CONFIG = {
     ws: {
       base_url: 'ws://127.0.0.1:18098',
       heartbeat_ms: 25000,
+      events_path: '/ws/v1/events',
+      logs_path: '/ws/logs',
+      logs_enabled: true,
       reconnect: { base_ms: 5000, multiplier: 2, max_ms: 30000, jitter: 0.2 },
     },
+    logs: { display_level: 'warning' },
     staging: {
       poll_interval_ms: 1000,
       dispatch_delay_ms: 50,
@@ -165,280 +176,143 @@ const DEFAULT_CONFIG = {
       },
     },
     theme: { default: 'system', storage_key: 'aura_theme' },
-    navigation: {
-      default_route: 'execute',
-      items: [
-        { key: 'dashboard', label: '仪表盘', icon: 'dashboard' },
-        { key: 'execute', label: '执行台', icon: 'execute' },
-        { key: 'runs', label: '运行中', icon: 'runs' },
-        { key: 'plans', label: '方案/任务', icon: 'plans' },
-        { key: 'task_editor', label: '任务编辑', icon: 'task_editor' },
-        { key: 'settings', label: '设置', icon: 'settings' },
-      ],
-    },
-    task_editor: { viewport: { default_zoom: 1, min_zoom: 0.2 } },
     background: { dynamic_enabled: true, max_dpr: 2, density: 2.0, speed: 0.4, strength: 0.8, mouse_push: 30, dust: 50 },
   },
 };
+
+function clone(obj) { return JSON.parse(JSON.stringify(obj || {})); }
 
 const configState = ref(clone(DEFAULT_CONFIG));
 const configPath = ref('');
 const loading = ref(false);
 const saving = ref(false);
 const errorMsg = ref('');
+const updating = ref(false);
 
 const sections = [
-  {
-    key: 'backend',
-    title: '后端服务',
-    fields: [
-      { path: 'backend.server.host', label: '监听地址', type: 'text' },
-      { path: 'backend.server.port', label: '监听端口', type: 'number', min: 1, max: 65535 },
-      { path: 'backend.server.reload', label: '自动重载', type: 'boolean' },
-      {
-        path: 'backend.server.log_level',
-        label: '日志等级',
-        type: 'select',
-        options: [
-          { value: 'debug', label: '调试' },
-          { value: 'info', label: '信息' },
-          { value: 'warning', label: '警告' },
-          { value: 'error', label: '错误' },
-          { value: 'critical', label: '致命' },
-        ],
-      },
-      { path: 'backend.server.workers', label: '工作进程数', type: 'number', min: 1 },
-      { path: 'backend.server.access_log', label: '访问日志', type: 'boolean' },
-      { path: 'backend.api.prefix', label: 'API 前缀', type: 'text' },
-      { path: 'backend.websocket.events_path', label: '事件 WS 路径', type: 'text' },
-      { path: 'backend.scheduler_startup_timeout_sec', label: '启动超时(秒)', type: 'number', min: 1 },
-      { path: 'backend.cors.allow_origins', label: 'CORS 允许来源', type: 'array_csv', help: '使用逗号分隔多个来源' },
-      { path: 'backend.cors.allow_methods', label: 'CORS 允许方法', type: 'array_csv' },
-      { path: 'backend.cors.allow_headers', label: 'CORS 允许请求头', type: 'array_csv' },
-      { path: 'backend.cors.allow_credentials', label: 'CORS 允许凭证', type: 'boolean' },
-    ],
-  },
-  {
-    key: 'dependencies',
-    title: '依赖管理',
-    fields: [
-      { path: 'dependencies.requirements_file', label: '依赖文件名', type: 'text' },
-      { path: 'dependencies.auto_install', label: '自动安装依赖', type: 'boolean' },
-      {
-        path: 'dependencies.on_missing',
-        label: '缺库处理',
-        type: 'select',
-        options: [
-          { value: 'skip_plan', label: '跳过当前计划' },
-          { value: 'continue', label: '继续加载计划' },
-        ],
-      },
-      { path: 'dependencies.pip.timeout_sec', label: '安装超时(秒)', type: 'number', min: 10 },
-      { path: 'dependencies.pip.args', label: 'pip 参数', type: 'array_csv', help: '例如：--index-url https://pypi.tuna.tsinghua.edu.cn/simple' },
-    ],
-  },
-  {
-    key: 'logging',
-    title: '日志配置',
-    fields: [
-      { path: 'logging.log_dir', label: '日志目录', type: 'text' },
-      { path: 'logging.task_name.default', label: '默认任务名', type: 'text' },
-    ],
-  },
-  {
-    key: 'scheduler',
-    title: '调度器',
-    fields: [
-      { path: 'scheduler.num_event_workers', label: '事件工作线程', type: 'number', min: 1 },
-      { path: 'scheduler.queue.main_maxsize', label: '主队列容量', type: 'number', min: 1 },
-      { path: 'scheduler.queue.event_maxsize', label: '事件队列容量', type: 'number', min: 1 },
-      { path: 'scheduler.queue.interrupt_maxsize', label: '中断队列容量', type: 'number', min: 1 },
-      { path: 'scheduler.loop_sleep_sec.queue_full', label: '队列满等待(秒)', type: 'number', step: 0.1, min: 0 },
-      { path: 'scheduler.loop_sleep_sec.consumer_error', label: '消费错误等待(秒)', type: 'number', step: 0.1, min: 0 },
-    ],
-  },
-  {
-    key: 'execution',
-    title: '执行引擎',
-    fields: [
-      { path: 'execution.max_concurrent_tasks', label: '最大并发任务', type: 'number', min: 1 },
-      { path: 'execution.io_workers', label: 'IO 线程数', type: 'number', min: 1 },
-      { path: 'execution.cpu_workers', label: 'CPU 线程数', type: 'number', min: 1 },
-      { path: 'execution.state_planning.max_replans', label: '最大重规划次数', type: 'number', min: 0 },
-      { path: 'execution.state_planning.replanning_sleep_sec', label: '重规划等待(秒)', type: 'number', step: 0.1, min: 0 },
-    ],
-  },
-  {
-    key: 'task_loader',
-    title: '任务加载',
-    fields: [
-      { path: 'task_loader.cache_maxsize', label: '缓存容量', type: 'number', min: 1 },
-      { path: 'task_loader.cache_ttl_sec', label: '缓存 TTL(秒)', type: 'number', min: 1 },
-    ],
-  },
-  {
-    key: 'tickers',
-    title: '周期与中断',
-    fields: [
-      { path: 'scheduling_service.tick_sec', label: '调度周期(秒)', type: 'number', min: 1 },
-      { path: 'interrupt_service.poll_sec', label: '中断轮询(秒)', type: 'number', step: 0.1, min: 0 },
-    ],
-  },
-  {
-    key: 'id_generator',
-    title: 'ID 生成',
-    fields: [
-      { path: 'id_generator.instance_id', label: '实例 ID', type: 'number', min: 1 },
-      { path: 'id_generator.epoch_ms', label: '起始时间戳(毫秒)', type: 'number', min: 0 },
-    ],
-  },
-  {
-    key: 'state_store',
-    title: '状态存储',
-    fields: [
-      {
-        path: 'state_store.type',
-        label: '存储类型',
-        type: 'select',
-        options: [
-          { value: 'file', label: '文件' },
-          { value: 'redis', label: 'Redis' },
-        ],
-      },
-      { path: 'state_store.path', label: '存储路径', type: 'text' },
-    ],
-  },
-  {
-    key: 'gui',
-    title: '前端界面',
-    fields: [
-      { path: 'gui.api.base_url', label: 'API 地址', type: 'text' },
-      { path: 'gui.api.timeout_ms', label: 'API 超时(ms)', type: 'number', min: 100 },
-      { path: 'gui.api.dispatch_timeout_ms', label: '派发超时(ms)', type: 'number', min: 100 },
-      { path: 'gui.api.status_poll_ms', label: '状态轮询(ms)', type: 'number', min: 200 },
-      { path: 'gui.api.queue_list_limit', label: '队列拉取条数', type: 'number', min: 10 },
-      { path: 'gui.ws.base_url', label: 'WS 地址', type: 'text' },
-      { path: 'gui.ws.heartbeat_ms', label: 'WS 心跳间隔(ms)', type: 'number', min: 1000 },
-      { path: 'gui.ws.reconnect.base_ms', label: 'WS 重连基础(ms)', type: 'number', min: 500 },
-      { path: 'gui.ws.reconnect.multiplier', label: 'WS 重连倍率', type: 'number', step: 0.1, min: 1 },
-      { path: 'gui.ws.reconnect.max_ms', label: 'WS 重连上限(ms)', type: 'number', min: 1000 },
-      { path: 'gui.ws.reconnect.jitter', label: 'WS 抖动比例', type: 'number', step: 0.1, min: 0, max: 1 },
-      { path: 'gui.staging.poll_interval_ms', label: '前端队列轮询(ms)', type: 'number', min: 200 },
-      { path: 'gui.staging.dispatch_delay_ms', label: '派发间隔(ms)', type: 'number', min: 0 },
-      { path: 'gui.staging.repeat_max', label: '最大重复次数', type: 'number', min: 1 },
-      { path: 'gui.staging.remove_after_ms', label: '移除延迟(ms)', type: 'number', min: 0 },
-      { path: 'gui.staging.history_max', label: '历史记录上限', type: 'number', min: 50 },
-      { path: 'gui.staging.storage_keys.queue', label: '队列存储键', type: 'text' },
-      { path: 'gui.staging.storage_keys.history', label: '历史存储键', type: 'text' },
-      { path: 'gui.staging.storage_keys.auto', label: '自动模式键', type: 'text' },
-      {
-        path: 'gui.theme.default',
-        label: '主题模式',
-        type: 'select',
-        options: [
-          { value: 'system', label: '跟随系统' },
-          { value: 'light', label: '浅色' },
-          { value: 'dark', label: '深色' },
-        ],
-      },
-      { path: 'gui.theme.storage_key', label: '主题存储键', type: 'text' },
-      {
-        path: 'gui.navigation.default_route',
-        label: '默认入口',
-        type: 'select',
-        options: [
-          { value: 'execute', label: '执行台' },
-          { value: 'dashboard', label: '仪表盘' },
-          { value: 'runs', label: '运行中' },
-          { value: 'plans', label: '方案/任务' },
-          { value: 'task_editor', label: '任务编辑' },
-          { value: 'settings', label: '设置' },
-        ],
-      },
-      { path: 'gui.task_editor.viewport.default_zoom', label: '编辑器默认缩放', type: 'number', step: 0.1, min: 0.1 },
-      { path: 'gui.task_editor.viewport.min_zoom', label: '编辑器最小缩放', type: 'number', step: 0.1, min: 0.05 },
-      { path: 'gui.background.dynamic_enabled', label: '动态背景', type: 'boolean' },
-      { path: 'gui.background.max_dpr', label: '背景最大 DPR', type: 'number', step: 0.1, min: 1 },
-      { path: 'gui.background.density', label: '动态线条密度', type: 'number', step: 0.1, min: 0.5, max: 4 },
-      { path: 'gui.background.speed', label: '动态线条速度', type: 'number', step: 0.05, min: 0, max: 3 },
-      { path: 'gui.background.strength', label: '动态线条振幅', type: 'number', step: 0.05, min: 0, max: 2 },
-      { path: 'gui.background.mouse_push', label: '鼠标扰动强度', type: 'number', step: 1, min: 0, max: 80 },
-      { path: 'gui.background.dust', label: '星尘数量', type: 'number', step: 1, min: 0, max: 200 },
-    ],
-  },
+  { key: 'backend', title: '后端服务', fields: [
+    { path: 'backend.server.host', label: '监听地址', type: 'text' },
+    { path: 'backend.server.port', label: '监听端口', type: 'number', min: 1, max: 65535 },
+    { path: 'backend.server.reload', label: '自动重载', type: 'boolean' },
+    { path: 'backend.server.log_level', label: '日志等级', type: 'select', options: [
+      { value: 'debug', label: 'Debug' }, { value: 'info', label: 'Info' }, { value: 'warning', label: 'Warning' }, { value: 'error', label: 'Error' }, { value: 'critical', label: 'Critical' },
+    ] },
+    { path: 'backend.server.workers', label: '工作进程数', type: 'number', min: 1 },
+    { path: 'backend.server.access_log', label: '访问日志', type: 'boolean' },
+    { path: 'backend.api.prefix', label: 'API 前缀', type: 'text' },
+    { path: 'backend.websocket.events_path', label: '事件 WS 路径', type: 'text' },
+    { path: 'backend.websocket.logs_path', label: '日志 WS 路径', type: 'text' },
+    { path: 'backend.scheduler_startup_timeout_sec', label: '启动超时(秒)', type: 'number', min: 1 },
+    { path: 'backend.cors.allow_origins', label: 'CORS 允许来源', type: 'array_csv', help: '用逗号分隔多个来源' },
+    { path: 'backend.cors.allow_methods', label: 'CORS 允许方法', type: 'array_csv' },
+    { path: 'backend.cors.allow_headers', label: 'CORS 允许请求头', type: 'array_csv' },
+    { path: 'backend.cors.allow_credentials', label: 'CORS 允许凭证', type: 'boolean' },
+  ]},
+  { key: 'dependencies', title: '依赖管理', fields: [
+    { path: 'dependencies.requirements_file', label: '依赖文件名', type: 'text' },
+    { path: 'dependencies.auto_install', label: '自动安装依赖', type: 'boolean' },
+    { path: 'dependencies.on_missing', label: '缺库处理', type: 'select', options: [ { value: 'skip_plan', label: '跳过当前计划' }, { value: 'continue', label: '继续加载计划' } ] },
+    { path: 'dependencies.pip.timeout_sec', label: '安装超时(秒)', type: 'number', min: 10 },
+    { path: 'dependencies.pip.args', label: 'pip 参数', type: 'array_csv', help: '如: -index-url https://pypi.tuna.tsinghua.edu.cn/simple' },
+  ]},
+  { key: 'logging', title: '日志配置', fields: [
+    { path: 'logging.log_dir', label: '日志目录', type: 'text' },
+    { path: 'logging.task_name.default', label: '默认任务名', type: 'text' },
+  ]},
+  { key: 'scheduler', title: '调度器', fields: [
+    { path: 'scheduler.num_event_workers', label: '事件工作线程', type: 'number', min: 1 },
+    { path: 'scheduler.queue.main_maxsize', label: '主队列容量', type: 'number', min: 1 },
+    { path: 'scheduler.queue.event_maxsize', label: '事件队列容量', type: 'number', min: 1 },
+    { path: 'scheduler.queue.interrupt_maxsize', label: '中断队列容量', type: 'number', min: 1 },
+    { path: 'scheduler.loop_sleep_sec.queue_full', label: '队列满休眠(秒)', type: 'number', min: 0 },
+    { path: 'scheduler.loop_sleep_sec.consumer_error', label: '消费错误休眠(秒)', type: 'number', min: 0 },
+  ]},
+  { key: 'execution', title: '执行配置', fields: [
+    { path: 'execution.max_concurrent_tasks', label: '最大并发任务', type: 'number', min: 1 },
+    { path: 'execution.io_workers', label: 'IO 线程', type: 'number', min: 1 },
+    { path: 'execution.cpu_workers', label: 'CPU 线程', type: 'number', min: 1 },
+    { path: 'execution.state_planning.max_replans', label: '最大重规划次数', type: 'number', min: 0 },
+    { path: 'execution.state_planning.replanning_sleep_sec', label: '重规划休眠(秒)', type: 'number', min: 0 },
+  ]},
+  { key: 'task_loader', title: '任务加载', fields: [
+    { path: 'task_loader.cache_maxsize', label: '缓存容量', type: 'number', min: 0 },
+    { path: 'task_loader.cache_ttl_sec', label: '缓存TTL(秒)', type: 'number', min: 0 },
+  ]},
+  { key: 'other', title: '其他', fields: [
+    { path: 'scheduling_service.tick_sec', label: '调度心跳(秒)', type: 'number', min: 1 },
+    { path: 'interrupt_service.poll_sec', label: '中断轮询(秒)', type: 'number', min: 0.1 },
+    { path: 'id_generator.instance_id', label: 'ID 实例号', type: 'number', min: 0 },
+    { path: 'id_generator.epoch_ms', label: 'ID Epoch(ms)', type: 'number', min: 0 },
+    { path: 'state_store.type', label: '状态存储类型', type: 'select', options: [ { value: 'file', label: '文件' }, { value: 'redis', label: 'Redis' } ] },
+    { path: 'state_store.path', label: '状态存储路径', type: 'text' },
+  ]},
+  { key: 'framework_update', title: '框架更新', fields: [
+    { path: 'framework_update.download_dir', label: '下载目录', type: 'text' },
+    { path: 'framework_update.backup_dir', label: '备份目录', type: 'text' },
+    { path: 'framework_update.source_url', label: '更新源 URL', type: 'text' },
+    { path: 'framework_update.preserve', label: '保留路径(逗号分隔)', type: 'array_csv' },
+  ]},
+  { key: 'gui', title: '前端界面', fields: [
+    { path: 'gui.api.base_url', label: 'API 地址', type: 'text' },
+    { path: 'gui.api.timeout_ms', label: 'API 超时(ms)', type: 'number', min: 100 },
+    { path: 'gui.api.dispatch_timeout_ms', label: '派发超时(ms)', type: 'number', min: 100 },
+    { path: 'gui.api.status_poll_ms', label: '状态轮询(ms)', type: 'number', min: 200 },
+    { path: 'gui.api.queue_list_limit', label: '队列拉取条数', type: 'number', min: 10 },
+    { path: 'gui.ws.base_url', label: 'WS 地址', type: 'text' },
+    { path: 'gui.ws.heartbeat_ms', label: 'WS 心跳(ms)', type: 'number', min: 1000 },
+    { path: 'gui.ws.events_path', label: '事件 WS 路径', type: 'text' },
+    { path: 'gui.ws.logs_path', label: '日志 WS 路径', type: 'text' },
+    { path: 'gui.ws.logs_enabled', label: '启用日志 WS', type: 'boolean' },
+    { path: 'gui.logs.display_level', label: '日志显示等级', type: 'select', options: [
+      { value: 'debug', label: 'Debug' }, { value: 'info', label: 'Info' }, { value: 'warning', label: 'Warning' }, { value: 'error', label: 'Error' }, { value: 'critical', label: 'Critical' },
+    ] },
+    { path: 'gui.ws.reconnect.base_ms', label: 'WS 重连基础(ms)', type: 'number', min: 500 },
+    { path: 'gui.ws.reconnect.multiplier', label: 'WS 重连倍率', type: 'number', step: 0.1, min: 1 },
+    { path: 'gui.ws.reconnect.max_ms', label: 'WS 重连上限(ms)', type: 'number', min: 1000 },
+    { path: 'gui.ws.reconnect.jitter', label: 'WS 抖动比例', type: 'number', step: 0.1, min: 0, max: 1 },
+    { path: 'gui.staging.poll_interval_ms', label: '前端队列轮询(ms)', type: 'number', min: 200 },
+    { path: 'gui.staging.dispatch_delay_ms', label: '派发间隔(ms)', type: 'number', min: 0 },
+    { path: 'gui.staging.repeat_max', label: '最大重复次数', type: 'number', min: 1 },
+    { path: 'gui.staging.remove_after_ms', label: '移除延迟(ms)', type: 'number', min: 0 },
+    { path: 'gui.staging.history_max', label: '历史记录上限', type: 'number', min: 50 },
+    { path: 'gui.staging.storage_keys.queue', label: '队列存储键', type: 'text' },
+    { path: 'gui.staging.storage_keys.history', label: '历史存储键', type: 'text' },
+    { path: 'gui.staging.storage_keys.auto', label: '自动模式键', type: 'text' },
+    { path: 'gui.theme.default', label: '主题模式', type: 'select', options: [ { value: 'system', label: '跟随系统' }, { value: 'light', label: '浅色' }, { value: 'dark', label: '深色' } ] },
+    { path: 'gui.theme.storage_key', label: '主题存储键', type: 'text' },
+  ]},
 ];
 
 function getFieldValue(field) {
-  const value = getPath(configState.value, field.path);
-  if (field.type === 'array_csv') {
-    if (Array.isArray(value)) return value.join(', ');
-    return value == null ? '' : String(value);
+  const parts = field.path.split('.');
+  let cur = configState.value;
+  for (const p of parts) {
+    if (cur == null) return '';
+    cur = cur[p];
   }
-  if (field.type === 'boolean') {
-    return !!value;
-  }
-  return value ?? '';
+  return cur ?? '';
 }
 
-function setFieldValue(field, raw) {
-  let next = raw;
-  if (field.type === 'number') {
-    const num = Number(raw);
-    next = Number.isFinite(num) ? num : 0;
-  } else if (field.type === 'boolean') {
-    next = !!raw;
-  } else if (field.type === 'array_csv') {
-    next = parseCsv(raw);
-  }
-  setPath(configState.value, field.path, next);
-}
-
-function parseCsv(value) {
-  if (Array.isArray(value)) return value;
-  return String(value || '')
-    .split(',')
-    .map(item => item.trim())
-    .filter(Boolean);
-}
-
-function clone(obj) {
-  return JSON.parse(JSON.stringify(obj));
-}
-
-function deepMerge(target, source) {
-  if (!source || typeof source !== 'object') return target;
-  const out = Array.isArray(target) ? [...target] : { ...target };
-  for (const [key, value] of Object.entries(source)) {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      out[key] = deepMerge(out[key] || {}, value);
-    } else {
-      out[key] = value;
-    }
-  }
-  return out;
-}
-
-function getPath(obj, path) {
-  const parts = path.split('.');
-  let curr = obj;
-  for (const part of parts) {
-    if (!curr || typeof curr !== 'object') return undefined;
-    curr = curr[part];
-  }
-  return curr;
-}
-
-function setPath(obj, path, value) {
-  const parts = path.split('.');
-  let curr = obj;
-  for (let i = 0; i < parts.length - 1; i += 1) {
+function setFieldValue(field, rawValue) {
+  const parts = field.path.split('.');
+  const draft = configState.value;
+  let cur = draft;
+  for (let i = 0; i < parts.length - 1; i++) {
     const key = parts[i];
-    if (!curr[key] || typeof curr[key] !== 'object') {
-      curr[key] = {};
-    }
-    curr = curr[key];
+    if (cur[key] === undefined) cur[key] = {};
+    cur = cur[key];
   }
-  curr[parts[parts.length - 1]] = value;
+  let value = rawValue;
+  if (field.type === 'number') {
+    const n = Number(value);
+    value = Number.isNaN(n) ? undefined : n;
+  } else if (field.type === 'boolean') {
+    value = !!value;
+  } else if (field.type === 'array_csv') {
+    value = (value || '').split(',').map(v => v.trim()).filter(Boolean);
+  }
+  cur[parts[parts.length - 1]] = value;
+  configState.value = { ...draft };
 }
 
 async function loadConfig() {
@@ -446,15 +320,10 @@ async function loadConfig() {
   errorMsg.value = '';
   try {
     const { data } = await api.get('/system/config');
+    configState.value = clone({ ...DEFAULT_CONFIG, ...(data?.data || {}) });
     configPath.value = data?.path || '';
-    if (!data?.exists) {
-      errorMsg.value = '未找到 config.yaml，已使用默认配置。';
-    }
-    configState.value = deepMerge(clone(DEFAULT_CONFIG), data?.data || {});
-  } catch (e) {
-    const msg = e?.response?.data?.detail || e.message;
-    errorMsg.value = msg;
-    toast({ type: 'error', title: '加载失败', message: msg });
+  } catch (err) {
+    errorMsg.value = err?.response?.data?.detail || err?.message || '加载失败';
   } finally {
     loading.value = false;
   }
@@ -465,11 +334,10 @@ async function saveConfig() {
   errorMsg.value = '';
   try {
     await api.put('/system/config', { data: configState.value });
-    toast({ type: 'success', title: '保存成功', message: '已写入 config.yaml（部分配置需重启生效）' });
-  } catch (e) {
-    const msg = e?.response?.data?.detail || e.message;
-    errorMsg.value = msg;
-    toast({ type: 'error', title: '保存失败', message: msg });
+    toast({ type: 'success', message: '配置已保存' });
+  } catch (err) {
+    errorMsg.value = err?.response?.data?.detail || err?.message || '保存失败';
+    toast({ type: 'error', message: errorMsg.value });
   } finally {
     saving.value = false;
   }
@@ -477,24 +345,44 @@ async function saveConfig() {
 
 function resetDefaults() {
   configState.value = clone(DEFAULT_CONFIG);
-  toast({ type: 'info', title: '已恢复默认', message: '请保存以写入 config.yaml' });
 }
 
-loadConfig();
+async function applyUpdate() {
+  updating.value = true;
+  try {
+    await api.post('/system/update/apply', { zip_path: null, backup: true });
+    toast({ type: 'success', message: '已尝试应用更新包' });
+  } catch (err) {
+    toast({ type: 'error', message: err?.response?.data?.detail || err?.message || '更新失败' });
+  } finally {
+    updating.value = false;
+  }
+}
+
+onMounted(() => {
+  loadConfig();
+});
 </script>
 
 <style scoped>
-.settings-view { display:flex; flex-direction:column; gap:16px; }
-.header-bar { display:flex; justify-content:space-between; align-items:center; gap:12px; }
-.view-title { font-size:22px; }
-.view-subtitle { color:var(--text-3); font-size:12px; }
-.toolbar { display:flex; gap:8px; flex-wrap:wrap; }
-.panel-header { display:flex; justify-content:space-between; align-items:center; gap:12px; }
-.path { color:var(--text-3); font-size:12px; }
-.section-desc { color:var(--text-3); font-size:12px; }
-.form-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; }
-.field .label { font-size:12px; color:var(--text-3); margin-bottom:6px; }
-.help { color:var(--text-3); font-size:12px; margin-top:6px; }
-.error { color:#c00; font-size:12px; }
-.hint { color:var(--text-3); font-size:12px; }
+.settings-view { display: flex; flex-direction: column; gap: 12px; }
+.header-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.view-title { font-size: 18px; }
+.view-subtitle { color: var(--text-3); font-size: 12px; }
+.toolbar { display: flex; gap: 8px; }
+.panel { padding: 12px; border-radius: var(--radius-lg); }
+.panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.path { color: var(--text-3); font-size: 12px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.label { font-weight: 600; font-size: 13px; }
+.input, .select { padding: 8px; border-radius: 8px; border: 1px solid var(--border-frosted); background: var(--bg-panel); color: var(--text-primary); }
+.chk { display: flex; align-items: center; gap: 6px; }
+.help { color: var(--text-3); font-size: 12px; }
+.error { color: var(--red-400); margin-bottom: 6px; }
+.hint { color: var(--text-3); font-size: 12px; }
+.btn { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-frosted); cursor: pointer; }
+.btn-ghost { background: transparent; color: var(--text-primary); }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-warning { background: var(--yellow-500); color: #000; border-color: var(--yellow-500); }
 </style>

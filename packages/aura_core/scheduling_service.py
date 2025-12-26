@@ -10,7 +10,6 @@ from datetime import datetime
 
 from croniter import croniter
 
-from packages.aura_core.task_queue import Tasklet
 from packages.aura_core.logger import logger
 from .asynccontext import plan_context
 from packages.aura_core.config_loader import get_config_value
@@ -72,68 +71,47 @@ class SchedulingService:
                         if status.get('status') in ['queued', 'running']:
                             continue
 
-                    if self._is_ready_to_run(item, now, status):
+                    if self._is_ready_to_run(item, now, status) and self._has_cron_trigger_match(item, now, status):
                         logger.info(f"定时任务 '{item.get('name', item_id)}' ({plan_name}) 条件满足，已加入执行队列。")
 
-                        full_task_id = f"{plan_name}/{item['task']}"
-                        task_def = self.scheduler.all_tasks_definitions.get(full_task_id, {})
 
-                        tasklet = Tasklet(
-                            task_name=full_task_id,
-                            payload=item,
-                            execution_mode=task_def.get('execution_mode', 'sync')
-                        )
-                        self.scheduler._ensure_tasklet_identifiers(
-                            tasklet,
-                            plan_name=plan_name,
-                            task_name=item.get('task'),
-                            source="schedule"
-                        )
-                        await self.scheduler.task_queue.put(tasklet)
+                        await self.scheduler._enqueue_schedule_item(item, source="schedule")
 
-                        async with self.scheduler.get_async_lock():
-                            self.scheduler.run_statuses.setdefault(item_id, {}).update({
-                                'status': 'queued',
-                                'queued_at': now
-                            })
                 except Exception as e:
                     logger.error(f"在检查定时任务 '{item_id}' 时发生错误: {e}", exc_info=True)
 
     def _is_ready_to_run(self, item: dict, now: datetime, status: dict) -> bool:
-        """(私有) 判断一个计划任务项当前是否应该运行。
+        """(private) Decide whether a schedule item can run now.
 
-        判断逻辑包括：
-        1. 检查是否在冷却期（cooldown）内。
-        2. 解析 cron 表达式，判断是否到达了执行时间点。
-
-        Args:
-            item: 从 `schedule.yaml` 解析出的任务项字典。
-            now: 当前时间。
-            status: 该任务项的当前运行状态字典。
-
-        Returns:
-            bool: 如果应该运行则返回 True，否则返回 False。
+        Checks:
+        1. Cooldown window.
         """
-        item_id = item['id']
         cooldown = item.get('run_options', {}).get('cooldown', 0)
         last_run = status.get('last_run')
         if last_run and (now - last_run).total_seconds() < cooldown:
             return False
+        return True
 
-        trigger = item.get('trigger', {})
-        trigger_type = trigger.get('type')
-
-        if trigger_type == 'time_based':
-            schedule = trigger.get('schedule')
-            if not schedule:
-                return False
+    def _has_cron_trigger_match(self, item: dict, now: datetime, status: dict) -> bool:
+        triggers = item.get('triggers') or []
+        if not isinstance(triggers, list):
+            return False
+        last_run = status.get('last_run')
+        for trigger in triggers:
+            if not isinstance(trigger, dict):
+                continue
+            if trigger.get('type') != 'cron':
+                continue
+            expression = trigger.get('expression')
+            if not expression:
+                continue
             try:
-                iterator = croniter(schedule, now)
+                iterator = croniter(expression, now)
                 prev_scheduled_run = iterator.get_prev(datetime)
                 effective_last_run = last_run or datetime.min
                 if prev_scheduled_run > effective_last_run:
                     return True
             except Exception as e:
-                logger.error(f"任务 '{item_id}' 的 cron 表达式 '{schedule}' 无效: {e}")
-
+                item_id = item.get('id')
+                logger.error(f"Invalid cron expression for schedule '{item_id}': {expression} ({e})")
         return False

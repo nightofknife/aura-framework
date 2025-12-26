@@ -136,19 +136,44 @@ function createManagedSocket(url, name) {
 const cfg = getGuiConfig();
 const VITE_BASE_URL = cfg?.ws?.base_url || (import.meta?.env?.VITE_WS_URL) || 'ws://127.0.0.1:18098';
 
-const logSocketManager = createManagedSocket(`${VITE_BASE_URL}/ws/logs`, 'Logs');
+const EVENTS_PATH = cfg?.ws?.events_path || '/ws/v1/events';
+const LOGS_PATH = cfg?.ws?.logs_path || '/ws/logs';
+const LOGS_ENABLED = cfg?.ws?.logs_enabled ?? false;
+
+let logSocketManager = {
+    isConnected: ref(false),
+    lastMessage: ref(null),
+    error: ref(null),
+    status: ref('disabled'),
+    retries: ref(0),
+    nextRetryAt: ref(null),
+    connect: () => {},
+    disconnect: () => {},
+    send: () => false,
+};
+if (LOGS_ENABLED) {
+    logSocketManager = createManagedSocket(`${VITE_BASE_URL}${LOGS_PATH}`, 'Logs');
+}
+
+const eventSocketManager = createManagedSocket(`${VITE_BASE_URL}${EVENTS_PATH}`, 'Events');
 
 export function useAuraSockets() {
     onMounted(() => {
-        logSocketManager.connect();
+        if (LOGS_ENABLED) {
+            logSocketManager.connect();
+        }
+        eventSocketManager.connect();
     });
 
     onUnmounted(() => {
-        // 全局长连，通常不在此处断开
+        if (LOGS_ENABLED) {
+            logSocketManager.disconnect();
+        }
+        eventSocketManager.disconnect();
     });
 
     return {
         logs: logSocketManager,
-        // ❌ 移除 control 通道
+        events: eventSocketManager,
     };
 }

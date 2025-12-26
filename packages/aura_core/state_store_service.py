@@ -37,6 +37,11 @@ class StateStoreService:
         self._data: Dict[str, Any] = {}
         self._lock = asyncio.Lock()
         self._initialized = False
+        self._event_bus = None
+
+    def set_event_bus(self, event_bus):
+        """手动注入事件总线实例。"""
+        self._event_bus = event_bus
 
     async def initialize(self):
         """异步初始化服务。
@@ -123,8 +128,16 @@ class StateStoreService:
         """
         if not self._initialized: await self.initialize()
         async with self._lock:
+            old_value = self._data.get(key)
             self._data[key] = value
             await self._save()
+        
+        if self._event_bus:
+            from packages.aura_core.event_bus import Event
+            await self._event_bus.publish(Event(
+                name="state.changed",
+                payload={"key": key, "old_value": old_value, "new_value": value}
+            ))
 
     async def delete(self, key: str):
         """从状态存储中异步删除一个键，并立即触发保存操作。
@@ -135,8 +148,16 @@ class StateStoreService:
         if not self._initialized: await self.initialize()
         async with self._lock:
             if key in self._data:
+                old_value = self._data[key]
                 del self._data[key]
                 await self._save()
+                
+                if self._event_bus:
+                    from packages.aura_core.event_bus import Event
+                    await self._event_bus.publish(Event(
+                        name="state.changed",
+                        payload={"key": key, "old_value": old_value, "new_value": None, "deleted": True}
+                    ))
 
     async def get_all_data(self) -> Dict[str, Any]:
         """异步获取所有状态数据的副本。

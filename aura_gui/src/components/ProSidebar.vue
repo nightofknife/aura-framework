@@ -1,4 +1,4 @@
-<!-- === src/components/ProSidebar.vue (with Logo) === -->
+﻿<!-- === src/components/ProSidebar.vue (with Logo) === -->
 <template>
   <aside class="sidebar">
     <div class="logo-area">
@@ -30,6 +30,11 @@
           <svg v-else-if="i.icon === 'plans'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
           </svg>
+          <svg v-else-if="i.icon === 'automation'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="5" width="18" height="16" rx="2" />
+            <path d="M8 3v4M16 3v4M3 9h18" />
+            <path d="M8.5 14.5l2 2 5-5" />
+          </svg>
           <svg v-else-if="i.icon === 'task_editor'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="6" cy="6" r="2" />
             <circle cx="18" cy="6" r="2" />
@@ -54,7 +59,7 @@
 </template>
 
 <script setup>
-// script内容不变
+// script鍐呭涓嶅彉
 defineProps({
   active: { type: String, default: 'dashboard' },
   items: {
@@ -64,6 +69,7 @@ defineProps({
       { key: 'execute', label: '执行台', icon: 'execute' },
       { key: 'runs', label: '运行中', icon: 'runs' },
       { key: 'plans', label: '方案/任务', icon: 'plans' },
+      { key: 'automation', label: '自动化', icon: 'automation' },
       { key: 'task_editor', label: '任务编辑', icon: 'task_editor' },
       { key: 'settings', label: '设置', icon: 'settings' },
     ]
@@ -82,7 +88,7 @@ defineEmits(['navigate']);
   margin: -12px -12px 12px -12px; /* Absorb parent padding */
 }
 .logo { font-size: 16px; color: var(--text-primary); }
-/* 其他样式不变 */
+/* 鍏朵粬鏍峰紡涓嶅彉 */
 .nav { display: flex; flex-direction: column; gap: 8px; }
 .item {
   display: flex;
@@ -120,7 +126,7 @@ defineEmits(['navigate']);
 }
 .label { line-height: 1; }
 
-/* 辉光流动效果 */
+/* 杈夊厜娴佸姩鏁堟灉 */
 .glow-indicator {
   position: absolute;
   left: 0;
@@ -137,3 +143,6 @@ defineEmits(['navigate']);
 }
 </style>
 <!-- === END src/components/ProSidebar.vue (with Logo) === -->
+
+
+

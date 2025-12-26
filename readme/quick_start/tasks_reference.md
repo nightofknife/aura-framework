@@ -92,6 +92,9 @@ steps:
 - `retry_delay`: 秒
 - `retry_on`: 异常列表（类名或完整限定名）
 - `retry_condition`: 成功后基于结果再判断是否重试
+### timeout
+- `timeout` / `timeout_sec`: ?????????????????? `execution.default_node_timeout_sec`
+
 
 ### outputs
 - 定义命名输出字段

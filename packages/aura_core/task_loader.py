@@ -78,24 +78,41 @@ class TaskLoader:
         if not parts:
             return None
 
-        # 如果任务名是 "a/b/c"，则文件是 "tasks/a/b.yaml"，键是 "c"
-        # 如果任务名是 "a"，则文件是 "tasks/a.yaml"，键也是 "a"
-        file_path_parts = parts[:-1]
         task_key = parts[-1]
 
-        # 如果只有一个部分，它既是文件名也是任务键
+        # 优先尝试完整路径文件：tasks/a/b/c.yaml
+        direct_path = self.tasks_dir.joinpath(*parts).with_suffix(".yaml")
+        if direct_path.is_file():
+            direct_data = self._load_and_parse_file(direct_path)
+            if isinstance(direct_data, dict):
+                if isinstance(direct_data.get('steps'), (list, dict)):
+                    return direct_data
+                task_data = direct_data.get(task_key)
+                if isinstance(task_data, dict) and 'steps' in task_data:
+                    return task_data
+
+        # 兼容旧规则：tasks/a/b.yaml 内的 key=c
+        file_path_parts = parts[:-1]
         if not file_path_parts:
             file_path_parts.append(task_key)
-
         file_path = self.tasks_dir.joinpath(*file_path_parts).with_suffix(".yaml")
-
         if file_path.is_file():
             all_tasks_in_file = self._load_and_parse_file(file_path)
             task_data = all_tasks_in_file.get(task_key)
             if isinstance(task_data, dict) and 'steps' in task_data:
                 return task_data
+            if isinstance(all_tasks_in_file, dict) and isinstance(all_tasks_in_file.get('steps'), (list, dict)):
+                return all_tasks_in_file
 
-        logger.warning(f"在方案 '{self.plan_name}' 中找不到任务定义: '{task_name_in_plan}' (尝试路径: {file_path})")
+        attempts = []
+        if direct_path:
+            attempts.append(str(direct_path))
+        if file_path and str(file_path) not in attempts:
+            attempts.append(str(file_path))
+        logger.warning(
+            f"在方案 '{self.plan_name}' 中找不到任务定义: '{task_name_in_plan}' "
+            f"(尝试路径: {', '.join(attempts)})"
+        )
         return None
 
     def get_all_task_definitions(self) -> Dict[str, Any]:
@@ -112,11 +129,16 @@ class TaskLoader:
             all_tasks_in_file = self._load_and_parse_file(task_file_path)
             relative_path_str = task_file_path.relative_to(self.tasks_dir).with_suffix('').as_posix()
 
+            if isinstance(all_tasks_in_file, dict) and isinstance(all_tasks_in_file.get('steps'), (list, dict)):
+                all_definitions[relative_path_str] = all_tasks_in_file
+                continue
+
             for task_key, task_definition in all_tasks_in_file.items():
                 if isinstance(task_definition, dict) and 'steps' in task_definition:
-                    # 组合路径和键来创建唯一的任务ID
                     task_id = f"{relative_path_str}/{task_key}"
                     all_definitions[task_id] = task_definition
+                    if task_key == Path(relative_path_str).name:
+                        all_definitions.setdefault(relative_path_str, task_definition)
 
         return all_definitions
 

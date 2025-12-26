@@ -25,6 +25,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Callable, Coroutine
 
 from packages.aura_core.logger import logger
+from packages.aura_core.config_loader import get_config_value
 from .action_injector import ActionInjector
 from .api import service_registry
 from .context import ExecutionContext
@@ -68,6 +69,7 @@ class ExecutionEngine:
         self.event_callback = event_callback
         self.debug_mode = getattr(orchestrator, 'debug_mode', True)
         self.services = getattr(orchestrator, 'services', {})
+        self.default_node_timeout = float(get_config_value("execution.default_node_timeout_sec", 0) or 0)
 
         # 核心状态
         self.nodes: Dict[str, Dict] = {}
@@ -88,6 +90,13 @@ class ExecutionEngine:
         # 依赖的服务
         self.state_store: StateStoreService = self.services.get('state_store')
         self.VALID_DEPENDENCY_STATUSES = {'success', 'failed', 'running', 'skipped'}
+
+    async def _check_pause(self):
+        if not self.pause_event:
+            return
+        if not self.pause_event.is_set():
+            await self.pause_event.wait()
+
 
     async def run(self, task_data: Dict[str, Any], task_name: str, root_context: ExecutionContext) -> ExecutionContext:
         """执行一个任务的主入口点。
@@ -311,7 +320,7 @@ class ExecutionEngine:
         return True
 
     def _create_run_state(self, status: StepState, start_time: float, error: Optional[Dict] = None) -> Dict:
-        """(私有) 创建一个标准的节点运行状态字典。"""
+        """(??) ????????????????"""
         end_time = time.time()
         return {
             "status": status.name,
@@ -321,39 +330,109 @@ class ExecutionEngine:
             "error": error
         }
 
+    def _parse_retry_config(self, node_data: Dict[str, Any]) -> Dict[str, Any]:
+        """?????????????????????"""
+        default_delay = float(node_data.get("retry_delay", 1) or 1)
+        retry_cfg = node_data.get("retry", {})
+        count = 0
+        delay = default_delay
+        on_exception: List[str] = []
+        condition = node_data.get("retry_condition")
+        if isinstance(retry_cfg, int):
+            count = max(0, retry_cfg)
+        elif isinstance(retry_cfg, dict):
+            count = int(retry_cfg.get("count", retry_cfg.get("retry", 0) or 0))
+            delay = float(retry_cfg.get("delay", retry_cfg.get("retry_delay", default_delay) or default_delay))
+            on_exception = retry_cfg.get("on_exception") or retry_cfg.get("retry_on") or []
+            condition = retry_cfg.get("condition") or retry_cfg.get("retry_condition") or condition
+        else:
+            try:
+                count = int(retry_cfg)
+            except Exception:
+                count = 0
+        delay = float(node_data.get("retry_delay", delay) or delay)
+        on_exception = node_data.get("retry_on", on_exception) or []
+        if isinstance(on_exception, str):
+            on_exception = [on_exception]
+        return {"count": count, "delay": delay, "on_exception": on_exception, "condition": condition}
+
+    def _should_retry_on_exception(self, exc: Exception, retry_on: List[str]) -> bool:
+        if not retry_on:
+            return False
+        exc_name = type(exc).__name__
+        exc_full = f"{type(exc).__module__}.{exc_name}"
+        return any(item == exc_name or item == exc_full for item in retry_on)
+
+    def _resolve_node_timeout(self, node_data: Dict[str, Any]) -> Optional[float]:
+        timeout = node_data.get("timeout_sec")
+        if timeout is None:
+            timeout = node_data.get("timeout")
+        if timeout is None or timeout == 0:
+            timeout = self.default_node_timeout
+        try:
+            timeout_val = float(timeout) if timeout is not None else 0
+        except (TypeError, ValueError):
+            return None
+        return timeout_val if timeout_val > 0 else None
+
     async def _execute_dag_node(self, node_id: str, node_context: ExecutionContext):
-        """(私有) 执行 DAG 中的单个节点。"""
+        """(??) ?? DAG ???????"""
         self.step_states[node_id] = StepState.RUNNING
         start_time = time.time()
-        node_result = {}
+        node_result: Dict[str, Any] = {}
         error_details = None
         action_result = None
+        loop_info: Dict[str, Any] = {}
+        try:
+            loop_info = getattr(node_context, "data", {}).get("loop", {}) or {}
+        except Exception:
+            loop_info = {}
+
+        def _base_payload() -> Dict[str, Any]:
+            payload = {
+                "node_id": node_id,
+                "node_name": self.nodes.get(node_id, {}).get("name"),
+                "start_time": start_time,
+                "loop_index": loop_info.get("index", 0) or 0,
+            }
+            if "item" in loop_info:
+                try:
+                    item_val = loop_info.get("item")
+                    item_repr = str(item_val)
+                except Exception:
+                    item_repr = repr(loop_info.get("item"))
+                if item_repr and len(item_repr) > 200:
+                    item_repr = item_repr[:200] + "..."
+                payload["loop_item"] = item_repr
+            return payload
 
         try:
             node_data = self.nodes[node_id]
             if self.event_callback:
-                await self.event_callback('node.started', {'node_id': node_id})
+                await self.event_callback('node.started', _base_payload())
 
-            # ---------------------------
-            # 重试机制：解析配置 + 尝试循环
-            # ---------------------------
             retry_cfg = self._parse_retry_config(node_data)
-            max_attempts = retry_cfg["count"] + 1  # 首次 + 重试次数
+            max_attempts = retry_cfg["count"] + 1
             delay_sec = retry_cfg["delay"]
-            retry_on = retry_cfg["on_exception"]  # None = 对所有异常都可重试
-            cond_expr = retry_cfg["condition"]  # 成功后基于结果再次判定是否需要重试
+            retry_on = retry_cfg["on_exception"]
+            cond_expr = retry_cfg["condition"]
 
             attempt = 1
             while attempt <= max_attempts:
                 await self._check_pause()
                 try:
-                    loop_config = node_data.get('loop')
-                    if loop_config:
-                        action_result = await self._execute_loop(node_id, node_data, node_context, loop_config)
-                    else:
-                        action_result = await self._execute_single_action(node_data, node_context)
+                    async def _run_action():
+                        loop_config = node_data.get('loop')
+                        if loop_config:
+                            return await self._execute_loop(node_id, node_data, node_context, loop_config)
+                        return await self._execute_single_action(node_data, node_context)
 
-                    # 若配置了“重试条件”，即使无异常也可触发重试（例如：HTTP 200 但业务失败）
+                    timeout_sec = self._resolve_node_timeout(node_data)
+                    if timeout_sec:
+                        action_result = await asyncio.wait_for(_run_action(), timeout=timeout_sec)
+                    else:
+                        action_result = await _run_action()
+
                     if cond_expr:
                         renderer = TemplateRenderer(node_context, self.state_store)
                         scope = {"result": action_result, "attempt": attempt}
@@ -365,32 +444,44 @@ class ExecutionEngine:
                         if should_retry:
                             if attempt < max_attempts:
                                 logger.warning(
-                                    f"节点 '{node_id}' 第 {attempt}/{max_attempts - 1} 次执行后命中 retry_condition，"
-                                    f"{delay_sec}s 后重试..."
+                                    f"?? '{node_id}' ?{attempt}/{max_attempts - 1} ?????? retry_condition?"
+                                    f"{delay_sec}s ???..."
                                 )
+                                if self.event_callback:
+                                    await self.event_callback('node.retrying', {
+                                        **_base_payload(),
+                                        'retry_seq': attempt,
+                                        'retry_limit': max_attempts - 1,
+                                        'reason': 'condition',
+                                        'delay_sec': delay_sec,
+                                    })
                                 await asyncio.sleep(delay_sec)
                                 attempt += 1
                                 continue
-                            # 最后一轮仍命中条件，视为失败
                             raise RuntimeError("RetryConditionNotSatisfied")
 
-                    # 成功且无需重试，跳出循环
                     break
 
                 except Exception as e:
-                    # 是否允许对该异常进行重试
                     if attempt < max_attempts and self._should_retry_on_exception(e, retry_on):
                         logger.warning(
-                            f"节点 '{node_id}' 第 {attempt}/{max_attempts - 1} 次失败：{type(e).__name__}: {e}，"
-                            f"{delay_sec}s 后重试..."
+                            f"?? '{node_id}' ?{attempt}/{max_attempts - 1} ????{type(e).__name__}: {e}?"
+                            f"{delay_sec}s ???..."
                         )
+                        if self.event_callback:
+                            await self.event_callback('node.retrying', {
+                                **_base_payload(),
+                                'retry_seq': attempt,
+                                'retry_limit': max_attempts - 1,
+                                'exception_type': type(e).__name__,
+                                'exception_message': str(e),
+                                'delay_sec': delay_sec,
+                            })
                         await asyncio.sleep(delay_sec)
                         attempt += 1
                         continue
-                    # 不可重试或已到最后一次，抛出让外层失败逻辑处理
                     raise
 
-            # 处理 outputs
             outputs_block = node_data.get('outputs', {})
             if outputs_block:
                 renderer = TemplateRenderer(node_context, self.state_store)
@@ -402,22 +493,36 @@ class ExecutionEngine:
 
             self.step_states[node_id] = StepState.SUCCESS
             if self.event_callback:
-                await self.event_callback('node.succeeded', {'node_id': node_id, 'output': node_result})
+                end_ts = time.time()
+                await self.event_callback('node.succeeded', {
+                    **_base_payload(),
+                    'end_time': end_ts,
+                    'duration_ms': round((end_ts - start_time) * 1000, 3),
+                    'retry_count': max(0, attempt - 1),
+                    'output': node_result
+                })
 
         except (JumpSignal, StopTaskException) as e:
-            logger.error(f"节点'{node_id}'被控制流异常中断: {e}", exc_info=self.debug_mode)
+            logger.error(f"??'{node_id}'????????: {e}", exc_info=self.debug_mode)
             self.step_states[node_id] = StepState.FAILED
             error_details = {"type": type(e).__name__, "message": str(e), "severity": e.severity}
             if self.debug_mode:
                 error_details["traceback"] = e.get_full_traceback()
         except Exception as e:
-            logger.error(f"节点'{node_id}'执行时发生意外错误: {e}", exc_info=True)
+            logger.error(f"??'{node_id}'????????? {e}", exc_info=True)
             self.step_states[node_id] = StepState.FAILED
             error_details = {"type": type(e).__name__, "message": str(e)}
             if self.debug_mode:
                 error_details["traceback"] = traceback.format_exc()
             if self.event_callback:
-                await self.event_callback('node.failed', {'node_id': node_id, 'error': str(e)})
+                end_ts = time.time()
+                await self.event_callback('node.failed', {
+                    **_base_payload(),
+                    'end_time': end_ts,
+                    'duration_ms': round((end_ts - start_time) * 1000, 3),
+                    'exception_type': type(e).__name__,
+                    'exception_message': str(e)
+                })
 
         finally:
             run_state = self._create_run_state(self.step_states.get(node_id, StepState.FAILED), start_time,
@@ -427,37 +532,31 @@ class ExecutionEngine:
             self.root_context.add_node_result(node_id, final_node_output)
             if self.event_callback:
                 status = 'error' if error_details else 'success'
+                end_ts = time.time()
                 await self.event_callback('node.finished', {
-                    'node_id': node_id,
-                    'end_time': time.time(),
+                    **_base_payload(),
+                    'end_time': end_ts,
+                    'duration_ms': round((end_ts - start_time) * 1000, 3),
                     'status': status
                 })
+            
 
     async def _execute_single_action(self, node_data: Dict, node_context: ExecutionContext) -> Any:
-        """(私有) 执行节点中定义的单个 action。
-
-        此方法会：
-        1. 从节点定义中提取 action 名称和原始参数
-        2. 使用 TemplateRenderer 渲染参数（解析 Jinja2 模板）
-        3. 通过 ActionInjector 执行 action 并返回结果
-
-        参数渲染的职责统一由 ActionInjector.execute 完成，避免重复渲染。
-        """
+        """(??) ?????????? action?"""
         renderer = TemplateRenderer(node_context, self.state_store)
         injector = ActionInjector(node_context, self, renderer, self.services)
 
         action_name = node_data.get('action')
         if not action_name:
-            raise ValueError("节点定义中缺少'action'。")
+            raise ValueError("??????? action")
 
         raw_params = node_data.get('params', {})
 
-        # 不在这里预先渲染，渲染逻辑交给 ActionInjector.execute
+        # ??????????????? ActionInjector.execute
         return await injector.execute(action_name, raw_params)
 
-    async def _execute_loop(self, node_id: str, node_data: Dict, node_context: ExecutionContext, loop_config: Dict) -> \
-            List[Any]:
-        """(私有) 执行节点中定义的循环逻辑。"""
+    async def _execute_loop(self, node_id: str, node_data: Dict, node_context: ExecutionContext, loop_config: Dict) -> List[Any]:
+        """(??) ?????????????"""
         renderer = TemplateRenderer(node_context, self.state_store)
         rendered_config = await renderer.render(loop_config)
 
@@ -466,7 +565,7 @@ class ExecutionEngine:
         if 'for_each' in rendered_config:
             items = rendered_config['for_each']
             if not isinstance(items, (list, dict)):
-                raise TypeError(f"loop.for_each 的结果必须是列表或字典，但得到的是 {type(items)}")
+                raise TypeError(f"loop.for_each ????????????????? {type(items)}")
 
             item_source = items.items() if isinstance(items, dict) else enumerate(items)
             for index, item in item_source:
@@ -478,7 +577,7 @@ class ExecutionEngine:
             try:
                 count = int(rendered_config['times'])
             except (ValueError, TypeError):
-                raise TypeError(f"loop.times 的结果必须是整数，但得到的是 {rendered_config['times']}")
+                raise TypeError(f"loop.times ?????????????? {rendered_config['times']}")
 
             for i in range(count):
                 iter_context = node_context.fork()
@@ -505,7 +604,7 @@ class ExecutionEngine:
             return results
 
         else:
-            raise ValueError(f"节点 '{node_id}' 的 loop 配置无效: {loop_config}")
+            raise ValueError(f"?? '{node_id}' ? loop ????: {loop_config}")
 
         parallelism = rendered_config.get('parallelism', len(tasks))
         semaphore = asyncio.Semaphore(parallelism)
@@ -516,72 +615,3 @@ class ExecutionEngine:
 
         results = await asyncio.gather(*[run_with_semaphore(task) for task in tasks])
         return results
-
-    async def _check_pause(self):
-        """(私有) 检查是否需要暂停任务执行。"""
-        if self.pause_event.is_set():
-            logger.warning("接收到全局暂停信号，任务执行已暂停。等待恢复信号...")
-            await self.pause_event.wait()
-            logger.info("接收到恢复信号，任务将继续执行。")
-
-    def _parse_retry_config(self, node_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        解析节点上的重试配置，支持以下等价写法：
-          - retry: 3
-          - retry_delay: 2
-          - retry_on: ["TimeoutError", "requests.exceptions.ConnectionError"]
-          - retry_condition: "{{ result.status_code >= 500 }}"
-        以及字典写法：
-          - retry:
-              count: 3
-              delay|interval: 1
-              on_exception|retry_on: [...]
-              condition|retry_condition: "..."
-        """
-        # 默认配置
-        cfg = {"count": 0, "delay": 0.0, "on_exception": None, "condition": None}
-
-        raw_retry = node_data.get("retry", None)
-        raw_delay = node_data.get("retry_delay", None)  # 简写覆盖
-        raw_retry_on = node_data.get("retry_on", None)
-        raw_retry_cond = node_data.get("retry_condition", None)
-
-        if isinstance(raw_retry, int):
-            cfg["count"] = max(0, int(raw_retry))
-        elif isinstance(raw_retry, dict):
-            cfg["count"] = max(0, int(raw_retry.get("count", 0) or 0))
-            # delay / interval 任选其一
-            if raw_retry.get("delay") is not None:
-                cfg["delay"] = float(raw_retry.get("delay") or 0.0)
-            if raw_retry.get("interval") is not None:
-                cfg["delay"] = float(raw_retry.get("interval") or cfg["delay"])
-            # on_exception / retry_on 任选其一
-            cfg["on_exception"] = raw_retry.get("on_exception") or raw_retry.get("retry_on")
-            # condition / retry_condition 任选其一
-            cfg["condition"] = raw_retry.get("condition") or raw_retry.get("retry_condition")
-
-        # 顶层简写覆盖字典写法
-        if raw_delay is not None:
-            cfg["delay"] = float(raw_delay or 0.0)
-        if raw_retry_on is not None:
-            cfg["on_exception"] = raw_retry_on
-        if raw_retry_cond is not None:
-            cfg["condition"] = raw_retry_cond
-
-        # 规范化列表
-        if isinstance(cfg["on_exception"], str):
-            cfg["on_exception"] = [cfg["on_exception"]]
-        if cfg["on_exception"] is not None and not isinstance(cfg["on_exception"], list):
-            cfg["on_exception"] = list(cfg["on_exception"])
-        return cfg
-
-
-    def _should_retry_on_exception(self, err: Exception, retry_on: Optional[List[str]]) -> bool:
-        """当 retry_on 为 None 时，对所有异常进行重试；否则匹配异常名或完整限定名。"""
-        if retry_on is None:
-            return True
-        exc_name = type(err).__name__
-        qual_name = f"{type(err).__module__}.{exc_name}"
-        targets = set(retry_on)
-        # 同时支持简名与完整限定名
-        return (exc_name in targets) or (qual_name in targets)

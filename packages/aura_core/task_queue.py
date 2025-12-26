@@ -6,6 +6,7 @@
 - `TaskQueue`: 一个支持高级操作（插入、删除、重排序）的异步任务队列。
 """
 import asyncio
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Literal, Callable
@@ -44,6 +45,7 @@ class Tasklet:
     resource_tags: List[str] = field(default_factory=list)
     timeout: Optional[float] = 3600.0
     cpu_bound: bool = False
+    enqueued_at: float = field(default_factory=time.time)
 
 
 class TaskQueue:

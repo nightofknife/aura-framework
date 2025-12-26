@@ -2,8 +2,8 @@
   <div class="execute-view">
     <div class="header-bar">
       <div>
-      <strong class="view-title">执行台</strong>
-      <div class="view-subtitle">选择任务 → 配置输入 → 前端排队 → 推送后端 → 运行/观察</div>
+        <strong class="view-title">执行台</strong>
+        <div class="view-subtitle">选择任务 → 配置输入 → 前端排队 → 推送后端 → 运行/观察</div>
       </div>
       <div class="toolbar">
         <span class="pill" :class="engineRunning ? 'pill-blue' : ''">
@@ -13,16 +13,14 @@
       </div>
     </div>
 
-    <!-- 任务浏览 -->
-    <!-- 任务选择 -->
     <div class="content-grid">
       <SchemePanel v-model:open="open.byPlan" title="按计划" description="按 Plan 浏览可用任务">
         <div class="controls">
           <select class="select" v-model="ui.planSelected">
-            <option disabled value="">选择 Plan…</option>
+            <option disabled value="">选择 Plan</option>
             <option v-for="p in plans" :key="p.name" :value="p.name">{{ p.name }}</option>
           </select>
-          <input class="input" v-model="ui.query" placeholder="搜索任务…" />
+          <input class="input" v-model="ui.query" placeholder="搜索任务" />
         </div>
         <TransitionGroup name="fade" tag="div" class="task-grid">
           <TaskMiniCard
@@ -44,9 +42,7 @@
       </SchemePanel>
     </div>
 
-    <!-- 队列区域 -->
     <div class="queue-grid">
-      <!-- 左：GUI 队列 -->
       <div class="panel glass glass-thick">
         <div class="panel-header">
           <strong>GUI 队列（本地待推送）</strong>
@@ -89,7 +85,6 @@
         </div>
       </div>
 
-      <!-- 右：后端队列 -->
       <div class="panel glass glass-thick">
         <div class="panel-header">
           <strong>后端队列 ({{ readyQueue.length + activeRuns.length }})</strong>
@@ -145,7 +140,6 @@
       </div>
     </div>
 
-    <!-- 底部：历史任务 -->
     <div class="panel glass glass-thick">
       <div class="panel-header">
         <strong>历史任务</strong>
@@ -160,12 +154,12 @@
           </tr>
           </thead>
           <tbody>
-          <tr v-for="hist in filteredHistory" :key="hist.id">
-            <td><strong>{{ hist.plan }}</strong> / {{ hist.task }}</td>
-            <td>{{ hist.status }}</td>
-            <td>{{ fmtTimeMs(hist.at) }}</td>
+          <tr v-for="it in historyView" :key="it.id">
+            <td><strong>{{ it.plan }}</strong> / {{ it.task }}</td>
+            <td>{{ it.status }}</td>
+            <td>{{ fmtTimeMs(it.at) }}</td>
           </tr>
-          <tr v-if="!pushHistory.length">
+          <tr v-if="!history.length">
             <td colspan="3" class="empty-state">暂无历史记录</td>
           </tr>
           </tbody>
@@ -173,398 +167,349 @@
       </div>
     </div>
 
-    <!-- 右侧配置抽屉 -->
-    <ProContextPanel :open="cfg.open" :title="cfg.title" @close="cfg.open=false">
+    <ProContextPanel :open="config.open" :title="config.title" @close="config.open = false">
       <div style="color:var(--text-secondary); font-size:12px;">
-        {{ cfg.plan }} / {{ cfg.task }}
+        {{ config.plan }} / {{ config.task }}
       </div>
-
-      <div v-if="hasSchema" class="form-grid">
-        <div v-for="f in schemaFields" :key="f.key" class="field">
-          <div class="label">{{ f.label }}</div>
-          <select class="select" v-if="f.type==='enum'" v-model="formModel[f.key]">
-            <option v-for="opt in f.enum" :key="opt" :value="opt">{{ opt }}</option>
-          </select>
-          <input class="input" v-else-if="f.type==='number'" type="number" v-model.number="formModel[f.key]" />
-          <label class="chk" v-else-if="f.type==='boolean'">
-            <input type="checkbox" v-model="formModel[f.key]"> {{ f.label }}
-          </label>
-          <input class="input" v-else v-model="formModel[f.key]" />
-        </div>
+      <div v-if="hasInputs" class="form-grid">
+        <InputFieldRenderer
+          v-for="input in normalizedInputs"
+          :key="input.name"
+          :schema="input"
+          v-model="inputModel[input.name]"
+        />
       </div>
-
-      <div v-else class="json-input">
-        <div class="label">Inputs (JSON)</div>
-        <textarea v-model="cfg.inputsRaw" class="textarea"></textarea>
-        <div v-if="cfg.jsonError" class="error">{{ cfg.jsonError }}</div>
-      </div>
-
+      <div v-else class="empty-state">This task requires no inputs.</div>
       <div class="field">
         <div class="label">Repeat</div>
-        <input class="input" type="number" min="1" max="500" v-model.number="cfg.repeat">
+        <input class="input" type="number" min="1" max="500" v-model.number="config.repeat" />
       </div>
-
       <div style="display:flex; gap:8px;">
-        <button class="btn btn-primary" @click="addToGuiQueue" :disabled="!canAdd">加入前端队列</button>
-        <button class="btn btn-ghost" @click="cfg.open=false">取消</button>
+        <button class="btn btn-primary" @click="addToGuiQueue" :disabled="!canAdd">
+          加入前端队列
+        </button>
+        <button class="btn btn-ghost" @click="config.open = false">取消</button>
       </div>
     </ProContextPanel>
   </div>
 </template>
 
 <script setup>
-import {computed, reactive, ref, onMounted, onUnmounted} from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import axios from 'axios';
-import { getGuiConfig } from '../config.js';
 import SchemePanel from '../components/SchemePanel.vue';
 import TaskMiniCard from '../components/TaskMiniCard.vue';
 import ProContextPanel from '../components/ProContextPanel.vue';
-import {useToasts} from '../composables/useToasts.js';
-import {useBackendQueue} from '../composables/useBackendQueue.js';
-import {useGuiQueue} from '../composables/useGuiQueue.js';
+import InputFieldRenderer from '../components/InputFieldRenderer.vue';
+import { useToasts } from '../composables/useToasts.js';
+import { getGuiConfig } from '../config.js';
+import { useBackendQueue } from '../composables/useBackendQueue.js';
+import { useGuiQueue } from '../composables/useGuiQueue.js';
+import { buildDefaultFromSchema, normalizeInputSchema } from '../utils/inputSchema.js';
+import { parseTaskFile } from '../task_editor/convert/yamlCompiler.js';
 
-const {push: toast} = useToasts();
-const guiConfig = getGuiConfig();
+const { push: toast } = useToasts();
+const cfg = getGuiConfig();
 const api = axios.create({
-  baseURL: guiConfig?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
-  timeout: guiConfig?.api?.timeout_ms || 5000,
+  baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
+  timeout: cfg?.api?.timeout_ms || 5000,
 });
 
 const engineRunning = ref(false);
 const plans = ref([]);
-const allTasks = ref([]);
-const ui = reactive({planSelected: '', query: ''});
+const tasks = ref([]);
+const ui = reactive({ planSelected: '', query: '' });
+const open = reactive({ byPlan: true, favs: true });
+const favKey = 'exec.favs';
+const favSet = ref(new Set(JSON.parse(localStorage.getItem(favKey) || '[]')));
 
-const open = reactive({byPlan: true, favs: true});
-
-// 收藏
-const FAV_KEY = 'exec.favs';
-const favSet = ref(new Set(JSON.parse(localStorage.getItem(FAV_KEY) || '[]')));
 function toggleFav(plan, task) {
-  const k = `${plan}::${task}`;
+  const key = `${plan}::${task}`;
   const next = new Set(favSet.value);
-  next.has(k) ? next.delete(k) : next.add(k);
+  if (next.has(key)) {
+    next.delete(key);
+  } else {
+    next.add(key);
+  }
   favSet.value = next;
-  localStorage.setItem(FAV_KEY, JSON.stringify([...next]));
+  localStorage.setItem(favKey, JSON.stringify([...next]));
 }
+
 const favTasksView = computed(() => {
-  const map = new Map(allTasks.value.map(t => [t.__key, t]));
-  const list = [...favSet.value.values()].map(k => map.get(k)).filter(Boolean);
-  return list
-      .sort((a, b) => a.title.localeCompare(b.title) || a.plan.localeCompare(b.plan) || a.task.localeCompare(b.task))
-      .map(t => ({...t, titleHtml: t.title, descHtml: t.desc, starred: true}));
+  const map = new Map(tasks.value.map(item => [item.__key, item]));
+  return [...favSet.value.values()]
+    .map(key => map.get(key))
+    .filter(Boolean)
+    .sort((a, b) => a.title.localeCompare(b.title) || a.plan.localeCompare(b.plan) || a.task.localeCompare(b.task))
+    .map(item => ({ ...item, titleHtml: item.title, descHtml: item.desc, starred: true }));
 });
 
-// 任务过滤
 const filteredTasks = computed(() => {
-  const ps = ui.planSelected || (plans.value[0]?.name || '');
-  const q = (ui.query || '').trim().toLowerCase();
-  const match = (t) => !q || (t.plan + t.task + t.title + t.desc).toLowerCase().includes(q);
-  const inPlan = allTasks.value.filter(t => t.plan === ps && match(t));
-  const other = allTasks.value.filter(t => t.plan !== ps && match(t));
-  const cmp = (a, b) => {
-    const af = favSet.value.has(`${a.plan}::${a.task}`);
-    const bf = favSet.value.has(`${b.plan}::${b.task}`);
-    if (af !== bf) return af ? -1 : 1;
-    const at = a.title.localeCompare(b.title);
-    if (at) return at;
-    const ap = a.plan.localeCompare(b.plan);
-    if (ap) return ap;
-    return a.task.localeCompare(b.task);
+  const plan = ui.planSelected || plans.value[0]?.name || '';
+  const query = (ui.query || '').trim().toLowerCase();
+  const match = (item) => !query || `${item.plan}${item.task}${item.title}${item.desc}`.toLowerCase().includes(query);
+  const inPlan = tasks.value.filter(item => item.plan === plan && match(item));
+  const outPlan = tasks.value.filter(item => item.plan !== plan && match(item));
+  const sorter = (a, b) => {
+    const aFav = favSet.value.has(`${a.plan}::${a.task}`);
+    const bFav = favSet.value.has(`${b.plan}::${b.task}`);
+    if (aFav !== bFav) return aFav ? -1 : 1;
+    const titleCmp = a.title.localeCompare(b.title);
+    if (titleCmp) return titleCmp;
+    const planCmp = a.plan.localeCompare(b.plan);
+    return planCmp || a.task.localeCompare(b.task);
   };
-  return [...inPlan, ...other].sort(cmp).map(t => ({
-    ...t,
-    starred: favSet.value.has(`${t.plan}::${t.task}`),
-    titleHtml: t.title,
-    descHtml: t.desc,
-  }));
+  return [...inPlan, ...outPlan]
+    .sort(sorter)
+    .map(item => ({
+      ...item,
+      starred: favSet.value.has(`${item.plan}::${item.task}`),
+      titleHtml: item.title,
+      descHtml: item.desc,
+    }));
 });
 
 async function loadPlans() {
   try {
-    const {data} = await api.get('/plans');
+    const { data } = await api.get('/plans');
     plans.value = data || [];
-  } catch (e) {
-    toast({type: 'error', title: 'Load plans failed', message: e.message});
+  } catch (err) {
+    toast({ type: 'error', title: 'Load plans failed', message: err.message });
   }
 }
 
-async function loadAllTasks() {
-  const result = [];
-  for (const p of plans.value) {
+async function loadTasks() {
+  const list = [];
+  for (const plan of plans.value) {
     try {
-      const {data} = await api.get(`/plans/${p.name}/tasks`);
-      (data || []).forEach(t => {
-        result.push({
-          __key: `${p.name}::${t.task_name_in_plan || t.task_name}`,
-          plan: p.name,
-          task: t.task_name_in_plan || t.task_name,
-          title: t.meta?.title || (t.task_name_in_plan || t.task_name),
-          desc: t.meta?.description || '',
-          meta: t.meta || {},
+      const { data } = await api.get(`/plans/${plan.name}/tasks`);
+      (data || []).forEach((task) => {
+        list.push({
+          __key: `${plan.name}::${task.task_name_in_plan || task.task_name}`,
+          plan: plan.name,
+          task: task.task_name_in_plan || task.task_name,
+          title: task.meta?.title || task.task_name_in_plan || task.task_name,
+          desc: task.meta?.description || '',
+          meta: task.meta || {},
         });
       });
-    } catch {}
+    } catch {
+      /* ignore per-plan failures */
+    }
   }
-  allTasks.value = result;
+  tasks.value = list;
 }
 
-// 配置面板
-const cfg = reactive({
+const config = reactive({
   open: false,
   plan: '',
   task: '',
   title: 'Configure Task',
   meta: null,
-  inputsRaw: '{}',
-  jsonError: '',
   repeat: 1,
 });
-const formModel = reactive({});
-const hasSchema = computed(() => !!cfg.meta?.inputs_schema);
-const schemaFields = computed(() => {
-  if (!cfg.meta?.inputs_schema) return [];
-  return Object.entries(cfg.meta.inputs_schema).map(([key, def]) => ({
-    key,
-    label: def.title || key,
-    type: def.enum ? 'enum' : def.type || 'string',
-    enum: def.enum || [],
-  }));
+const inputModel = reactive({});
+const normalizedInputs = computed(() => {
+  if (!Array.isArray(config.meta?.inputs)) return [];
+  return (config.meta.inputs || [])
+    .filter((input) => input && typeof input === 'object' && input.name)
+    .map((input) => normalizeInputSchema({
+      ...input,
+      label: input.label || input.name,
+      name: input.name,
+    }));
 });
+const hasInputs = computed(() => normalizedInputs.value.length > 0);
 
-function formModelReset() {
-  Object.keys(formModel).forEach(k => delete formModel[k]);
+function deriveFilePath(taskName) {
+  const parts = taskName.split('/');
+  if (parts.length === 1) {
+    return `tasks/${parts[0]}.yaml`;
+  }
+  const filePath = parts.slice(0, -1).join('/');
+  return `tasks/${filePath}.yaml`;
 }
 
-function openConfig(plan, task, meta) {
-  cfg.open = true;
-  cfg.plan = plan;
-  cfg.task = task;
-  cfg.meta = meta || {};
-  cfg.title = `Configure · ${task}`;
-  cfg.repeat = 1;
-  cfg.jsonError = '';
-  cfg.inputsRaw = JSON.stringify(buildDefaultInputs(meta), null, 2);
-  if (hasSchema.value) {
-    formModelReset();
-    const def = cfg.meta?.defaults || {};
-    for (const f of schemaFields.value) formModel[f.key] = def[f.key] ?? (f.type === 'boolean' ? false : (f.type === 'number' ? 0 : ''));
-  }
-}
-
-function buildDefaultInputs(meta) {
-  // 优先使用 schema/defaults，其次使用 inputs 列表中的 default
-  if (meta?.defaults && typeof meta.defaults === 'object') return meta.defaults;
-  if (Array.isArray(meta?.inputs)) {
-    const obj = {};
-    meta.inputs.forEach(inp => {
-      if (inp?.name) obj[inp.name] = inp.default ?? '';
-    });
-    return obj;
-  }
-  return {};
-}
-
-const canAdd = computed(() => !!cfg.plan && !!cfg.task);
-
-function buildInputs() {
-  if (hasSchema.value) {
-    return {...formModel};
-  }
+async function reloadTaskFile(plan, taskName) {
+  const filePath = deriveFilePath(taskName);
   try {
-    cfg.jsonError = '';
-    return JSON.parse(cfg.inputsRaw || '{}');
-  } catch (e) {
-    cfg.jsonError = e.message;
-    return null;
+    await api.post(`/plans/${plan}/files/reload`, null, { params: { path: filePath } });
+  } catch (err) {
+    console.warn('[ExecuteView] reload task file failed:', err);
   }
+  return filePath;
 }
 
-// 后端队列操作
-const {readyQueue, fetchReady, remove: removeQueueApi, moveFront: moveFrontApi, clear: clearQueueApi, activeRuns, fetchActiveRuns} = useBackendQueue();
-const {items: guiItems, add: addGui, update: updateGui, remove: removeGuiItem, clear: clearGui, move: moveGuiItem} = useGuiQueue();
+async function resolveTaskMeta(plan, taskName, meta = {}) {
+  if (Array.isArray(meta?.inputs)) return meta;
+  const filePath = await reloadTaskFile(plan, taskName);
+  try {
+    const { data } = await api.get(`/plans/${plan}/files/content`, { params: { path: filePath } });
+    const taskFile = parseTaskFile(data, filePath);
+    const taskKey = taskName.split('/').slice(-1)[0];
+    const fileMeta = taskFile?.tasks?.[taskKey]?.meta;
+    if (fileMeta && typeof fileMeta === 'object') {
+      return { ...meta, ...fileMeta, inputs: fileMeta.inputs ?? meta.inputs };
+    }
+  } catch (err) {
+    console.warn('[ExecuteView] load task meta failed:', err);
+  }
+  return meta;
+}
 
-const pushHistory = ref([]);
-let pollTimer = null;
-let activeSnapshot = new Map();
-const pendingFinish = new Map();
-const FINAL_STATUS_MAP = new Map([
-  ['success', 'success'],
-  ['succeeded', 'success'],
-  ['ok', 'success'],
-  ['error', 'error'],
-  ['failed', 'error'],
-  ['fail', 'error'],
-  ['timeout', 'error'],
-  ['cancelled', 'cancelled'],
-  ['canceled', 'cancelled'],
-  ['aborted', 'cancelled'],
-  ['skipped', 'skipped'],
-]);
-const TRANSIENT_STATUSES = new Set(['running', 'starting', 'queued', 'pending', 'pushing', 'unknown']);
-const filteredHistory = computed(() => {
-  const excluded = new Set(['已推送', 'queued', '运行中', 'starting', 'unknown']);
-  return pushHistory.value.filter(h => {
-    if (!h.plan || !h.task || !h.status) return false;
-    const s = String(h.status).toLowerCase();
-    return !excluded.has(h.status) && !excluded.has(s) && !s.includes('starting');
+function resetInputModel() {
+  Object.keys(inputModel).forEach(key => delete inputModel[key]);
+}
+
+function applyInputDefaults() {
+  resetInputModel();
+  const defaults = (config.meta?.defaults && typeof config.meta.defaults === 'object')
+    ? config.meta.defaults
+    : {};
+  normalizedInputs.value.forEach((schema) => {
+    const fallback = buildDefaultFromSchema(schema);
+    inputModel[schema.name] = defaults[schema.name] ?? fallback;
   });
-});
+}
+
+async function openConfig(plan, task, meta) {
+  config.open = true;
+  config.plan = plan;
+  config.task = task;
+  config.meta = await resolveTaskMeta(plan, task, meta || {});
+  config.title = `Configure · ${task}`;
+  config.repeat = 1;
+  applyInputDefaults();
+}
+
+const canAdd = computed(() => !!config.plan && !!config.task);
+
+function parseInputs() {
+  return { ...inputModel };
+}
+
+const {
+  readyQueue,
+  fetchReady,
+  remove: removeReady,
+  moveFront: moveFrontBackend,
+  clear: clearReady,
+  activeRuns,
+  fetchActiveRuns,
+} = useBackendQueue();
+const {
+  items: guiItems,
+  add: addGui,
+  update: updateGui,
+  remove: removeGuiItem,
+  clear: clearGuiItems,
+  move: moveGuiItem,
+} = useGuiQueue();
+
+const history = ref([]);
+let pollTimer = null;
+let activeMap = new Map();
+const historyView = computed(() =>
+  history.value.filter(item => item.plan && item.task && item.status && !String(item.status).toLowerCase().includes('starting'))
+);
 
 async function refreshQueue() {
   await fetchReady();
 }
-async function refreshRuns() {
-  const prev = new Map(activeSnapshot);
+
+async function refreshActiveRuns() {
+  const prev = new Map(activeMap);
   await fetchActiveRuns();
-  // Identify finished runs and move to history
-  activeSnapshot = new Map();
+  activeMap = new Map();
   for (const run of activeRuns.value) {
     const key = run.trace_id || run.cid || `${run.plan_name}/${run.task_name}`;
-    activeSnapshot.set(key, run);
+    activeMap.set(key, run);
     prev.delete(key);
   }
-  // Remaining items in prev need final status confirmation
   prev.forEach((run, key) => {
-    if (!pendingFinish.has(key)) pendingFinish.set(key, run);
-  });
-  await resolvePendingFinished();
-}
-
-function normalizeFinalStatus(status) {
-  if (!status) return null;
-  const s = String(status).toLowerCase();
-  return FINAL_STATUS_MAP.get(s) || null;
-}
-
-function isTransientStatus(status) {
-  if (!status) return true;
-  const s = String(status).toLowerCase();
-  return TRANSIENT_STATUSES.has(s);
-}
-
-function pushHistoryEntry(run, status, finishedAt) {
-  const key = run.trace_id || run.cid || `${run.plan_name}/${run.task_name}`;
-  pushHistory.value = [
-    {
+    history.value = [{
       id: `hist_${key}_${Date.now()}`,
       plan: run.plan_name,
       task: run.task_name,
-      status,
-      at: finishedAt || run.finished_at || Date.now(),
-    },
-    ...pushHistory.value
-  ].slice(0, 100);
-}
-
-async function resolvePendingFinished() {
-  if (!pendingFinish.size) return;
-  const pending = [...pendingFinish.entries()];
-  const cids = pending.map(([, run]) => run.cid).filter(Boolean);
-  const statusByCid = new Map();
-
-  if (cids.length) {
-    try {
-      const {data} = await api.post('/tasks/status/batch', {cids});
-      for (const item of data?.tasks || []) {
-        if (item?.cid) statusByCid.set(item.cid, item);
-      }
-    } catch (e) {
-      console.warn('[Execute] batch status failed', e);
-    }
-  }
-
-  for (const [key, run] of pending) {
-    const info = run.cid ? statusByCid.get(run.cid) : null;
-    const rawStatus = info?.status || run.status;
-    const finalStatus = normalizeFinalStatus(rawStatus);
-    if (finalStatus) {
-      pushHistoryEntry({
-        ...run,
-        plan_name: info?.plan_name || run.plan_name,
-        task_name: info?.task_name || run.task_name,
-        finished_at: info?.finished_at || run.finished_at,
-      }, finalStatus, info?.finished_at);
-      pendingFinish.delete(key);
-      console.log('[Execute] run finished -> history:', key, info || run);
-      continue;
-    }
-    if (rawStatus && String(rawStatus).toLowerCase() == 'not_found') {
-      pendingFinish.delete(key);
-      continue;
-    }
-    if (isTransientStatus(rawStatus)) {
-      continue;
-    }
-    if (rawStatus) {
-      pushHistoryEntry(run, rawStatus, info?.finished_at);
-      pendingFinish.delete(key);
-      console.log('[Execute] run finished -> history:', key, info || run);
-    }
-  }
+      status: run.status || '完成',
+      at: Date.now(),
+    }, ...history.value].slice(0, 100);
+  });
 }
 
 async function removeQueue(cid) {
-  await removeQueueApi(cid);
+  await removeReady(cid);
   await fetchReady();
 }
-async function moveFront(cid) {
-  await moveFrontApi(cid);
+
+async function moveFrontQueue(cid) {
+  await moveFrontBackend(cid);
   await fetchReady();
 }
+
 async function clearQueue() {
-  await clearQueueApi();
+  await clearReady();
   await fetchReady();
 }
 
 function addToGuiQueue() {
-  const inputs = buildInputs();
-  if (inputs === null) return;
-  const repeat = Math.max(1, Math.min(500, cfg.repeat || 1));
-  for (let i = 0; i < repeat; i++) {
-    addGui({
-      plan: cfg.plan,
-      task: cfg.task,
-      inputs,
-      repeat: 1,
-    });
+  const inputs = parseInputs();
+  const repeat = Math.max(1, Math.min(500, config.repeat || 1));
+  for (let i = 0; i < repeat; i += 1) {
+    addGui({ plan: config.plan, task: config.task, inputs, repeat: 1 });
   }
-  cfg.open = false;
-  toast({type: 'success', title: '已加入前端队列', message: `${cfg.plan} / ${cfg.task} ×${repeat}`});
+  config.open = false;
+  toast({
+    type: 'success',
+    title: '已加入前端队列',
+    message: `${config.plan} / ${config.task} ×${repeat}`,
+  });
 }
 
 async function pushToBackend(item) {
   const inputs = item.inputs || {};
-  updateGui(item.id, {status: 'pushing'});
+  updateGui(item.id, { status: 'pushing' });
   try {
+    await reloadTaskFile(item.plan, item.task);
     const repeat = Math.max(1, item.repeat || 1);
     let cid = null;
-    console.log('[Execute] pushing item:', item, 'repeat:', repeat);
     if (repeat > 1) {
-      const tasks = Array.from({length: repeat}, () => ({
+      const tasksPayload = Array.from({ length: repeat }, () => ({
         plan_name: item.plan,
         task_name: item.task,
         inputs,
       }));
-      const {data} = await api.post('/tasks/batch', {tasks});
+      const { data } = await api.post('/tasks/batch', { tasks: tasksPayload });
       if (Array.isArray(data?.results) && data.results.length) {
         cid = data.results[0]?.cid || null;
       }
     } else {
-      const {data} = await api.post('/tasks/run', {plan_name: item.plan, task_name: item.task, inputs});
+      const { data } = await api.post('/tasks/run', {
+        plan_name: item.plan,
+        task_name: item.task,
+        inputs,
+      });
       cid = data?.cid || null;
     }
-    updateGui(item.id, {status: 'queued', lastCid: cid, pushedAt: Date.now()});
-    // 推送成功后从 GUI 队列移除
+    updateGui(item.id, { status: 'queued', lastCid: cid, pushedAt: Date.now() });
+    history.value = [{
+      id: item.id,
+      plan: item.plan,
+      task: item.task,
+      status: '已推送',
+      at: Date.now(),
+    }, ...history.value].slice(0, 50);
     removeGuiItem(item.id);
-    toast({type: 'success', title: '已推送', message: `${item.plan} / ${item.task}`});
+    toast({ type: 'success', title: '已推送', message: `${item.plan} / ${item.task}` });
     await fetchReady();
-    await refreshRuns();
-    console.log('[Execute] push success, cid:', cid);
-  } catch (e) {
-    updateGui(item.id, {status: 'pending'});
-    toast({type: 'error', title: 'Push failed', message: e?.response?.data?.detail || e.message});
-    console.error('[Execute] push failed', e);
+    await refreshActiveRuns();
+  } catch (err) {
+    updateGui(item.id, { status: 'pending' });
+    toast({
+      type: 'error',
+      title: 'Push failed',
+      message: err?.response?.data?.detail || err.message,
+    });
   }
 }
 
@@ -572,54 +517,65 @@ function removeGui(id) {
   removeGuiItem(id);
 }
 
-function moveGui(id, dir) {
-  moveGuiItem(id, dir);
+function moveGui(id, direction) {
+  moveGuiItem(id, direction);
 }
 
 function clearGuiQueue() {
-  clearGui();
+  clearGuiItems();
 }
 
 async function pushAllGui() {
-  // 复制当前列表，逐个推送
   const list = [...guiItems.value];
-  for (const it of list) {
-    await pushToBackend(it);
+  for (const item of list) {
+    await pushToBackend(item);
   }
 }
 
 function fmtTime(ts) {
-  if (!ts) return '-';
-  const d = new Date(ts * 1000);
-  return d.toLocaleTimeString();
+  return ts ? new Date(ts * 1000).toLocaleTimeString() : '-';
 }
 
 function fmtTimeMs(ts) {
   if (!ts) return '-';
-  const d = new Date(typeof ts === 'number' && ts > 1e12 ? ts : ts * 1000);
-  return d.toLocaleString();
+  const ms = typeof ts === 'number' && ts > 1e12 ? ts : ts * 1000;
+  return new Date(ms).toLocaleString();
 }
 
-function guiStatusLabel(st) {
-  return st === 'pending' ? '待推送' : st === 'pushing' ? '推送中' : st === 'queued' ? '已推送' : st;
+function guiStatusLabel(status) {
+  if (status === 'pending') return '待推送';
+  if (status === 'pushing') return '推送中';
+  if (status === 'queued') return '已推送';
+  return status;
 }
-function guiStatusClass(st) {
-  return st === 'queued' ? 'pill-green' : st === 'pushing' ? 'pill-blue' : '';
+
+function guiStatusClass(status) {
+  if (status === 'queued') return 'pill-green';
+  if (status === 'pushing') return 'pill-blue';
+  return '';
+}
+
+function moveFront(cid) {
+  moveFrontQueue(cid);
 }
 
 onMounted(async () => {
   await loadPlans();
-  if (!ui.planSelected && plans.value.length) ui.planSelected = plans.value[0].name;
-  await loadAllTasks();
+  if (!ui.planSelected && plans.value.length) {
+    ui.planSelected = plans.value[0].name;
+  }
+  await loadTasks();
   await fetchReady();
-  await refreshRuns();
+  await refreshActiveRuns();
   try {
-    const {data} = await api.get('/system/status');
+    const { data } = await api.get('/system/status');
     engineRunning.value = !!data?.is_running;
-  } catch {}
+  } catch {
+    engineRunning.value = false;
+  }
   pollTimer = setInterval(async () => {
     await fetchReady();
-    await refreshRuns();
+    await refreshActiveRuns();
   }, 2000);
 });
 
@@ -629,23 +585,23 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.execute-view{display:flex;flex-direction:column;gap:16px;}
-.header-bar{display:flex;justify-content:space-between;align-items:center;}
-.view-title{font-size:22px;}
-.view-subtitle{color:var(--text-3);font-size:12px;}
-.toolbar{display:flex;gap:8px;align-items:center;}
-.pill{padding:4px 10px;border-radius:999px;background:#eee;color:#555;font-size:12px;}
-.pill-blue{background:#e0f2ff;color:#0369a1;}
-.pill-green{background:#e0ffe8;color:#0f9d58;}
-.content-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-.task-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:10px;}
-.empty-state{color:#999;text-align:center;padding:16px;}
-.queue-panel table{width:100%;border-collapse:collapse;}
-.queue-panel th,.queue-panel td{padding:8px;border-bottom:1px solid #eee;text-align:left;}
-.queue-panel code{font-family:ui-monospace,Menlo,monospace;font-size:12px;}
-.trace-label{font-size:11px;color:var(--text-3);line-height:1.2;}
-.json-input .textarea{width:100%;height:160px;}
-.form-grid{display:grid;grid-template-columns:1fr;gap:12px;margin:12px 0;}
-.field .label{font-size:12px;color:var(--text-3);margin-bottom:4px;}
-.error{color:#c00;font-size:12px;}
+.execute-view { display: flex; flex-direction: column; gap: 16px; }
+.header-bar { display: flex; justify-content: space-between; align-items: center; }
+.view-title { font-size: 22px; }
+.view-subtitle { color: var(--text-3); font-size: 12px; }
+.toolbar { display: flex; gap: 8px; align-items: center; }
+.pill { padding: 4px 10px; border-radius: 999px; background: #eee; color: #555; font-size: 12px; }
+.pill-blue { background: #e0f2ff; color: #0369a1; }
+.pill-green { background: #e0ffe8; color: #0f9d58; }
+.content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
+.empty-state { color: #999; text-align: center; padding: 16px; }
+.queue-panel table { width: 100%; border-collapse: collapse; }
+.queue-panel th, .queue-panel td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; }
+.queue-panel code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.trace-label { font-size: 11px; color: var(--text-3); line-height: 1.2; }
+.json-input .textarea { width: 100%; height: 160px; }
+.form-grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin: 12px 0; }
+.field .label { font-size: 12px; color: var(--text-3); margin-bottom: 4px; }
+.error { color: #c00; font-size: 12px; }
 </style>

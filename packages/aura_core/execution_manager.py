@@ -27,7 +27,7 @@ from contextlib import AsyncExitStack
 
 from packages.aura_core.api import hook_manager
 from packages.aura_core.task_queue import Tasklet
-from packages.aura_core.logger import logger
+from packages.aura_core.logger import logger, set_cid, reset_cid
 from packages.aura_core.config_loader import get_config_value
 
 if TYPE_CHECKING:
@@ -113,6 +113,8 @@ class ExecutionManager:
 
         semaphores = await self._get_semaphores_for(tasklet)
 
+        cid_token = set_cid(tasklet.cid or (tasklet.payload.get('cid') if tasklet.payload else None))
+
         try:
             async with AsyncExitStack() as stack:
                 for sem in semaphores:
@@ -129,11 +131,23 @@ class ExecutionManager:
                     result = await self._run_execution_chain(tasklet)
                     task_context['end_time'] = datetime.now()
                     task_context['result'] = result
-                    await hook_manager.trigger('after_task_success', task_context=task_context)
-                    logger.info(f"任务 '{task_name_for_log}' 执行成功。")
-                    if task_id_for_status and not is_interrupt_handler:
-                        self.scheduler.update_run_status(task_id_for_status,
-                                                         {'status': 'idle', 'last_run': now, 'result': 'success'})
+                    result_status = None
+                    if isinstance(result, dict):
+                        result_status = result.get('status') or result.get('final_status')
+                    status_norm = str(result_status).upper() if result_status else ''
+                    if status_norm and status_norm not in {'SUCCESS', 'OK'}:
+                        task_context['exception'] = RuntimeError(f"Task result status: {result_status}")
+                        await hook_manager.trigger('after_task_failure', task_context=task_context)
+                        logger.error(f"任务 '{task_name_for_log}' 执行失败: {result_status}")
+                        if task_id_for_status and not is_interrupt_handler:
+                            self.scheduler.update_run_status(task_id_for_status,
+                                                             {'status': 'idle', 'last_run': now, 'result': 'failure'})
+                    else:
+                        await hook_manager.trigger('after_task_success', task_context=task_context)
+                        logger.info(f"任务 '{task_name_for_log}' 执行成功。")
+                        if task_id_for_status and not is_interrupt_handler:
+                            self.scheduler.update_run_status(task_id_for_status,
+                                                             {'status': 'idle', 'last_run': now, 'result': 'success'})
 
         except (asyncio.TimeoutError, asyncio.CancelledError, StatePlanningError) as e:
             status_update = {'status': 'idle', 'last_run': now}
@@ -166,6 +180,7 @@ class ExecutionManager:
             #         logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")
             await hook_manager.trigger('after_task_run', task_context=task_context)
             logger.debug(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")
+            reset_cid(cid_token)
 
     async def _handle_state_planning(self, tasklet: Tasklet) -> bool:
         """(私有) 处理状态规划逻辑。
