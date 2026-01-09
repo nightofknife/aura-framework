@@ -312,6 +312,12 @@ class ProcessManagerService:
     def _await(self, coro):
         import asyncio
         loop = self._get_running_loop()
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is loop:
+            raise RuntimeError("ProcessManagerService sync API called from event loop thread; use *_async to avoid deadlock.")
         fut = asyncio.run_coroutine_threadsafe(coro, loop)
         return fut.result()
 

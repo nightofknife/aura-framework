@@ -15,6 +15,7 @@ from .logger import logger
 from .orchestrator import Orchestrator
 from .plugin_manager import PluginManager
 from .state_planner import StateMap, StatePlanner
+from .api import hook_manager
 
 
 class PlanManager:
@@ -69,6 +70,12 @@ class PlanManager:
                     continue
                 plan_name = plugin_def.path.name
                 plan_path = plugin_def.path
+                config_data = self._load_plan_config(plan_path)
+
+                if not self._run_plan_hook("plan.before_load", plan_name=plan_name, plan_path=plan_path,
+                                       config=config_data, plugin=plugin_def, stop_on_false=True, fail_on_false=True):
+                    logger.warning("Skipping plan '%s' due to before_load hook result.", plan_name)
+                    continue
 
                 # 步骤 1: 先创建 Orchestrator 实例，此时 state_planner 暂时为 None
                 logger.info(f"  -> 创建 Orchestrator for plan: '{plan_name}'")
@@ -99,7 +106,63 @@ class PlanManager:
                     except Exception as e:
                         logger.error(f"  -> 加载方案 '{plan_name}' 的状态地图失败: {e}", exc_info=True)
 
+                self._run_plan_hook(
+                    "plan.after_load",
+                    plan_name=plan_name,
+                    plan_path=plan_path,
+                    config=config_data,
+                    plugin=plugin_def,
+                    orchestrator=orchestrator,
+                )
+
         logger.info(f"======= PlanManager: 初始化完成，{len(self.plans)} 个方案已准备就绪 =======")
+
+    def _load_plan_config(self, plan_path: Path) -> Dict:
+        config_path = plan_path / 'config.yaml'
+        if not config_path.is_file():
+            return {}
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f) or {}
+        except Exception as e:
+            logger.error(f"Failed to load plan config '{config_path}': {e}")
+            return {}
+
+    def _run_plan_hook(self, hook_name: str, **payload) -> bool:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            logger.error('PlanManager cannot run hooks inside an active event loop thread.')
+            return False
+
+        stop_on_false = bool(payload.pop('stop_on_false', False))
+        fail_on_false = bool(payload.pop('fail_on_false', False))
+        try:
+            results = asyncio.run(
+                hook_manager.trigger_with_results(
+                    hook_name,
+                    stop_on_false=stop_on_false,
+                    raise_on_error=False,
+                    **payload
+                )
+            )
+        except Exception as e:
+            logger.error("Hook '%s' execution failed: %s", hook_name, e, exc_info=True)
+            return False
+
+        failed = False
+        for result in results:
+            if not result.ok:
+                failed = True
+            elif result.result is False:
+                failed = True
+        if failed and fail_on_false:
+            return False
+        if failed:
+            logger.warning("Hook '%s' reported failure.", hook_name)
+        return True
 
     def get_plan(self, plan_name: str) -> Optional[Orchestrator]:
         """根据名称获取一个已加载的 Plan 的 Orchestrator。
@@ -119,4 +182,3 @@ class PlanManager:
             一个包含所有 Plan 名称的字符串列表。
         """
         return list(self.plans.keys())
-

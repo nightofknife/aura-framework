@@ -6,7 +6,6 @@
 它会将该中断事件提交给调度器（Scheduler）进行处理。
 """
 import asyncio
-import threading
 from datetime import datetime, timedelta
 from typing import Dict, Set, Optional
 
@@ -81,7 +80,11 @@ class InterruptService:
             async with self.scheduler.get_async_lock():
                 interrupt_definitions = dict(self.scheduler.interrupt_definitions)
                 user_enabled_globals = self.scheduler.user_enabled_globals.copy()
-                runs_snapshot = list(self.scheduler._obs_runs.values())
+                runs_snapshot = [
+                    run
+                    for run in (self.scheduler.get_active_runs_snapshot() or [])
+                    if run.get("status") == "running"
+                ]
                 all_tasks_defs = dict(self.scheduler.all_tasks_definitions)
 
             active_set = set(user_enabled_globals)
@@ -111,7 +114,11 @@ class InterruptService:
                 with self.scheduler.fallback_lock:
                     interrupt_definitions = dict(self.scheduler.interrupt_definitions)
                     user_enabled_globals = self.scheduler.user_enabled_globals.copy()
-                    runs_snapshot = list(self.scheduler._obs_runs.values())
+                    runs_snapshot = [
+                        run
+                        for run in (self.scheduler.get_active_runs_snapshot() or [])
+                        if run.get("status") == "running"
+                    ]
                     all_tasks_defs = dict(self.scheduler.all_tasks_definitions)
                     active_set = set(user_enabled_globals)
                     for run in runs_snapshot:

@@ -187,5 +187,11 @@ class AppProviderService:
     def _submit_to_loop_and_wait(self, coro: asyncio.Future) -> Any:
         """将一个协程从同步代码提交到事件循环，并阻塞等待其结果。"""
         loop = self._get_running_loop()
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is loop:
+            raise RuntimeError("AppProviderService sync API called from event loop thread; use *_async to avoid deadlock.")
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result()

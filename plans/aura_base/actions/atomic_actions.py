@@ -1,6 +1,7 @@
 # aura_official_packages/aura_base/actions/atomic_actions.py (升级版)
 
 import time
+from pathlib import Path
 from typing import Optional, Any, Dict, List, Tuple
 import re
 import cv2
@@ -22,19 +23,88 @@ from packages.aura_core.state_store_service import StateStoreService
 from ..services.app_provider_service import AppProviderService
 from ..services.ocr_service import OcrService, OcrResult, MultiOcrResult
 from ..services.process_manager_service import ProcessManagerService
+from ..services.screen_service import ScreenService
 from ..services.vision_service import VisionService, MatchResult, MultiMatchResult
+
+def _resolve_template_path(engine: ExecutionEngine, vision: VisionService, template: str) -> str:
+    plan_path = engine.orchestrator.current_plan_path
+    plan_name = engine.orchestrator.plan_name
+    return str(vision.resolve_template(plan_name, template, plan_path))
+
+def _expand_template_paths(engine: ExecutionEngine, vision: VisionService, templates_ref: str) -> List[Path]:
+    plan_path = engine.orchestrator.current_plan_path
+    plan_name = engine.orchestrator.plan_name
+    return vision.expand_templates(plan_name, templates_ref, plan_path)
+
 
 
 # ==============================================================================
 # I. 视觉与OCR原子行为 (Vision & OCR Actions)
 # ==============================================================================
 
+# --- Template Library Actions ---
+@register_action(name="register_template_library", public=True)
+@requires_services(vision='vision')
+def register_template_library(vision: VisionService, engine: ExecutionEngine, name: str, path: str,
+                              recursive: bool = False, extensions: Optional[List[str]] = None) -> bool:
+    plan_name = engine.orchestrator.plan_name
+    plan_path = engine.orchestrator.current_plan_path
+    root_path = Path(path)
+    if not root_path.is_absolute():
+        root_path = plan_path / root_path
+    vision.register_template_library(
+        plan_key=plan_name,
+        name=name,
+        root=root_path,
+        recursive=recursive,
+        extensions=extensions,
+    )
+    return True
+
+
+@register_action(name="unregister_template_library", public=True)
+@requires_services(vision='vision')
+def unregister_template_library(vision: VisionService, engine: ExecutionEngine, name: str) -> bool:
+    plan_name = engine.orchestrator.plan_name
+    vision.unregister_template_library(plan_key=plan_name, name=name)
+    return True
+
+
+@register_action(name="list_template_libraries", read_only=True, public=True)
+@requires_services(vision='vision')
+def list_template_libraries(vision: VisionService, engine: ExecutionEngine) -> Dict[str, Dict[str, Any]]:
+    plan_name = engine.orchestrator.plan_name
+    return vision.list_template_libraries(plan_key=plan_name)
+
+
+@register_action(name="list_capture_backends", read_only=True, public=True)
+@requires_services(screen='screen')
+def list_capture_backends(screen: ScreenService) -> Dict[str, Any]:
+    return screen.list_backends()
+
+
+@register_action(name="set_capture_backend", public=True)
+@requires_services(screen='screen')
+def set_capture_backend(screen: ScreenService, backend: str) -> bool:
+    screen.set_default_backend(backend)
+    return True
+
+
+@register_action(name="screen_selfcheck", read_only=True, public=True)
+@requires_services(screen='screen')
+def screen_selfcheck(screen: ScreenService) -> Dict[str, Any]:
+    return screen.self_check()
+
+
+
 # --- Find Actions (查找信息) ---
 @register_action(name="find_image", read_only=True, public=True)
 @requires_services(vision='vision', app='app')
 # [MODIFIED] 移除旧Context，engine保留
 def find_image(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
-               region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8) -> MatchResult:
+               region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
+               use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
+               preprocess: str = "none") -> MatchResult:
     # [MODIFIED] __is_inspect_mode__ 现在从 initial context 获取
     is_inspect_mode = engine.root_context.data.get("initial", {}).get("__is_inspect_mode__", False)
     capture = app.capture(rect=region)
@@ -43,12 +113,16 @@ def find_image(app: AppProviderService, vision: VisionService, engine: Execution
         return MatchResult(found=False)
 
     source_image_for_debug = capture.image.copy()
-    # [MODIFIED] plan_path 从 engine.orchestrator 获取
-    plan_path = engine.orchestrator.current_plan_path
-    full_template_path = plan_path / template
+    template_path = _resolve_template_path(engine, vision, template)
 
-    match_result = vision.find_template(source_image=source_image_for_debug, template_image=str(full_template_path),
-                                        threshold=threshold)
+    match_result = vision.find_template(
+        source_image=source_image_for_debug,
+        template_image=template_path,
+        threshold=threshold,
+        use_grayscale=use_grayscale,
+        match_method=match_method,
+        preprocess=preprocess,
+    )
 
     if match_result.found:
         region_x_offset = region[0] if region else 0
@@ -62,10 +136,12 @@ def find_image(app: AppProviderService, vision: VisionService, engine: Execution
 
     if is_inspect_mode:
         try:
-            template_image_for_debug = cv2.imread(str(full_template_path))
+            template_image_for_debug = cv2.imread(template_path)
             match_result.debug_info.update(
                 {"source_image": source_image_for_debug, "template_image": template_image_for_debug,
-                 "params": {"template": template, "region": region, "threshold": threshold}})
+                 "params": {"template": template, "region": region, "threshold": threshold,
+                            "use_grayscale": use_grayscale, "match_method": match_method,
+                            "preprocess": preprocess}})
         except Exception as e:
             logger.error(f"打包调试信息时出错: {e}")
 
@@ -76,16 +152,23 @@ def find_image(app: AppProviderService, vision: VisionService, engine: Execution
 @requires_services(vision='vision', app='app')
 # [MODIFIED] 移除旧Context，engine保留
 def find_all_images(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
-                    region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8) -> MultiMatchResult:
+                    region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
+                    use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
+                    preprocess: str = "none") -> MultiMatchResult:
     capture = app.capture(rect=region)
     if not capture.success:
         logger.error("行为 'find_all_images' 失败：无法截图。")
         return MultiMatchResult()
 
-    plan_path = engine.orchestrator.current_plan_path
-    full_template_path = plan_path / template
-    multi_match_result = vision.find_all_templates(source_image=capture.image, template_image=str(full_template_path),
-                                                   threshold=threshold)
+    template_path = _resolve_template_path(engine, vision, template)
+    multi_match_result = vision.find_all_templates(
+        source_image=capture.image,
+        template_image=template_path,
+        threshold=threshold,
+        use_grayscale=use_grayscale,
+        match_method=match_method,
+        preprocess=preprocess,
+    )
 
     region_x_offset = region[0] if region else 0
     region_y_offset = region[1] if region else 0
@@ -97,13 +180,299 @@ def find_all_images(app: AppProviderService, vision: VisionService, engine: Exec
     return multi_match_result
 
 
+@register_action(name="find_templates_in_set", read_only=True, public=True)
+@requires_services(vision='vision', app='app')
+def find_templates_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+                          region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
+                          use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
+                          preprocess: str = "none") -> Dict[str, Any]:
+    capture = app.capture(rect=region)
+    if not capture.success:
+        logger.error("行为 'find_templates_in_set' 失败：无法截图。")
+        return {"count": 0, "matches": []}
+
+    template_paths = _expand_template_paths(engine, vision, templates_ref)
+    matches: List[Dict[str, Any]] = []
+    template_images = [str(path) for path in template_paths]
+    match_results = vision.find_templates_batch(
+        source_image=capture.image,
+        template_images=template_images,
+        threshold=threshold,
+        use_grayscale=use_grayscale,
+        match_method=match_method,
+        preprocess=preprocess,
+    )
+
+    region_x_offset = region[0] if region else 0
+    region_y_offset = region[1] if region else 0
+    for template_path, match_result in zip(template_paths, match_results):
+        if not match_result.found:
+            continue
+        match_result.top_left = (
+            match_result.top_left[0] + region_x_offset,
+            match_result.top_left[1] + region_y_offset,
+        )
+        match_result.center_point = (
+            match_result.center_point[0] + region_x_offset,
+            match_result.center_point[1] + region_y_offset,
+        )
+        match_result.rect = (
+            match_result.rect[0] + region_x_offset,
+            match_result.rect[1] + region_y_offset,
+            match_result.rect[2],
+            match_result.rect[3],
+        )
+        matches.append({"template": str(template_path), "match": match_result})
+
+    return {"count": len(matches), "matches": matches}
+
+
+@register_action(name="find_all_templates_in_set", read_only=True, public=True)
+@requires_services(vision='vision', app='app')
+def find_all_templates_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+                              region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
+                              nms_threshold: float = 0.5, use_grayscale: bool = True,
+                              match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> Dict[str, Any]:
+    capture = app.capture(rect=region)
+    if not capture.success:
+        logger.error("Action 'find_all_templates_in_set' failed: capture failed.")
+        return {"count": 0, "matches": []}
+
+    template_paths = _expand_template_paths(engine, vision, templates_ref)
+    matches: List[Dict[str, Any]] = []
+    template_images = [str(path) for path in template_paths]
+    batch_results = vision.find_all_templates_batch(
+        source_image=capture.image,
+        template_images=template_images,
+        threshold=threshold,
+        nms_threshold=nms_threshold,
+        use_grayscale=use_grayscale,
+        match_method=match_method,
+        preprocess=preprocess,
+    )
+
+    region_x_offset = region[0] if region else 0
+    region_y_offset = region[1] if region else 0
+    for template_path, multi_match_result in zip(template_paths, batch_results):
+        for match_result in multi_match_result.matches:
+            if match_result.top_left:
+                match_result.top_left = (
+                    match_result.top_left[0] + region_x_offset,
+                    match_result.top_left[1] + region_y_offset,
+                )
+            if match_result.center_point:
+                match_result.center_point = (
+                    match_result.center_point[0] + region_x_offset,
+                    match_result.center_point[1] + region_y_offset,
+                )
+            if match_result.rect:
+                match_result.rect = (
+                    match_result.rect[0] + region_x_offset,
+                    match_result.rect[1] + region_y_offset,
+                    match_result.rect[2],
+                    match_result.rect[3],
+                )
+            matches.append({"template": str(template_path), "match": match_result})
+
+    return {"count": len(matches), "matches": matches}
+
+
+@register_action(name="find_unique_template_in_set", read_only=True, public=True)
+@requires_services(vision='vision', app='app')
+def find_unique_template_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+                                region: Optional[tuple[int, int, int, int]] = None,
+                                threshold: float = 0.8, use_grayscale: bool = True,
+                                match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> MatchResult:
+    result = find_templates_in_set(
+        app,
+        vision,
+        engine,
+        templates_ref,
+        region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
+    if result["count"] == 1:
+        return result["matches"][0]["match"]
+    if result["count"] > 1:
+        logger.warning("Action 'find_unique_template_in_set' matched multiple templates in '%s'.", templates_ref)
+    return MatchResult(found=False)
+
+
+@register_action(name="find_best_template_in_set", read_only=True, public=True)
+@requires_services(vision='vision', app='app')
+def find_best_template_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+                              region: Optional[tuple[int, int, int, int]] = None,
+                              threshold: float = 0.8, use_grayscale: bool = True,
+                              match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> Dict[str, Any]:
+    result = find_templates_in_set(
+        app,
+        vision,
+        engine,
+        templates_ref,
+        region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
+    matches = result["matches"]
+    if not matches:
+        return {"template": None, "match": MatchResult(found=False)}
+    best_match = max(matches, key=lambda item: item["match"].confidence)
+    return best_match
+
+
+@register_action(name="list_templates_in_set", read_only=True, public=True)
+@requires_services(vision='vision')
+def list_templates_in_set(vision: VisionService, engine: ExecutionEngine, templates_ref: str) -> Dict[str, Any]:
+    template_paths = _expand_template_paths(engine, vision, templates_ref)
+    return {"count": len(template_paths), "templates": [str(path) for path in template_paths]}
+
+
+@register_action(name="assert_any_template_in_set", read_only=True, public=True)
+@requires_services(vision='vision', app='app')
+def assert_any_template_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+                               region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
+                               message: Optional[str] = None, use_grayscale: bool = True,
+                               match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none"):
+    result = find_templates_in_set(
+        app,
+        vision,
+        engine,
+        templates_ref,
+        region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
+    if result["count"] == 0:
+        error_message = message or (
+            f"Assertion failed: none of the templates in '{templates_ref}' were found."
+        )
+        logger.error(error_message)
+        raise StopTaskException(error_message, success=False)
+    logger.info("Assertion passed: found %s template(s) in '%s'.", result["count"], templates_ref)
+    return True
+
+
+@register_action(name="assert_all_templates_in_set", read_only=True, public=True)
+@requires_services(vision='vision', app='app')
+def assert_all_templates_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine,
+                                templates_ref: str, region: Optional[tuple[int, int, int, int]] = None,
+                                threshold: float = 0.8, message: Optional[str] = None,
+                                use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
+                                preprocess: str = "none"):
+    template_paths = _expand_template_paths(engine, vision, templates_ref)
+    if not template_paths:
+        error_message = message or f"Assertion failed: template set '{templates_ref}' resolved to no files."
+        logger.error(error_message)
+        raise StopTaskException(error_message, success=False)
+
+    capture = app.capture(rect=region)
+    if not capture.success:
+        error_message = message or "Assertion failed: capture failed while checking template set."
+        logger.error(error_message)
+        raise StopTaskException(error_message, success=False)
+
+    template_images = [str(path) for path in template_paths]
+    match_results = vision.find_templates_batch(
+        source_image=capture.image,
+        template_images=template_images,
+        threshold=threshold,
+        use_grayscale=use_grayscale,
+        match_method=match_method,
+        preprocess=preprocess,
+    )
+    missing_templates = [
+        str(template_path)
+        for template_path, match_result in zip(template_paths, match_results)
+        if not match_result.found
+    ]
+
+    if missing_templates:
+        error_message = message or (
+            f"Assertion failed: {len(missing_templates)} template(s) missing in '{templates_ref}'."
+        )
+        logger.error(error_message)
+        raise StopTaskException(error_message, success=False)
+
+    logger.info("Assertion passed: all templates in '%s' were found.", templates_ref)
+    return True
+
+
+@register_action(name="wait_for_any_template_in_set", public=True)
+@requires_services(vision='vision', app='app')
+def wait_for_any_template_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine,
+                                 templates_ref: str, timeout: float = 10.0, interval: float = 1.0,
+                                 region: Optional[tuple[int, int, int, int]] = None,
+                                 threshold: float = 0.8, use_grayscale: bool = True,
+                                 match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> Dict[str, Any]:
+    logger.info("Waiting for any template in '%s' (timeout=%s).", templates_ref, timeout)
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        result = find_templates_in_set(
+            app,
+            vision,
+            engine,
+            templates_ref,
+            region,
+            threshold,
+            use_grayscale,
+            match_method,
+            preprocess,
+        )
+        if result["count"] > 0:
+            best_match = max(result["matches"], key=lambda item: item["match"].confidence)
+            logger.info("Found template '%s' in '%s'.", best_match["template"], templates_ref)
+            return best_match
+        logger.debug("No templates found yet, retrying in %s seconds.", interval)
+        time.sleep(interval)
+    logger.warning("Timeout waiting for templates in '%s'.", templates_ref)
+    return {"template": None, "match": MatchResult(found=False)}
+
+
+@register_action(name="wait_for_templates_in_set_to_disappear", public=True)
+@requires_services(vision='vision', app='app')
+def wait_for_templates_in_set_to_disappear(app: AppProviderService, vision: VisionService, engine: ExecutionEngine,
+                                           templates_ref: str, timeout: float = 10.0, interval: float = 1.0,
+                                           region: Optional[tuple[int, int, int, int]] = None,
+                                           threshold: float = 0.8, use_grayscale: bool = True,
+                                           match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> bool:
+    logger.info("Waiting for templates in '%s' to disappear (timeout=%s).", templates_ref, timeout)
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        result = find_templates_in_set(
+            app,
+            vision,
+            engine,
+            templates_ref,
+            region,
+            threshold,
+            use_grayscale,
+            match_method,
+            preprocess,
+        )
+        if result["count"] == 0:
+            logger.info("Templates in '%s' disappeared.", templates_ref)
+            return True
+        logger.debug("Templates still present, retrying in %s seconds.", interval)
+        time.sleep(interval)
+    logger.warning("Timeout waiting for templates in '%s' to disappear.", templates_ref)
+    return False
+
+
 @register_action(name="find_image_in_scrolling_area", public=True)
 @requires_services(vision='vision', app='app')
 # [MODIFIED] 移除旧Context，engine保留
 def find_image_in_scrolling_area(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
                                  scroll_area: tuple[int, int, int, int], scroll_direction: str = 'down',
                                  max_scrolls: int = 5, scroll_amount: int = 200, threshold: float = 0.8,
-                                 delay_after_scroll: float = 0.5) -> MatchResult:
+                                 delay_after_scroll: float = 0.5, use_grayscale: bool = True,
+                                 match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> MatchResult:
     logger.info(f"在可滚动区域 {scroll_area} 中查找 '{template}'，最多滚动 {max_scrolls} 次。")
     direction_map = {"up": 1, "down": -1}
     if scroll_direction.lower() not in direction_map:
@@ -121,13 +490,30 @@ def find_image_in_scrolling_area(app: AppProviderService, vision: VisionService,
             app.scroll(scroll_val)
             time.sleep(delay_after_scroll)
         # 内部调用也需要传递engine
-        match_result = find_image(app, vision, engine, template, region=scroll_area, threshold=threshold)
+        match_result = find_image(
+            app,
+            vision,
+            engine,
+            template,
+            region=scroll_area,
+            threshold=threshold,
+            use_grayscale=use_grayscale,
+            match_method=match_method,
+            preprocess=preprocess,
+        )
         if match_result.found:
             logger.info(f"在第 {i} 次滚动后找到图像！")
             return match_result
 
     logger.warning(f"在滚动 {max_scrolls} 次后，仍未找到图像 '{template}'。")
     return MatchResult(found=False)
+
+
+@register_action(name="preload_ocr", read_only=True, public=True)
+@requires_services(ocr='ocr')
+def preload_ocr(ocr: OcrService, warmup: bool = False) -> Dict[str, Any]:
+    device = ocr.preload_engine(warmup=warmup)
+    return {"ok": True, "device": device, "warmed": bool(warmup)}
 
 
 @register_action(name="find_text", read_only=True, public=True)
@@ -212,8 +598,20 @@ def check_text_exists(app: AppProviderService, ocr: OcrService, engine: Executio
 @register_action(name="check_image_exists", read_only=True, public=True)
 @requires_services(vision='vision', app='app')
 def check_image_exists(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
-                       region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8) -> bool:
-    match_result = find_image(app, vision, engine, template, region, threshold)
+                       region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
+                       use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
+                       preprocess: str = "none") -> bool:
+    match_result = find_image(
+        app,
+        vision,
+        engine,
+        template,
+        region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
     return match_result.found
 
 
@@ -223,8 +621,19 @@ def check_image_exists(app: AppProviderService, vision: VisionService, engine: E
 @requires_services(vision='vision', app='app')
 def assert_image_exists(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
                         region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
-                        message: Optional[str] = None):
-    match_result = find_image(app, vision, engine, template, region, threshold)
+                        message: Optional[str] = None, use_grayscale: bool = True,
+                        match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none"):
+    match_result = find_image(
+        app,
+        vision,
+        engine,
+        template,
+        region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
     if not match_result.found:
         error_message = message or f"断言失败：期望的图像 '{template}' 不存在。"
         logger.error(error_message)
@@ -238,8 +647,19 @@ def assert_image_exists(app: AppProviderService, vision: VisionService, engine: 
 @requires_services(vision='vision', app='app')
 def assert_image_not_exists(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
                             region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
-                            message: Optional[str] = None):
-    match_result = find_image(app, vision, engine, template, region, threshold)
+                            message: Optional[str] = None, use_grayscale: bool = True,
+                            match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none"):
+    match_result = find_image(
+        app,
+        vision,
+        engine,
+        template,
+        region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
     if match_result.found:
         error_message = message or f"断言失败：不期望的图像 '{template}' 却存在了。"
         logger.error(error_message)
@@ -337,11 +757,22 @@ def wait_for_text_to_disappear(app: AppProviderService, ocr: OcrService, engine:
 @requires_services(vision='vision', app='app')
 def wait_for_image(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
                    timeout: float = 10.0, interval: float = 1.0, region: Optional[tuple[int, int, int, int]] = None,
-                   threshold: float = 0.8) -> MatchResult:
+                   threshold: float = 0.8, use_grayscale: bool = True,
+                   match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> MatchResult:
     logger.info(f"开始等待图像 '{template}' 出现，最长等待 {timeout} 秒...")
     start_time = time.time()
     while time.time() - start_time < timeout:
-        match_result = find_image(app, vision, engine, template, region, threshold)
+        match_result = find_image(
+            app,
+            vision,
+            engine,
+            template,
+            region,
+            threshold,
+            use_grayscale,
+            match_method,
+            preprocess,
+        )
         if match_result.found:
             logger.info(f"成功等到图像 '{template}'！")
             return match_result
@@ -638,8 +1069,20 @@ def file_write(engine: ExecutionEngine, file_path: str, content: str, append: bo
 @requires_services(vision='vision', app='app')
 def find_image_and_click(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
                          region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
-                         button: str = 'left', move_duration: float = 0.2) -> bool:
-    match_result = find_image(app, vision, engine, template, region, threshold)
+                         button: str = 'left', move_duration: float = 0.2,
+                         use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
+                         preprocess: str = "none") -> bool:
+    match_result = find_image(
+        app,
+        vision,
+        engine,
+        template,
+        region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
     if match_result.found:
         found_x, found_y = match_result.center_point
         logger.info(f"图像找到，位于窗口坐标 ({found_x}, {found_y})，置信度: {match_result.confidence:.2f}")
@@ -686,12 +1129,33 @@ def find_text_and_click(app: AppProviderService, ocr: OcrService, engine: Execut
 def drag_to_find(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, drag_from_template: str,
                  drag_to_template: str, from_region: Optional[tuple[int, int, int, int]] = None,
                  to_region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
-                 duration: float = 0.5) -> bool:
-    source_match = find_image(app, vision, engine, drag_from_template, from_region, threshold)
+                 duration: float = 0.5, use_grayscale: bool = True,
+                 match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> bool:
+    source_match = find_image(
+        app,
+        vision,
+        engine,
+        drag_from_template,
+        from_region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
     if not source_match.found:
         logger.error(f"拖拽失败：找不到起点图像 '{drag_from_template}'。")
         return False
-    target_match = find_image(app, vision, engine, drag_to_template, to_region, threshold)
+    target_match = find_image(
+        app,
+        vision,
+        engine,
+        drag_to_template,
+        to_region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
     if not target_match.found:
         logger.error(f"拖拽失败：找不到终点图像 '{drag_to_template}'。")
         return False
@@ -722,9 +1186,20 @@ def run_task(engine, task_name: str, plan_name: str = None):
 @requires_services(vision='vision', app='app')
 def scan_and_find_best_match(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
                              region: tuple[int, int, int, int], priority: str = 'top',
-                             threshold: float = 0.8) -> MatchResult:
+                             threshold: float = 0.8, use_grayscale: bool = True,
+                             match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> MatchResult:
     logger.info(f"扫描区域寻找最佳匹配项 '{template}'，优先级: {priority}")
-    multi_match_result = find_all_images(app, vision, engine, template, region, threshold)
+    multi_match_result = find_all_images(
+        app,
+        vision,
+        engine,
+        template,
+        region,
+        threshold,
+        use_grayscale,
+        match_method,
+        preprocess,
+    )
     if not multi_match_result.matches:
         logger.warning("在扫描区域内未找到任何匹配项。")
         return MatchResult(found=False)
@@ -802,5 +1277,3 @@ def wait_for_process_exit(
     if res.get("status") == "timeout":
         raise StopTaskException("等待进程退出超时。", success=False)
     return res
-
-

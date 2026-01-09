@@ -42,6 +42,7 @@ class OcrService:
     def __init__(self):
         # --- 异步核心组件 ---
         self._engine: Optional[PaddleOCR] = None
+        self._engine_device: Optional[str] = None
         self._engine_lock = asyncio.Lock()
         self._ocr_semaphore = asyncio.Semaphore(1)  # 同一时间只允许一个OCR任务在GPU上运行
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -60,6 +61,28 @@ class OcrService:
         """
         logger.info("收到同步初始化OCR引擎请求...")
         self._submit_to_loop_and_wait(self._initialize_engine_async())
+
+    def preload_engine(self, warmup: bool = False) -> Optional[str]:
+        """Preload OCR engine with optional warmup inference."""
+        logger.info("OCR preload requested (warmup=%s).", warmup)
+        return self._submit_to_loop_and_wait(self._preload_engine_async(warmup))
+
+    def warmup_engine(self) -> bool:
+        """Run a lightweight warmup inference to reduce first-call latency."""
+        logger.info("OCR warmup requested.")
+        return self._submit_to_loop_and_wait(self._warmup_engine_async())
+
+    def self_check(self) -> bool:
+        """Simple health check for OCR engine initialization and inference path."""
+        try:
+            self.initialize_engine()
+            test_image = np.zeros((32, 32, 3), dtype=np.uint8)
+            _ = self.recognize_all(test_image)
+            logger.info("OCR self-check OK (device=%s).", self._engine_device or "unknown")
+            return True
+        except Exception as e:
+            logger.error("OCR self-check failed: %s", e, exc_info=True)
+            return False
 
     def find_text(self, text_to_find: str, source_image: np.ndarray, match_mode: str = "exact",
                   synonyms: Optional[Dict[str, str]] = None) -> OcrResult:
@@ -92,17 +115,53 @@ class OcrService:
         async with self._engine_lock:
             if self._engine is None:
                 logger.info("OCR服务: 正在初始化共享的PaddleOCR引擎...")
-                self._engine = await asyncio.to_thread(
-                    PaddleOCR, lang="ch", ocr_version="PP-OCRv5", device="gpu", use_doc_unwarping=False,
-                    doc_orientation_classify_model_dir= r".\plans\aura_base\services\ocr_model\PP-LCNet_x1_0_doc_ori",
-                    text_detection_model_dir= r".\plans\aura_base\services\ocr_model\PP-OCRv5_server_det",
-                    text_recognition_model_dir = r".\plans\aura_base\services\ocr_model\PP-OCRv5_server_rec",
-                    textline_orientation_model_dir=r".\plans\aura_base\services\ocr_model\PP-LCNet_x1_0_textline_ori" ,
+                ocr_kwargs = dict(
+                    lang="ch",
+                    ocr_version="PP-OCRv5",
+                    use_doc_unwarping=False,
+                    doc_orientation_classify_model_dir=r".\plans\aura_base\services\ocr_model\PP-LCNet_x1_0_doc_ori",
+                    text_detection_model_dir=r".\plans\aura_base\services\ocr_model\PP-OCRv5_server_det",
+                    text_recognition_model_dir=r".\plans\aura_base\services\ocr_model\PP-OCRv5_server_rec",
+                    textline_orientation_model_dir=r".\plans\aura_base\services\ocr_model\PP-LCNet_x1_0_textline_ori",
+                )
+                try:
+                    self._engine = await asyncio.to_thread(
+                        PaddleOCR, device="gpu", **ocr_kwargs
                     )
+                    self._engine_device = "gpu"
+                except Exception as e:
+                    logger.warning(
+                        "OCR service: GPU init failed, falling back to CPU. Error: %s",
+                        e,
+                    )
+                    try:
+                        self._engine = await asyncio.to_thread(
+                            PaddleOCR, device="cpu", **ocr_kwargs
+                        )
+                        self._engine_device = "cpu"
+                    except Exception:
+                        logger.error(
+                            "OCR service: CPU init failed after GPU failure.",
+                            exc_info=True,
+                        )
+                        raise
 
                 logger.info("OCR服务: 共享引擎初始化完成。")
             else:
                 logger.info("OCR服务: 共享引擎已初始化，无需重复操作。")
+
+    async def _preload_engine_async(self, warmup: bool) -> Optional[str]:
+        await self._initialize_engine_async()
+        if warmup:
+            await self._warmup_engine_async()
+        return self._engine_device
+
+    async def _warmup_engine_async(self) -> bool:
+        engine = await self._get_engine_async()
+        warmup_image = np.zeros((32, 32, 3), dtype=np.uint8)
+        async with self._ocr_semaphore:
+            await asyncio.to_thread(self._run_ocr_sync, engine, warmup_image)
+        return True
 
     async def _get_engine_async(self) -> PaddleOCR:
         """【异步内核】确保引擎已初始化。"""
@@ -238,6 +297,12 @@ class OcrService:
         这是实现“同步外壳，异步内核”模式的核心。
         """
         loop = self._get_running_loop()
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is loop:
+            raise RuntimeError("OcrService sync API called from event loop thread; use *_async to avoid deadlock.")
 
         # 检查是否已经在事件循环线程中。如果是，直接 await 会导致死锁。
         try:

@@ -116,8 +116,9 @@ class ActionInjector:
             子任务执行完毕后的框架数据 (`framework_data`)。
 
         Raises:
-            ValueError: 如果缺少 `task_name` 参数。
+            ValueError: 如果缺少 `task_name` 参数或包含非法字符。
             TypeError: 如果 `inputs` 参数不是一个字典。
+            SecurityError: 如果尝试访问其他 Plan 的任务。
             Exception: 如果子任务执行失败，则重新抛出异常。
         """
         logger.info(f"Executing sub-task via aura.run_task...")
@@ -130,6 +131,27 @@ class ActionInjector:
         task_name = rendered_params.get('task_name')
         if not task_name:
             raise ValueError("aura.run_task action requires a 'task_name' parameter.")
+
+        # 🔒 安全验证：防止路径穿越攻击
+        if not isinstance(task_name, str):
+            raise ValueError(f"task_name must be a string, got {type(task_name).__name__}")
+
+        # 禁止路径穿越字符
+        if '..' in task_name:
+            raise ValueError(f"Security: task_name contains path traversal sequence '..' - {task_name}")
+
+        # 禁止绝对路径
+        if task_name.startswith('/') or task_name.startswith('\\'):
+            raise ValueError(f"Security: task_name cannot be an absolute path - {task_name}")
+
+        # 禁止访问其他 Plan 的任务（只允许当前 Plan 内的任务）
+        if '/' in task_name:
+            # 如果包含斜杠，说明是跨 Plan 调用，这是不允许的
+            raise ValueError(
+                f"Security: Cross-plan task access is forbidden. "
+                f"Task name '{task_name}' appears to reference another plan. "
+                f"Only tasks within the current plan ('{self.engine.orchestrator.plan_name}') can be called."
+            )
 
         sub_task_inputs = rendered_params.get('inputs', {})
         if not isinstance(sub_task_inputs, dict):

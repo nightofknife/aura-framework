@@ -226,5 +226,11 @@ class CompositeInteractionService:
 
     def _submit_to_loop_and_wait(self, coro: asyncio.Future) -> Any:
         loop = self._get_running_loop()
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is loop:
+            raise RuntimeError("CompositeInteractionService sync API called from event loop thread; use *_async to avoid deadlock.")
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result()

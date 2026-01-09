@@ -295,29 +295,32 @@ class Logger:
             self.logger.addHandler(api_queue_handler)
             self.info("New API log streaming queue is connected.")
 
-    def trace(self, message, exc_info=False):
-        """记录 TRACE 级别的日志。"""
-        self.logger.trace(message, exc_info=exc_info)
+    def trace(self, message, *args, **kwargs):
+        """Log TRACE level messages."""
+        self.logger.trace(message, *args, **kwargs)
 
-    def debug(self, message):
-        """记录 DEBUG 级别的日志。"""
-        self.logger.debug(message)
+    def debug(self, message, *args, **kwargs):
+        """Log DEBUG level messages."""
+        self.logger.debug(message, *args, **kwargs)
 
-    def info(self, message):
-        """记录 INFO 级别的日志。"""
-        self.logger.info(message)
+    def info(self, message, *args, **kwargs):
+        """Log INFO level messages."""
+        self.logger.info(message, *args, **kwargs)
 
-    def warning(self, message):
-        """记录 WARNING 级别的日志。"""
-        self.logger.warning(message)
+    def warning(self, message, *args, **kwargs):
+        """Log WARNING level messages."""
+        self.logger.warning(message, *args, **kwargs)
 
-    def error(self, message, exc_info=False):
-        """记录 ERROR 级别的日志。"""
-        self.logger.error(message, exc_info=exc_info)
+    def error(self, message, *args, **kwargs):
+        """Log ERROR level messages."""
+        self.logger.error(message, *args, **kwargs)
 
-    def critical(self, message, exc_info=False):
-        """记录 CRITICAL 级别的日志。"""
-        self.logger.critical(message, exc_info=exc_info)
+    def critical(self, message, *args, **kwargs):
+        """Log CRITICAL level messages."""
+        self.logger.critical(message, *args, **kwargs)
 
+    def exception(self, message, *args, **kwargs):
+        """Log an ERROR message with exception context."""
+        self.logger.exception(message, *args, **kwargs)
 
 logger = Logger()

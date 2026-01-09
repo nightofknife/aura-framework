@@ -126,19 +126,23 @@ class TaskQueue:
             return tasklet
 
     def task_done(self):
-        """通知队列一个任务已处理完毕。
+        """Notify the queue that a task has completed."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._unfinished_tasks <= 0:
+                raise ValueError("task_done() called too many times")
+            self._unfinished_tasks -= 1
+            return
+        loop.create_task(self._task_done_async())
 
-        这对于使用 `join()` 方法等待队列清空非常重要。
-        """
-        if self._unfinished_tasks <= 0:
-            raise ValueError("task_done() called too many times")
-        self._unfinished_tasks -= 1
-        if self._unfinished_tasks == 0:
-            asyncio.create_task(self._notify_join())
-
-    async def _notify_join(self):
+    async def _task_done_async(self):
         async with self._not_empty:
-            self._not_empty.notify_all()
+            if self._unfinished_tasks <= 0:
+                raise ValueError("task_done() called too many times")
+            self._unfinished_tasks -= 1
+            if self._unfinished_tasks == 0:
+                self._not_empty.notify_all()
 
     async def join(self):
         """阻塞直到队列中的所有任务都被获取并处理完毕。"""

@@ -467,6 +467,14 @@ def register_service(alias: str, public: bool = False):
     return decorator
 
 
+@dataclass
+class HookResult:
+    func: Callable
+    ok: bool
+    result: Any = None
+    error: Optional[str] = None
+
+
 class HookManager:
     """管理框架中所有钩子（Hook）的注册与触发。
 
@@ -501,6 +509,33 @@ class HookManager:
         tasks = [self._execute_hook(func, *args, **kwargs) for func in self._hooks[hook_name]]
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def trigger_with_results(self, hook_name: str, *args,
+                                   stop_on_false: bool = False,
+                                   raise_on_error: bool = False,
+                                   **kwargs) -> List[HookResult]:
+        """触发钩子并收集结果，可选择在返回 False 或异常时中止。"""
+        if hook_name not in self._hooks:
+            return []
+        results: List[HookResult] = []
+        for func in self._hooks[hook_name]:
+            try:
+                result = await self._execute_hook_with_result(func, *args, **kwargs)
+                results.append(HookResult(func=func, ok=True, result=result))
+                if stop_on_false and result is False:
+                    break
+            except Exception as e:
+                logger.error(
+                    "执行钩子回调函数 '%s.%s' 时发生错误: %s",
+                    func.__module__,
+                    func.__name__,
+                    e,
+                    exc_info=True,
+                )
+                results.append(HookResult(func=func, ok=False, error=str(e)))
+                if raise_on_error:
+                    raise
+        return results
+
     async def _execute_hook(self, func: Callable, *args, **kwargs):
         """(私有) 安全地执行单个钩子回调函数。"""
         try:
@@ -511,6 +546,12 @@ class HookManager:
                 await loop.run_in_executor(None, lambda: func(*args, **kwargs))
         except Exception as e:
             logger.error(f"执行钩子回调函数 '{func.__module__}.{func.__name__}' 时发生错误: {e}", exc_info=True)
+
+    async def _execute_hook_with_result(self, func: Callable, *args, **kwargs) -> Any:
+        if asyncio.iscoroutinefunction(func):
+            return await func(*args, **kwargs)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
     def clear(self):
         """清空管理器中的所有钩子。"""

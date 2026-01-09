@@ -91,6 +91,14 @@ class ExecutionEngine:
         self.state_store: StateStoreService = self.services.get('state_store')
         self.VALID_DEPENDENCY_STATUSES = {'success', 'failed', 'running', 'skipped'}
 
+        # ===== 新增：goto + label 机制 =====
+        self.label_to_node: Dict[str, str] = {}  # label -> node_id 映射
+        self.node_goto_jumps: Dict[str, int] = {}  # 跟踪每个 goto 的跳转次数
+
+        # ===== 新增：节点元数据 =====
+        self.node_metadata: Dict[str, Dict[str, Any]] = {}  # node_id -> metadata
+        # metadata 包含：execution_count, retry_count, first_executed_at, last_executed_at
+
     async def _check_pause(self):
         if not self.pause_event:
             return
@@ -149,9 +157,27 @@ class ExecutionEngine:
         """(私有) 从任务步骤定义中构建依赖图。"""
         self.nodes = steps_dict
         all_node_ids = set(self.nodes.keys())
+
+        # ===== 新增：收集标签 =====
+        for node_id, node_data in self.nodes.items():
+            label = node_data.get('label')
+            if label:
+                if label in self.label_to_node:
+                    raise ValueError(f"标签 '{label}' 重复定义：节点 '{node_id}' 和 '{self.label_to_node[label]}'")
+                self.label_to_node[label] = node_id
+
+        # 构建依赖图
         for node_id, node_data in self.nodes.items():
             self.step_states[node_id] = StepState.PENDING
             self.reverse_dependencies.setdefault(node_id, set())
+
+            # 初始化节点元数据
+            self.node_metadata[node_id] = {
+                'execution_count': 0,
+                'retry_count': 0,
+                'first_executed_at': None,
+                'last_executed_at': None
+            }
 
             deps_struct = node_data.get('depends_on', [])
             self.dependencies[node_id] = deps_struct
@@ -331,30 +357,79 @@ class ExecutionEngine:
         }
 
     def _parse_retry_config(self, node_data: Dict[str, Any]) -> Dict[str, Any]:
-        """?????????????????????"""
-        default_delay = float(node_data.get("retry_delay", 1) or 1)
-        retry_cfg = node_data.get("retry", {})
-        count = 0
-        delay = default_delay
-        on_exception: List[str] = []
-        condition = node_data.get("retry_condition")
-        if isinstance(retry_cfg, int):
-            count = max(0, retry_cfg)
-        elif isinstance(retry_cfg, dict):
-            count = int(retry_cfg.get("count", retry_cfg.get("retry", 0) or 0))
-            delay = float(retry_cfg.get("delay", retry_cfg.get("retry_delay", default_delay) or default_delay))
-            on_exception = retry_cfg.get("on_exception") or retry_cfg.get("retry_on") or []
-            condition = retry_cfg.get("condition") or retry_cfg.get("retry_condition") or condition
-        else:
-            try:
-                count = int(retry_cfg)
-            except Exception:
-                count = 0
-        delay = float(node_data.get("retry_delay", delay) or delay)
-        on_exception = node_data.get("retry_on", on_exception) or []
-        if isinstance(on_exception, str):
-            on_exception = [on_exception]
-        return {"count": count, "delay": delay, "on_exception": on_exception, "condition": condition}
+        """解析节点的重试配置，支持旧格式和新格式。
+
+        旧格式（兼容）：
+            retry: 3
+            retry_delay: 1
+            retry_on: ["TimeoutError"]
+            retry_condition: "{{ result.status >= 500 }}"
+
+        新格式（推荐）：
+            on_exception:
+                retry: 3
+                retry_on: ["TimeoutError"]
+                delay: 1
+            on_result:
+                retry_when: "{{ result.status >= 500 }}"
+                max_retries: 5
+                delay: 2
+        """
+        # 默认值
+        config = {
+            "count": 0,
+            "delay": 1.0,
+            "on_exception": [],
+            "condition": None
+        }
+
+        # 新格式：on_exception
+        if 'on_exception' in node_data:
+            exc_cfg = node_data['on_exception']
+            if isinstance(exc_cfg, dict):
+                config["count"] = int(exc_cfg.get('retry', exc_cfg.get('max_retries', 0)))
+                config["delay"] = float(exc_cfg.get('delay', 1.0))
+                exc_list = exc_cfg.get('retry_on', exc_cfg.get('on', []))
+                if isinstance(exc_list, str):
+                    exc_list = [exc_list]
+                config["on_exception"] = exc_list
+
+        # 新格式：on_result
+        if 'on_result' in node_data:
+            result_cfg = node_data['on_result']
+            if isinstance(result_cfg, dict):
+                result_retries = int(result_cfg.get('max_retries', result_cfg.get('retry', 0)))
+                # 取两者中的最大值
+                config["count"] = max(config["count"], result_retries)
+                config["delay"] = float(result_cfg.get('delay', config["delay"]))
+                config["condition"] = result_cfg.get('retry_when', result_cfg.get('when'))
+
+        # 旧格式：兼容性支持
+        if config["count"] == 0:  # 如果新格式没有设置，尝试旧格式
+            default_delay = float(node_data.get("retry_delay", 1) or 1)
+            retry_cfg = node_data.get("retry", {})
+
+            if isinstance(retry_cfg, int):
+                config["count"] = max(0, retry_cfg)
+            elif isinstance(retry_cfg, dict):
+                config["count"] = int(retry_cfg.get("count", retry_cfg.get("retry", 0) or 0))
+                config["delay"] = float(retry_cfg.get("delay", retry_cfg.get("retry_delay", default_delay) or default_delay))
+                on_exception = retry_cfg.get("on_exception") or retry_cfg.get("retry_on") or []
+                config["condition"] = retry_cfg.get("condition") or retry_cfg.get("retry_condition") or config["condition"]
+            else:
+                try:
+                    config["count"] = int(retry_cfg)
+                except Exception:
+                    config["count"] = 0
+
+            config["delay"] = float(node_data.get("retry_delay", config["delay"]) or config["delay"])
+            on_exception = node_data.get("retry_on", config["on_exception"]) or []
+            if isinstance(on_exception, str):
+                on_exception = [on_exception]
+            config["on_exception"] = on_exception
+            config["condition"] = node_data.get("retry_condition") or config["condition"]
+
+        return config
 
     def _should_retry_on_exception(self, exc: Exception, retry_on: List[str]) -> bool:
         if not retry_on:
@@ -376,7 +451,20 @@ class ExecutionEngine:
         return timeout_val if timeout_val > 0 else None
 
     async def _execute_dag_node(self, node_id: str, node_context: ExecutionContext):
-        """(??) ?? DAG ???????"""
+        """(私有) 执行 DAG 中的一个节点。"""
+        # ===== 新增：更新节点元数据 =====
+        metadata = self.node_metadata[node_id]
+        metadata['execution_count'] += 1
+        if metadata['first_executed_at'] is None:
+            metadata['first_executed_at'] = time.time()
+        metadata['last_executed_at'] = time.time()
+
+        # 将元数据注入上下文，供模板使用
+        node_context.data['nodes'].setdefault(node_id, {})
+        node_context.data['nodes'][node_id]['metadata'] = metadata.copy()
+        self.root_context.data['nodes'].setdefault(node_id, {})
+        self.root_context.data['nodes'][node_id]['metadata'] = metadata.copy()
+
         self.step_states[node_id] = StepState.RUNNING
         start_time = time.time()
         node_result: Dict[str, Any] = {}
@@ -417,6 +505,9 @@ class ExecutionEngine:
             retry_on = retry_cfg["on_exception"]
             cond_expr = retry_cfg["condition"]
 
+            # ===== 新增：记录重试次数 =====
+            actual_retry_count = 0
+
             attempt = 1
             while attempt <= max_attempts:
                 await self._check_pause()
@@ -443,9 +534,10 @@ class ExecutionEngine:
                         )
                         if should_retry:
                             if attempt < max_attempts:
+                                actual_retry_count += 1
                                 logger.warning(
-                                    f"?? '{node_id}' ?{attempt}/{max_attempts - 1} ?????? retry_condition?"
-                                    f"{delay_sec}s ???..."
+                                    f"节点 '{node_id}' 第{attempt}/{max_attempts - 1} 次重试：不满足 retry_condition，"
+                                    f"{delay_sec}s 后重试..."
                                 )
                                 if self.event_callback:
                                     await self.event_callback('node.retrying', {
@@ -464,9 +556,10 @@ class ExecutionEngine:
 
                 except Exception as e:
                     if attempt < max_attempts and self._should_retry_on_exception(e, retry_on):
+                        actual_retry_count += 1
                         logger.warning(
-                            f"?? '{node_id}' ?{attempt}/{max_attempts - 1} ????{type(e).__name__}: {e}?"
-                            f"{delay_sec}s ???..."
+                            f"节点 '{node_id}' 第{attempt}/{max_attempts - 1} 次重试：捕获到{type(e).__name__}: {e}，"
+                            f"{delay_sec}s 后重试..."
                         )
                         if self.event_callback:
                             await self.event_callback('node.retrying', {
@@ -481,6 +574,11 @@ class ExecutionEngine:
                         attempt += 1
                         continue
                     raise
+
+            # ===== 新增：更新 retry_count 元数据 =====
+            metadata['retry_count'] = actual_retry_count
+            node_context.data['nodes'][node_id]['metadata'] = metadata.copy()
+            self.root_context.data['nodes'][node_id]['metadata'] = metadata.copy()
 
             outputs_block = node_data.get('outputs', {})
             if outputs_block:
@@ -498,9 +596,12 @@ class ExecutionEngine:
                     **_base_payload(),
                     'end_time': end_ts,
                     'duration_ms': round((end_ts - start_time) * 1000, 3),
-                    'retry_count': max(0, attempt - 1),
+                    'retry_count': actual_retry_count,
                     'output': node_result
                 })
+
+            # ===== 新增：执行 goto 逻辑 =====
+            await self._handle_goto(node_id, node_data, node_context, action_result)
 
         except (JumpSignal, StopTaskException) as e:
             logger.error(f"??'{node_id}'????????: {e}", exc_info=self.debug_mode)
@@ -615,3 +716,108 @@ class ExecutionEngine:
 
         results = await asyncio.gather(*[run_with_semaphore(task) for task in tasks])
         return results
+
+    async def _handle_goto(self, node_id: str, node_data: Dict[str, Any],
+                           node_context: ExecutionContext, action_result: Any):
+        """(私有) 处理节点的 goto 逻辑。
+
+        支持以下 goto 格式：
+        1. 简单跳转: goto: "label_name"
+        2. 条件跳转: goto: {target: "label", when: "{{ condition }}", max_jumps: 10}
+        3. 多路跳转: goto: [{when: "...", target: "..."}, ...]
+        """
+        goto_config = node_data.get('goto')
+        if not goto_config:
+            return
+
+        renderer = TemplateRenderer(node_context, self.state_store)
+        scope = {"result": action_result, **(await renderer.get_render_scope())}
+
+        # 情况1：简单跳转 goto: "label_name"
+        if isinstance(goto_config, str):
+            target_label = goto_config
+            await self._execute_goto_jump(node_id, target_label, scope)
+            return
+
+        # 情况2：单个条件跳转 goto: {target, when, max_jumps}
+        if isinstance(goto_config, dict) and 'target' in goto_config:
+            goto_list = [goto_config]
+        # 情况3：多路跳转 goto: [{...}, {...}]
+        elif isinstance(goto_config, list):
+            goto_list = goto_config
+        else:
+            logger.error(f"节点 '{node_id}' 的 goto 配置格式错误: {goto_config}")
+            return
+
+        # 处理条件跳转列表
+        for goto_item in goto_list:
+            if not isinstance(goto_item, dict):
+                logger.error(f"节点 '{node_id}' 的 goto 条目格式错误: {goto_item}")
+                continue
+
+            target_label = goto_item.get('target')
+            if not target_label:
+                logger.error(f"节点 '{node_id}' 的 goto 缺少 target 字段")
+                continue
+
+            # 评估条件
+            when_expr = goto_item.get('when')
+            if when_expr:
+                should_jump = bool(await renderer._render_recursive(when_expr, scope))
+                if not should_jump:
+                    continue  # 条件不满足，尝试下一个
+
+            # 执行跳转
+            max_jumps = goto_item.get('max_jumps')
+            await self._execute_goto_jump(node_id, target_label, scope, max_jumps)
+            return  # 成功跳转后退出
+
+    async def _execute_goto_jump(self, from_node: str, target_label: str,
+                                 scope: Dict[str, Any], max_jumps: Optional[int] = None):
+        """(私有) 执行实际的 goto 跳转。
+
+        Args:
+            from_node: 发起跳转的节点ID
+            target_label: 目标标签
+            scope: 渲染作用域（用于日志）
+            max_jumps: 最大跳转次数（可选）
+        """
+        # 查找目标节点
+        target_node_id = self.label_to_node.get(target_label)
+        if not target_node_id:
+            raise ValueError(f"节点 '{from_node}' 的 goto 目标标签 '{target_label}' 未定义")
+
+        # 检查跳转次数限制
+        goto_key = f"{from_node}→{target_label}"
+        current_jumps = self.node_goto_jumps.get(goto_key, 0)
+
+        if max_jumps is not None and current_jumps >= max_jumps:
+            logger.warning(
+                f"节点 '{from_node}' 到标签 '{target_label}' 的 goto 已达到最大跳转次数 {max_jumps}，"
+                f"跳过此次跳转"
+            )
+            return
+
+        # 全局安全机制：防止无限循环
+        max_total_steps = int(get_config_value("execution.max_total_steps", 1000))
+        total_executed = sum(meta.get('execution_count', 0) for meta in self.node_metadata.values())
+        if total_executed >= max_total_steps:
+            raise RuntimeError(
+                f"任务总执行步骤数已达到安全上限 {max_total_steps}，可能存在无限循环。"
+                f"请检查 goto 逻辑或增加配置 'execution.max_total_steps'。"
+            )
+
+        # 更新跳转计数
+        self.node_goto_jumps[goto_key] = current_jumps + 1
+
+        logger.info(
+            f"🔄 执行 goto：从节点 '{from_node}' 跳转到标签 '{target_label}' (节点 '{target_node_id}')，"
+            f"跳转次数: {current_jumps + 1}" + (f"/{max_jumps}" if max_jumps else "")
+        )
+
+        # 重置目标节点状态，允许重新执行
+        self.step_states[target_node_id] = StepState.PENDING
+
+        # 将目标节点加入就绪队列
+        await self._enqueue_ready_node(target_node_id)
+        await self._drain_ready_queue()
