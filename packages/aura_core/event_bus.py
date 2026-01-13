@@ -14,15 +14,19 @@
 - **频道隔离**: 支持按频道发布和订阅事件。
 - **跨线程安全**: 可以在不同的 asyncio 事件循环之间安全地发布事件。
 - **持久化订阅**: 支持在清理时保留某些关键的订阅。
+- **✅ 内存管理**: 支持取消订阅和自动清理过期订阅。
 """
 import asyncio
 import fnmatch
 import uuid
+import weakref
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Dict, Any, List, Optional, Awaitable
 import threading
+
+from packages.aura_core.logger import logger
 
 
 
@@ -73,10 +77,14 @@ class Subscription:
             如果为 None，则假定在当前事件循环中执行。
         persistent (bool): 如果为 True，此订阅在调用 `clear_subscriptions`
             时不会被移除。
+        subscription_id (str): ✅ 订阅的唯一ID，用于取消订阅。
+        created_at (float): ✅ 订阅创建时间戳，用于清理过期订阅。
     """
     callback: Callable[[Event], Awaitable[None]]
     loop: Optional[asyncio.AbstractEventLoop] = None
     persistent: bool = False
+    subscription_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: float = field(default_factory=lambda: datetime.now().timestamp())
 
 class EventBus:
     """实现发布/订阅模式的事件总线。
@@ -87,6 +95,10 @@ class EventBus:
         """初始化 EventBus。"""
         self._subscriptions: Dict[str, List[Subscription]] = defaultdict(list)
         self._lock = threading.Lock()
+        # ✅ 新增：反向索引，用于快速unsubscribe
+        self._subscription_index: Dict[str, tuple[str, Subscription]] = {}
+        # ✅ 新增：使用弱引用跟踪事件循环
+        self._loop_refs: weakref.WeakSet = weakref.WeakSet()
 
     async def subscribe(
             self,
@@ -96,7 +108,7 @@ class EventBus:
             *,
             loop: Optional[asyncio.AbstractEventLoop] = None,
             persistent: bool = False
-    ):
+    ) -> str:
         """订阅一个或多个事件。
 
         Args:
@@ -106,15 +118,101 @@ class EventBus:
             loop (Optional[asyncio.AbstractEventLoop]): 回调函数应在哪个事件循环
                 中执行。如果为 None，则在发布者的事件循环中执行。
             persistent (bool): 是否为持久化订阅。
+
+        Returns:
+            str: 订阅ID，可用于后续unsubscribe
         """
         key = f"{channel}::{event_pattern}"
+
+        # ✅ 改进：使用函数对象ID进行更可靠的重复检测
+        callback_id = id(callback)
+        callback_name = getattr(callback, '__name__', repr(callback))
+
         with self._lock:
+            # 检查重复订阅
             for sub in self._subscriptions[key]:
-                if sub.callback is callback and sub.loop is loop and sub.persistent == persistent:
-                    print(f"[EventBus] 跳过重复订阅: {key}")
-                    return
-            self._subscriptions[key].append(Subscription(callback=callback, loop=loop, persistent=persistent))
-            print(f"[EventBus] 已注册订阅: key='{key}', persistent={persistent}, loop={id(loop)}")
+                if (id(sub.callback) == callback_id and
+                    sub.loop is loop and
+                    sub.persistent == persistent):
+                    logger.debug(f"[EventBus] 跳过重复订阅: {key} ({callback_name})")
+                    return sub.subscription_id
+
+            # 创建新订阅
+            subscription = Subscription(
+                callback=callback,
+                loop=loop,
+                persistent=persistent
+            )
+            self._subscriptions[key].append(subscription)
+
+            # 建立反向索引
+            self._subscription_index[subscription.subscription_id] = (key, subscription)
+
+            # 跟踪事件循环
+            if loop:
+                self._loop_refs.add(loop)
+
+            logger.debug(
+                f"[EventBus] 已注册订阅: key='{key}', "
+                f"id={subscription.subscription_id[:8]}, "
+                f"persistent={persistent}, "
+                f"callback={callback_name}"
+            )
+
+            return subscription.subscription_id
+
+    # ✅ 新增：unsubscribe方法
+    async def unsubscribe(self, subscription_id: str) -> bool:
+        """取消订阅。
+
+        Args:
+            subscription_id: subscribe方法返回的订阅ID
+
+        Returns:
+            bool: 是否成功取消
+        """
+        with self._lock:
+            if subscription_id not in self._subscription_index:
+                logger.warning(f"[EventBus] 未找到订阅ID: {subscription_id}")
+                return False
+
+            key, subscription = self._subscription_index.pop(subscription_id)
+
+            try:
+                self._subscriptions[key].remove(subscription)
+                # 清理空列表
+                if not self._subscriptions[key]:
+                    del self._subscriptions[key]
+
+                logger.debug(f"[EventBus] 已取消订阅: {subscription_id[:8]} (key={key})")
+                return True
+            except ValueError:
+                logger.error(f"[EventBus] 订阅索引不一致: {subscription_id}")
+                return False
+
+    # ✅ 新增：按模式unsubscribe
+    async def unsubscribe_pattern(self, channel: str, event_pattern: str) -> int:
+        """取消某个模式的所有订阅。
+
+        Returns:
+            int: 取消的订阅数量
+        """
+        key = f"{channel}::{event_pattern}"
+        count = 0
+
+        with self._lock:
+            if key in self._subscriptions:
+                # 从索引中移除
+                for sub in self._subscriptions[key]:
+                    if sub.subscription_id in self._subscription_index:
+                        del self._subscription_index[sub.subscription_id]
+                        count += 1
+
+                # 删除订阅列表
+                del self._subscriptions[key]
+
+        logger.debug(f"[EventBus] 已取消模式订阅: {key}, 数量={count}")
+        return count
     async def publish(self, event: Event):
         """发布一个事件到事件总线。
 
@@ -137,26 +235,182 @@ class EventBus:
             channel, pattern = key.split('::', 1)
             if (channel == '*' or event.channel == channel) and fnmatch.fnmatch(event.name, pattern):
                 for sub in subscriptions:
-                    if sub.loop and sub.loop is not current_loop:
-                        sub.loop.call_soon_threadsafe(
-                            sub.loop.create_task,
-                            sub.callback(event)
+                    # ✅ 检查loop是否仍然有效
+                    if sub.loop and sub.loop.is_closed():
+                        logger.warning(
+                            f"[EventBus] 检测到已关闭的事件循环，跳过订阅: "
+                            f"{key}, id={sub.subscription_id[:8]}"
                         )
+                        continue
+
+                    if sub.loop and sub.loop is not current_loop:
+                        try:
+                            sub.loop.call_soon_threadsafe(
+                                sub.loop.create_task,
+                                sub.callback(event)
+                            )
+                        except RuntimeError as e:
+                            logger.error(f"[EventBus] 跨循环调用失败: {e}")
                     elif current_loop:
                         tasks.append(current_loop.create_task(sub.callback(event)))
 
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # ✅ 记录回调异常
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"[EventBus] 事件回调异常: {result}", exc_info=result)
 
-    async def clear_subscriptions(self):
-        """清除所有非持久化的订阅。
+    async def clear_subscriptions(self, keep_persistent: bool = True):
+        """清除订阅。
 
-        此方法会遍历所有订阅，并移除那些 `persistent` 标志为 False 的订阅。
+        Args:
+            keep_persistent: 是否保留持久化订阅（默认True）
         """
         with self._lock:
             before_count = sum(len(subs) for subs in self._subscriptions.values())
-            for key, subs in list(self._subscriptions.items()):
-                self._subscriptions[key] = [s for s in subs if s.persistent]
+
+            if keep_persistent:
+                # 只清理非持久化订阅
+                for key, subs in list(self._subscriptions.items()):
+                    persistent_subs = [s for s in subs if s.persistent]
+                    removed_subs = [s for s in subs if not s.persistent]
+
+                    # 先清理索引
+                    for sub in removed_subs:
+                        self._subscription_index.pop(sub.subscription_id, None)
+
+                    # 再更新或删除订阅列表
+                    if persistent_subs:
+                        self._subscriptions[key] = persistent_subs
+                    else:
+                        # 只有在没有持久订阅时才删除key
+                        del self._subscriptions[key]
+            else:
+                # 清除所有订阅
+                self._subscriptions.clear()
+                self._subscription_index.clear()
+
+            # ✅ 修复：验证索引一致性
+            index_ids = set(self._subscription_index.keys())
+            actual_ids = {
+                sub.subscription_id
+                for subs in self._subscriptions.values()
+                for sub in subs
+            }
+            orphaned = index_ids - actual_ids
+            if orphaned:
+                logger.warning(f"[EventBus] 发现 {len(orphaned)} 个孤立的订阅索引，清理中...")
+                for orphaned_id in orphaned:
+                    self._subscription_index.pop(orphaned_id, None)
+
+            missing = actual_ids - index_ids
+            if missing:
+                logger.error(f"[EventBus] 发现 {len(missing)} 个缺失索引的订阅，重建索引中...")
+                # 重建缺失的索引
+                for key, subs in self._subscriptions.items():
+                    for sub in subs:
+                        if sub.subscription_id in missing:
+                            self._subscription_index[sub.subscription_id] = (key, sub)
+
             after_count = sum(len(subs) for subs in self._subscriptions.values())
-            print(f"[EventBus] clear_subscriptions 执行完毕: 清理前 {before_count} 个订阅，清理后 {after_count} 个")
+            logger.info(
+                f"[EventBus] clear_subscriptions 执行完毕: "
+                f"清理前 {before_count} 个订阅，清理后 {after_count} 个"
+            )
+
+    # ✅ 新增：清理过期订阅
+    async def cleanup_stale_subscriptions(self, max_age_hours: float = 24):
+        """清理长时间未使用的非持久化订阅。
+
+        Args:
+            max_age_hours: 订阅的最大存活时间（小时）
+        """
+        cutoff_time = datetime.now().timestamp() - (max_age_hours * 3600)
+        removed_count = 0
+
+        with self._lock:
+            for key, subs in list(self._subscriptions.items()):
+                # 过滤掉过期的非持久化订阅
+                fresh_subs = [
+                    s for s in subs
+                    if s.persistent or s.created_at >= cutoff_time
+                ]
+
+                stale_subs = [
+                    s for s in subs
+                    if not s.persistent and s.created_at < cutoff_time
+                ]
+
+                if stale_subs:
+                    # 清理索引
+                    for sub in stale_subs:
+                        self._subscription_index.pop(sub.subscription_id, None)
+                        removed_count += 1
+
+                    # 更新或删除订阅列表
+                    if fresh_subs:
+                        self._subscriptions[key] = fresh_subs
+                    else:
+                        del self._subscriptions[key]
+
+        if removed_count > 0:
+            logger.info(f"[EventBus] 清理了 {removed_count} 个过期订阅")
+
+        return removed_count
+
+    # ✅ 新增：获取订阅统计
+    def get_stats(self) -> Dict[str, Any]:
+        """获取事件总线统计信息"""
+        with self._lock:
+            total_subscriptions = sum(len(subs) for subs in self._subscriptions.values())
+            persistent_count = sum(
+                1 for subs in self._subscriptions.values()
+                for sub in subs if sub.persistent
+            )
+
+            return {
+                "total_subscriptions": total_subscriptions,
+                "persistent_subscriptions": persistent_count,
+                "transient_subscriptions": total_subscriptions - persistent_count,
+                "unique_patterns": len(self._subscriptions),
+                "active_loops": len(self._loop_refs)
+            }
+
+    # ✅ 新增：验证并修复索引一致性
+    def verify_and_fix_index_consistency(self) -> Dict[str, int]:
+        """验证订阅索引的一致性，并自动修复问题。
+
+        Returns:
+            Dict包含orphaned（孤立）和missing（缺失）的数量
+        """
+        with self._lock:
+            index_ids = set(self._subscription_index.keys())
+            actual_ids = {
+                sub.subscription_id
+                for subs in self._subscriptions.values()
+                for sub in subs
+            }
+
+            # 查找孤立的索引（索引中有但订阅列表中没有）
+            orphaned = index_ids - actual_ids
+            if orphaned:
+                logger.warning(f"[EventBus] 修复 {len(orphaned)} 个孤立的订阅索引")
+                for orphaned_id in orphaned:
+                    self._subscription_index.pop(orphaned_id, None)
+
+            # 查找缺失的索引（订阅列表中有但索引中没有）
+            missing = actual_ids - index_ids
+            if missing:
+                logger.warning(f"[EventBus] 重建 {len(missing)} 个缺失的订阅索引")
+                for key, subs in self._subscriptions.items():
+                    for sub in subs:
+                        if sub.subscription_id in missing:
+                            self._subscription_index[sub.subscription_id] = (key, sub)
+
+            return {
+                "orphaned_count": len(orphaned),
+                "missing_count": len(missing),
+                "total_fixed": len(orphaned) + len(missing)
+            }
 

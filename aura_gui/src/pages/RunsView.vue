@@ -12,21 +12,14 @@
           :plan-options="planOptions"
           @reset="onReset"
       />
-      <ProDataTable
-          :columns="columns"
-          :rows="rowsView"
-          :row-key="row => row.cid || row.id"
-          :maxHeight="'70vh'"
-          :sort-default="{key:'startedAt',dir:'desc'}"
+
+      <!-- 使用虚拟滚动列表替代 ProDataTable -->
+      <VirtualRunsList
+          :runs="rowsView"
+          :max-height="'70vh'"
           @row-click="openRun"
-      >
-        <template #col-status="{ row }">
-          <span class="pill" :class="statusClass(row.status)">{{ safeUpper(row.status) }}</span>
-        </template>
-        <template #actions="{ row }">
-          <button class="btn btn-outline" @click.stop="openRun(row)">详情</button>
-        </template>
-      </ProDataTable>
+      />
+
       <div v-if="detailError" class="error">{{ detailError }}</div>
     </div>
   </div>
@@ -39,22 +32,13 @@ import { computed, ref } from 'vue';
 import axios from 'axios';
 import { getGuiConfig } from '../config.js';
 import ProFilterBar from '../components/ProFilterBar.vue';
-import ProDataTable from '../components/ProDataTable.vue';
+import VirtualRunsList from '../components/VirtualRunsList.vue';
 import RunDetailDrawer from '../components/RunDetailDrawer.vue';
 import { useRuns } from '../composables/useRuns.js';
 
 const { activeRuns, recentRuns, runsById } = useRuns();
 const cfg = getGuiConfig();
 const api = axios.create({ baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1', timeout: cfg?.api?.timeout_ms || 5000 });
-
-const columns = [
-  { key: 'status', label: '状态', width: '110px' },
-  { key: 'plan_name', label: '计划', sortable: true, width: '180px' },
-  { key: 'task_name', label: '任务', sortable: true },
-  { key: 'startedAt', label: '开始时间', sortable: true, width: '180px' },
-  { key: 'finishedAt', label: '结束时间', sortable: true, width: '180px' },
-  { key: 'elapsed', label: '耗时', sortable: true, width: '110px' },
-];
 
 const filters = ref({ query: '', status: '', plan: '' });
 
@@ -99,19 +83,6 @@ const rowsView = computed(() => {
 });
 
 function onReset() { /* noop */ }
-
-function statusClass(s) {
-  const v = (s || 'queued').toLowerCase();
-  if (v === 'running') return 'pill-blue';
-  if (v === 'success') return 'pill-green';
-  if (v === 'error' || v === 'failed') return 'pill-red';
-  return 'pill-gray';
-}
-
-function safeUpper(s) {
-  const t = (s == null ? '' : String(s));
-  return t ? t.toUpperCase() : '—';
-}
 
 const drawerOpen = ref(false);
 const current = ref(null);

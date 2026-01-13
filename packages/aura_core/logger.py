@@ -324,3 +324,18 @@ class Logger:
         self.logger.exception(message, *args, **kwargs)
 
 logger = Logger()
+
+# 结构化日志支持
+def get_structured_logger(name: str = "AuraFramework"):
+    """获取结构化日志记录器
+
+    Args:
+        name: logger 名称
+
+    Returns:
+        StructuredLogger 实例
+    """
+    from packages.aura_core.structured_logging import StructuredLogger
+    return StructuredLogger(logging.getLogger(name))
+
+structured_logger = get_structured_logger()

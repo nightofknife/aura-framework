@@ -29,6 +29,7 @@ try:
     from packages.aura_core.scheduler import Scheduler
     from packages.aura_core.builder import build_package_from_source, API_FILE_NAME
     from packages.aura_core.logger import logger
+    from packages.aura_core.plugin_commands import plugin as plugin_group
 except ImportError as e:
     print(f"错误: 无法导入Aura核心模块。请确保你在项目根目录下运行此脚本，并且所有依赖都已安装。")
     print(f"原始错误: {e}")
@@ -222,6 +223,11 @@ def list_services():
         click.secho(f"{fqid:<40} {is_public:<8}", nl=False)
         click.secho(f"{status:<12}", fg=color, nl=False)
         click.secho(f"{plugin_id:<30}")
+
+
+# --- 4. 新的插件管理命令组 ---
+# 注册新的 plugin 命令组
+aura.add_command(plugin_group)
 
 
 if __name__ == '__main__':

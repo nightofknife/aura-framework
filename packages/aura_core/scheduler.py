@@ -30,7 +30,7 @@ import re
 from asyncio import TaskGroup
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Any, List, Optional, Callable
+from typing import TYPE_CHECKING, Dict, Any, List, Optional, Callable, Tuple, Union
 from watchdog.observers import Observer
 import yaml
 import sys
@@ -79,6 +79,11 @@ class Scheduler:
         self.startup_complete_event = threading.Event()
         self._pre_start_task_buffer: List[Tasklet] = []
         self.fallback_lock = threading.RLock()
+        # ✅ 添加启动锁，保护启动/停止操作
+        self._startup_lock = threading.Lock()
+        # ✅ 新增：资源清理控制
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_done = False
         self.pause_event = asyncio.Event()
         self.pause_event.set()
         self.id_generator = SnowflakeGenerator(
@@ -92,8 +97,8 @@ class Scheduler:
         self.interrupt_queue: Optional[asyncio.Queue[Dict]] = None
         self.async_data_lock: Optional[asyncio.Lock] = None
 
-        # 改为无界队列，避免日志激增时阻塞/抛 queue.Full
-        self.api_log_queue: queue.Queue = queue.Queue(maxsize=0)
+        # ✅ 修复: 使用异步队列而非同步队列（将在 _initialize_async_components 中初始化）
+        self.api_log_queue: Optional[asyncio.Queue] = None
 
         # --- 服务实例 ---
         self.config_service = ConfigService()
@@ -130,7 +135,7 @@ class Scheduler:
         self.observability = ObservabilityService(
             event_bus=self.event_bus,
             base_path=self.base_path,
-            running_tasks_provider=lambda: len(self.running_tasks),
+            running_tasks_provider=self.get_running_tasks_count,  # ✅ 改进：使用线程安全的方法
         )
         # UI event queue is unbounded to avoid dropping updates under burst.
         self.ui_event_queue = self.observability.get_ui_event_queue()
@@ -161,6 +166,10 @@ class Scheduler:
         self.is_running = asyncio.Event()
         if self.async_data_lock is None:
             self.async_data_lock = asyncio.Lock()
+
+        # ✅ 初始化异步日志队列（无界）
+        if self.api_log_queue is None:
+            self.api_log_queue = asyncio.Queue(maxsize=0)
 
         self.task_queue = TaskQueue(maxsize=int(get_config_value("scheduler.queue.main_maxsize", 1000)))
         self.event_task_queue = TaskQueue(maxsize=int(get_config_value("scheduler.queue.event_maxsize", 2000)))
@@ -285,6 +294,59 @@ class Scheduler:
         title = task_def.get("meta", {}).get("title") if isinstance(task_def, dict) else None
         return title or full_task_id
 
+    def _build_resource_tags(self, plan_name: str, task_name: str) -> List[str]:
+        """从任务定义构建资源标签列表。
+
+        Args:
+            plan_name: Plan 名称
+            task_name: 任务名称
+
+        Returns:
+            资源标签列表
+        """
+        tags = []
+
+        # 获取任务定义
+        full_task_id = f"{plan_name}/{task_name}"
+        task_data = self.all_tasks_definitions.get(full_task_id)
+
+        if not task_data:
+            # 无法获取任务定义，默认使用 exclusive 模式
+            logger.debug(f"任务 {full_task_id} 未找到定义，默认使用 exclusive 模式")
+            tags.append('__global_mutex__:1')
+            return tags
+
+        # 提取规范化的并发配置
+        meta = task_data.get('meta', {})
+        concurrency = meta.get('__normalized_concurrency__', {})
+
+        mode = concurrency.get('mode', 'exclusive')
+        resources = concurrency.get('resources', [])
+        mutex_group = concurrency.get('mutex_group')
+        max_instances = concurrency.get('max_instances')
+
+        # 根据模式构建资源标签
+        if mode == 'exclusive':
+            # 独占模式：全局互斥
+            tags.append('__global_mutex__:1')
+        elif mode == 'concurrent':
+            # 并发模式：不添加资源标签，只受全局 max_concurrent_tasks 限制
+            pass
+        elif mode == 'shared':
+            # 共享资源模式：添加声明的资源
+            tags.extend(resources)
+
+            # 添加互斥组
+            if mutex_group:
+                tags.append(f'__mutex_group__:{mutex_group}:1')
+
+        # 添加实例数限制
+        if max_instances:
+            tags.append(f'__max_instances__:{full_task_id}:{max_instances}')
+
+        logger.debug(f"任务 {full_task_id} 并发模式: {mode}, 资源标签: {tags}")
+        return tags
+
     def _ensure_tasklet_identifiers(self, tasklet: Tasklet,
                                     plan_name: Optional[str] = None,
                                     task_name: Optional[str] = None,
@@ -309,6 +371,11 @@ class Scheduler:
             tasklet.trace_id = self._make_trace_id(plan_name, task_name, tasklet.cid)
         if not tasklet.trace_label and plan_name and task_name:
             tasklet.trace_label = self._make_trace_label(plan_name, task_name)
+
+        # 构建资源标签（如果尚未设置）
+        if not tasklet.resource_tags and plan_name and task_name:
+            tasklet.resource_tags = self._build_resource_tags(plan_name, task_name)
+
         if source and not tasklet.source:
             tasklet.source = source
         if not tasklet.source and payload.get("source"):
@@ -466,29 +533,42 @@ class Scheduler:
 
     def start_scheduler(self):
         """启动调度器的主事件循环和所有后台服务。"""
-        if self._scheduler_thread and self._scheduler_thread.is_alive():
-            logger.warning("调度器已经在运行中。")
-            return
-        self.startup_complete_event.clear()
-        logger.info("用户请求启动调度器及所有后台服务...")
-        self.execution_manager.startup()
-        self._scheduler_thread = threading.Thread(
-            target=self._run_scheduler_in_thread,
-            name="SchedulerThread",
-            daemon=True
-        )
-        self._scheduler_thread.start()
+        # ✅ 使用锁保护启动操作
+        with self._startup_lock:
+            if self._scheduler_thread and self._scheduler_thread.is_alive():
+                logger.warning("调度器已经在运行中。")
+                return
 
-        # ✅ 修复：等待调度器完全启动
-        logger.info("等待调度器事件循环完全启动...")
-        startup_success = self.startup_complete_event.wait(timeout=10)
+            # ✅ 重置shutdown标志，允许重新启动
+            with self._shutdown_lock:
+                self._shutdown_done = False
 
-        if not startup_success:
-            logger.error("调度器启动超时！")
-            return
+            self.startup_complete_event.clear()
+            logger.info("用户请求启动调度器及所有后台服务...")
+            self.execution_manager.startup()
 
-        # ✅ 修复：在事件循环启动后发布事件
-        if self._loop and self._loop.is_running():
+            self._scheduler_thread = threading.Thread(
+                target=self._run_scheduler_in_thread,
+                name="SchedulerThread",
+                daemon=True
+            )
+            self._scheduler_thread.start()
+
+            # ✅ 修复：等待调度器完全启动
+            logger.info("等待调度器事件循环完全启动...")
+            startup_success = self.startup_complete_event.wait(timeout=10)
+
+            if not startup_success:
+                logger.error("调度器启动超时！")
+                # ✅ 清理失败的启动
+                self.stop_scheduler()
+                return
+
+            # ✅ 修复：使用锁保护状态检查和事件发布
+            if not (self._loop and self._loop.is_running()):
+                logger.error("调度器事件循环未正确启动")
+                return
+
             logger.info("调度器已启动，正在发布 scheduler.started 事件...")
             try:
                 future = asyncio.run_coroutine_threadsafe(
@@ -498,13 +578,46 @@ class Scheduler:
                     )),
                     self._loop
                 )
-                # 等待事件发布完成
-                future.result(timeout=2)
+                # ✅ 增加超时时间
+                future.result(timeout=5)
                 logger.info("scheduler.started 事件发布成功。")
+            except asyncio.TimeoutError:
+                logger.error("发布 scheduler.started 事件超时")
             except Exception as e:
-                logger.error(f"发布 scheduler.started 事件失败: {e}")
+                logger.error(f"发布 scheduler.started 事件失败: {e}", exc_info=True)
 
         self._push_ui_update('master_status_update', {"is_running": True})
+
+    def _cleanup_resources(self):
+        """✅ 统一的资源清理方法，防止双重shutdown。"""
+        with self._shutdown_lock:
+            if self._shutdown_done:
+                logger.debug("资源已清理，跳过重复调用。")
+                return
+
+            try:
+                logger.info("正在清理调度器资源...")
+
+                # 1. 清理运行中任务记录
+                self.running_tasks.clear()
+                self._running_task_meta.clear()
+
+                # 2. 关闭执行管理器
+                if self.execution_manager:
+                    try:
+                        self.execution_manager.shutdown()
+                    except Exception as e:
+                        logger.error(f"关闭执行管理器时发生异常: {e}", exc_info=True)
+
+                # 3. 标记为已关闭
+                self._shutdown_done = True
+                logger.info("调度器资源清理完成。")
+
+            except Exception as e:
+                logger.error(f"资源清理时发生异常: {e}", exc_info=True)
+            finally:
+                # 4. 无论成功失败都设置事件
+                self.startup_complete_event.set()
 
     def _run_scheduler_in_thread(self):
         """(私有) 在一个单独的线程中运行主事件循环。"""
@@ -515,54 +628,55 @@ class Scheduler:
         except Exception as e:
             logger.critical(f"调度器主事件循环崩溃: {e}", exc_info=True)
         finally:
-            try:
-                # 确保执行器池被释放，防止异常退出后资源泄漏
-                self.execution_manager.shutdown()
-            except Exception as e:
-                logger.warning(f"关闭执行管理器时发生异常: {e}")
-            # 清理运行中任务记录
-            self.running_tasks.clear()
-            self._running_task_meta.clear()
+            # ✅ 修复：使用统一的资源清理方法
+            self._cleanup_resources()
             logger.info("调度器事件循环已终止。")
-            self.startup_complete_event.set()
 
     def stop_scheduler(self):
         """优雅地停止调度器和所有后台服务。"""
-        if not self._scheduler_thread or not self._scheduler_thread.is_alive() or not self._loop:
-            logger.warning("调度器已经处于停止状态。")
-            return
+        # ✅ 使用锁保护停止操作
+        with self._startup_lock:
+            if not self._scheduler_thread or not self._scheduler_thread.is_alive() or not self._loop:
+                logger.warning("调度器已经处于停止状态。")
+                return
 
-        logger.info("用户请求停止调度器及所有后台服务...")
+            logger.info("用户请求停止调度器及所有后台服务...")
 
-        # ✅ 修复：在停止之前发布事件
-        if self._loop and self._loop.is_running():
-            logger.info("正在发布 scheduler.stopped 事件...")
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    self.event_bus.publish(Event(
-                        name="scheduler.stopped",
-                        payload={"message": "Scheduler is stopping."}
-                    )),
-                    self._loop
-                )
-                future.result(timeout=2)
-                logger.info("scheduler.stopped 事件发布成功。")
-            except Exception as e:
-                logger.error(f"发布 scheduler.stopped 事件失败: {e}")
+            # ✅ 修复：在停止之前发布事件
+            if self._loop and self._loop.is_running():
+                logger.info("正在发布 scheduler.stopped 事件...")
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.event_bus.publish(Event(
+                            name="scheduler.stopped",
+                            payload={"message": "Scheduler is stopping."}
+                        )),
+                        self._loop
+                    )
+                    # ✅ 增加超时时间
+                    future.result(timeout=5)
+                    logger.info("scheduler.stopped 事件发布成功。")
+                except asyncio.TimeoutError:
+                    logger.error("发布 scheduler.stopped 事件超时")
+                except Exception as e:
+                    logger.error(f"发布 scheduler.stopped 事件失败: {e}", exc_info=True)
 
-        if self.is_running:
-            self._loop.call_soon_threadsafe(self.is_running.clear)
-        if self._main_task:
-            self._loop.call_soon_threadsafe(self._main_task.cancel)
+            if self.is_running:
+                self._loop.call_soon_threadsafe(self.is_running.clear)
+            if self._main_task:
+                self._loop.call_soon_threadsafe(self._main_task.cancel)
 
-        self._scheduler_thread.join(timeout=10)
-        if self._scheduler_thread.is_alive():
-            logger.error("调度器线程在超时后未能停止。")
+            # ✅ 修复：等待线程结束，_cleanup_resources 会在线程中自动调用
+            self._scheduler_thread.join(timeout=10)
+            if self._scheduler_thread.is_alive():
+                logger.error("调度器线程在超时后未能停止。")
+            else:
+                logger.info("调度器线程已成功终止。")
 
-        self.execution_manager.shutdown()
-        self._scheduler_thread = None
-        self._loop = None
-        logger.info("调度器已安全停止。")
+            self._scheduler_thread = None
+            self._loop = None
+            logger.info("调度器已安全停止。")
+
         self._push_ui_update('master_status_update', {"is_running": False})
 
     async def run(self):
@@ -761,16 +875,52 @@ class Scheduler:
         return kinds.pop() if len(kinds) == 1 else None
 
     def _normalize_input_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
-        """规范化 meta.inputs 字段定义，支持 list<type>/dict/enum 等写法。"""
+        """规范化 meta.inputs 字段定义，支持 list<type>/dict/enum/count 等写法。"""
         if not isinstance(schema, dict):
             return {"type": "string"}
         normalized = dict(schema)
+
+        # 1. 统一 enum 和 options
         enum_vals = normalized.get("enum")
         if enum_vals is None and "options" in normalized:
             enum_vals = normalized.get("options")
         if enum_vals is not None:
             normalized["enum"] = enum_vals or []
 
+        # 2. 处理 count 语法糖（新增）
+        if "count" in normalized:
+            count = normalized["count"]
+
+            if isinstance(count, int):
+                # count: 3 → min: 3, max: 3
+                normalized["min"] = count
+                normalized["max"] = count
+            elif isinstance(count, str):
+                # count: "<=5" → max: 5
+                max_match = re.match(r'^<=(\d+)$', count)
+                if max_match:
+                    normalized["max"] = int(max_match.group(1))
+
+                # count: ">=2" → min: 2
+                min_match = re.match(r'^>=(\d+)$', count)
+                if min_match:
+                    normalized["min"] = int(min_match.group(1))
+
+                # count: "1-3" → min: 1, max: 3
+                range_match = re.match(r'^(\d+)-(\d+)$', count)
+                if range_match:
+                    normalized["min"] = int(range_match.group(1))
+                    normalized["max"] = int(range_match.group(2))
+            elif isinstance(count, list) and len(count) == 2:
+                # count: [1, 3] → min: 1, max: 3
+                normalized["min"] = count[0]
+                normalized["max"] = count[1]
+
+        # 3. 保留 ui 字段（前端使用，不验证）
+        if "ui" in schema:
+            normalized["ui"] = schema["ui"]
+
+        # 4. 类型规范化
         type_raw = normalized.get("type")
         if type_raw is None or type_raw == "":
             type_raw = self._infer_enum_type(normalized.get("enum")) or "string"
@@ -843,7 +993,7 @@ class Scheduler:
             return 0
         return ""
 
-    def _validate_input_value(self, schema: Dict[str, Any], value: Any, path: str):
+    def _validate_input_value(self, schema: Dict[str, Any], value: Any, path: str) -> Tuple[bool, Any, Optional[str]]:
         """递归校验单个字段值，返回 (ok, normalized_value, error_message)。"""
         s = self._normalize_input_schema(schema or {})
         required = bool(s.get("required"))
@@ -890,12 +1040,20 @@ class Scheduler:
         elif t == "list":
             if not isinstance(value, list):
                 return False, None, f"Input '{path}' must be a list."
-            min_items = s.get("min_items") if s.get("min_items") is not None else s.get("minItems")
-            max_items = s.get("max_items") if s.get("max_items") is not None else s.get("maxItems")
-            if min_items is not None and len(value) < min_items:
-                return False, None, f"Input '{path}' must contain at least {min_items} items."
-            if max_items is not None and len(value) > max_items:
-                return False, None, f"Input '{path}' must contain no more than {max_items} items."
+            # 使用统一的 min/max 字段（优先使用新的 min/max）
+            min_items = s.get("min")
+            if min_items is None:
+                min_items = s.get("min_items") if s.get("min_items") is not None else s.get("minItems")
+            max_items = s.get("max")
+            if max_items is None:
+                max_items = s.get("max_items") if s.get("max_items") is not None else s.get("maxItems")
+
+            count = len(value)
+            if min_items is not None and count < min_items:
+                return False, None, f"Input '{path}' must contain at least {min_items} items (got {count})."
+            if max_items is not None and count > max_items:
+                return False, None, f"Input '{path}' must contain no more than {max_items} items (got {count})."
+
             item_schema = s.get("item") or s.get("items") or {}
             validated_list = []
             for idx, item in enumerate(value):
@@ -928,7 +1086,7 @@ class Scheduler:
                 return False, None, f"Input '{path}' must be one of {allowed}."
         return True, val, None
 
-    def _validate_inputs_against_meta(self, inputs_meta: List[Dict[str, Any]], provided_inputs: Dict[str, Any]):
+    def _validate_inputs_against_meta(self, inputs_meta: List[Dict[str, Any]], provided_inputs: Dict[str, Any]) -> Tuple[bool, Union[str, Dict[str, Any]]]:
         """基于 meta.inputs 递归校验/填充用户输入。"""
         if not isinstance(inputs_meta, list):
             return False, "Task meta.inputs must be a list."
@@ -962,21 +1120,105 @@ class Scheduler:
     def update_run_status(self, item_id: str, status_update: Dict[str, Any]):
         """线程安全地更新一个计划任务的运行状态。"""
         if self._loop and self._loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(self._async_update_run_status(item_id, status_update), self._loop)
+            # ✅ 修复：使用非阻塞方式，避免潜在死锁
             try:
-                future.result(timeout=2)
+                asyncio.run_coroutine_threadsafe(
+                    self._async_update_run_status(item_id, status_update),
+                    self._loop
+                )
+                # 不等待结果，避免阻塞调用线程
             except Exception as e:
-                logger.error(f"异步更新运行状态失败: {e}")
+                logger.error(f"提交异步更新运行状态失败: {e}")
+                # 降级到同步方式
+                self._sync_update_run_status(item_id, status_update)
+        else:
+            self._sync_update_run_status(item_id, status_update)
+
+    def _sync_update_run_status(self, item_id: str, status_update: Dict[str, Any]):
+        """同步方式更新运行状态（fallback）"""
+        with self.fallback_lock:
+            if item_id:
+                self.run_statuses.setdefault(item_id, {}).update(status_update)
+                if self.ui_update_queue:
+                    try:
+                        self.ui_update_queue.put_nowait({
+                            'type': 'run_status_single_update',
+                            'data': {'id': item_id, **self.run_statuses[item_id]}
+                        })
+                    except queue.Full:
+                        logger.warning("UI更新队列已满，丢弃消息: run_status_single_update")
+
+    # ✅ 新增：线程安全地获取运行中任务数量
+    def get_running_tasks_count(self) -> int:
+        """线程安全地获取运行中任务数量。
+
+        使用非阻塞方式从事件循环获取，避免死锁。
+        """
+        if self._loop and self._loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._async_get_running_tasks_count(),
+                    self._loop
+                )
+                return future.result(timeout=1)
+            except Exception as e:
+                logger.warning(f"异步获取运行中任务数量失败: {e}")
+                # Fallback: 使用fallback_lock
+                with self.fallback_lock:
+                    return len(self.running_tasks)
         else:
             with self.fallback_lock:
-                if item_id:
-                    self.run_statuses.setdefault(item_id, {}).update(status_update)
-                    if self.ui_update_queue:
-                        try:
-                            self.ui_update_queue.put_nowait({'type': 'run_status_single_update',
-                                                             'data': {'id': item_id, **self.run_statuses[item_id]}})
-                        except queue.Full:
-                            logger.warning("UI更新队列已满，丢弃消息: run_status_single_update")
+                return len(self.running_tasks)
+
+    async def _async_get_running_tasks_count(self) -> int:
+        """异步获取运行中任务数量。"""
+        async with self.async_data_lock:
+            return len(self.running_tasks)
+
+    # ✅ 新增：线程安全地获取运行中任务的快照
+    def get_running_tasks_snapshot(self) -> Dict[str, Any]:
+        """获取运行中任务的快照（线程安全）。"""
+        if self._loop and self._loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._async_get_running_tasks_snapshot(),
+                    self._loop
+                )
+                return future.result(timeout=2)
+            except Exception as e:
+                logger.warning(f"异步获取运行中任务快照失败: {e}")
+                with self.fallback_lock:
+                    return self._fallback_running_tasks_snapshot()
+        else:
+            with self.fallback_lock:
+                return self._fallback_running_tasks_snapshot()
+
+    async def _async_get_running_tasks_snapshot(self) -> Dict[str, Any]:
+        """异步获取运行中任务快照。"""
+        from datetime import datetime
+        async with self.async_data_lock:
+            return {
+                cid: {
+                    'task_name': meta.get('task_name'),
+                    'start_time': meta.get('start_time').isoformat() if meta.get('start_time') else None,
+                    'duration_sec': (datetime.now() - meta.get('start_time')).total_seconds()
+                    if meta.get('start_time') else 0
+                }
+                for cid, meta in self._running_task_meta.items()
+            }
+
+    def _fallback_running_tasks_snapshot(self) -> Dict[str, Any]:
+        """Fallback方式获取运行中任务快照。"""
+        from datetime import datetime
+        return {
+            cid: {
+                'task_name': meta.get('task_name'),
+                'start_time': meta.get('start_time').isoformat() if meta.get('start_time') else None,
+                'duration_sec': (datetime.now() - meta.get('start_time')).total_seconds()
+                if meta.get('start_time') else 0
+            }
+            for cid, meta in self._running_task_meta.items()
+        }
 
     def run_manual_task(self, task_id: str):
         """Delegate manual schedule run to execution service."""

@@ -99,6 +99,14 @@ class ExecutionEngine:
         self.node_metadata: Dict[str, Dict[str, Any]] = {}  # node_id -> metadata
         # metadata 包含：execution_count, retry_count, first_executed_at, last_executed_at
 
+        # ✅ 改进：添加更细粒度的安全机制
+        self.total_node_executions = 0  # 总执行计数
+
+        # ✅ 从配置读取限制值
+        self.max_total_steps = int(get_config_value("execution.max_total_steps", 1000))
+        self.max_goto_per_pair = int(get_config_value("execution.max_goto_per_pair", 100))
+        self.goto_warning_threshold = int(get_config_value("execution.goto_warning_threshold", 10))
+
     async def _check_pause(self):
         if not self.pause_event:
             return
@@ -188,8 +196,48 @@ class ExecutionEngine:
                     raise KeyError(f"节点 '{node_id}' 引用了未定义的依赖: '{dep_id}'")
                 self.reverse_dependencies.setdefault(dep_id, set()).add(node_id)
 
-            if node_id in all_deps:
-                raise ValueError(f"检测到循环依赖: 节点 '{node_id}' 直接或间接依赖于自身。")
+        # ✅ 修复：完整的循环依赖检测
+        self._detect_circular_dependencies(all_node_ids)
+
+    def _detect_circular_dependencies(self, all_nodes: Set[str]):
+        """使用DFS检测循环依赖"""
+        WHITE = 0  # 未访问
+        GRAY = 1   # 正在访问（在当前路径中）
+        BLACK = 2  # 已访问完成
+
+        colors = {node: WHITE for node in all_nodes}
+        path = []  # 当前路径，用于报告循环
+
+        def dfs(node: str) -> bool:
+            """DFS访问节点，返回True表示发现循环"""
+            colors[node] = GRAY
+            path.append(node)
+
+            # 获取所有依赖
+            deps = self._get_all_deps_from_struct(self.dependencies.get(node, []))
+
+            for dep in deps:
+                if colors[dep] == GRAY:
+                    # 发现循环！
+                    cycle_start = path.index(dep)
+                    cycle = path[cycle_start:] + [dep]
+                    raise ValueError(
+                        f"检测到循环依赖: {' → '.join(cycle)}\n"
+                        f"请检查以下节点的 depends_on 配置"
+                    )
+                elif colors[dep] == WHITE:
+                    if dfs(dep):
+                        return True
+
+            path.pop()
+            colors[node] = BLACK
+            return False
+
+        # 对每个未访问的节点执行DFS
+        for node in all_nodes:
+            if colors[node] == WHITE:
+                path = []
+                dfs(node)
 
     def _get_all_deps_from_struct(self, struct: Any) -> Set[str]:
         """(私有) 递归地从复杂的依赖结构中提取所有节点 ID。"""
@@ -468,7 +516,8 @@ class ExecutionEngine:
         self.step_states[node_id] = StepState.RUNNING
         start_time = time.time()
         node_result: Dict[str, Any] = {}
-        error_details = None
+        error_details: Optional[Dict[str, Any]] = None  # ✅ 明确类型注解
+        execution_success = False  # ✅ 添加明确的成功标志
         action_result = None
         loop_info: Dict[str, Any] = {}
         try:
@@ -590,6 +639,7 @@ class ExecutionEngine:
                 node_result['output'] = action_result
 
             self.step_states[node_id] = StepState.SUCCESS
+            execution_success = True  # ✅ 标记执行成功
             if self.event_callback:
                 end_ts = time.time()
                 await self.event_callback('node.succeeded', {
@@ -603,18 +653,20 @@ class ExecutionEngine:
             # ===== 新增：执行 goto 逻辑 =====
             await self._handle_goto(node_id, node_data, node_context, action_result)
 
+        # ✅ 修复：统一异常处理，确保所有异常都触发事件
         except (JumpSignal, StopTaskException) as e:
-            logger.error(f"??'{node_id}'????????: {e}", exc_info=self.debug_mode)
+            execution_success = False  # ✅ 标记执行失败
+            logger.error(f"节点'{node_id}'遇到控制流异常: {e}", exc_info=self.debug_mode)
             self.step_states[node_id] = StepState.FAILED
-            error_details = {"type": type(e).__name__, "message": str(e), "severity": e.severity}
+            error_details = {
+                "type": type(e).__name__,
+                "message": str(e),
+                "severity": getattr(e, 'severity', 'error')
+            }
             if self.debug_mode:
-                error_details["traceback"] = e.get_full_traceback()
-        except Exception as e:
-            logger.error(f"??'{node_id}'????????? {e}", exc_info=True)
-            self.step_states[node_id] = StepState.FAILED
-            error_details = {"type": type(e).__name__, "message": str(e)}
-            if self.debug_mode:
-                error_details["traceback"] = traceback.format_exc()
+                error_details["traceback"] = getattr(e, 'get_full_traceback', lambda: traceback.format_exc())()
+
+            # ✅ 添加事件回调
             if self.event_callback:
                 end_ts = time.time()
                 await self.event_callback('node.failed', {
@@ -622,15 +674,50 @@ class ExecutionEngine:
                     'end_time': end_ts,
                     'duration_ms': round((end_ts - start_time) * 1000, 3),
                     'exception_type': type(e).__name__,
-                    'exception_message': str(e)
+                    'exception_message': str(e),
+                    'is_control_flow_exception': True
+                })
+
+        except Exception as e:
+            execution_success = False  # ✅ 标记执行失败
+            logger.error(f"节点'{node_id}'执行失败: {e}", exc_info=True)
+            self.step_states[node_id] = StepState.FAILED
+            error_details = {"type": type(e).__name__, "message": str(e)}
+            if self.debug_mode:
+                error_details["traceback"] = traceback.format_exc()
+
+            if self.event_callback:
+                end_ts = time.time()
+                await self.event_callback('node.failed', {
+                    **_base_payload(),
+                    'end_time': end_ts,
+                    'duration_ms': round((end_ts - start_time) * 1000, 3),
+                    'exception_type': type(e).__name__,
+                    'exception_message': str(e),
+                    'is_control_flow_exception': False
                 })
 
         finally:
-            run_state = self._create_run_state(self.step_states.get(node_id, StepState.FAILED), start_time,
-                                               error=error_details)
+            # ✅ 验证状态一致性
+            if execution_success and error_details is not None:
+                logger.error(
+                    f"逻辑错误：节点'{node_id}'标记为成功但有错误详情。"
+                    f"execution_success={execution_success}, error_details={error_details}"
+                )
+            if not execution_success and error_details is None:
+                logger.warning(
+                    f"状态不一致：节点'{node_id}'标记为失败但无错误详情。"
+                )
+
+            run_state = self._create_run_state(
+                self.step_states.get(node_id, StepState.FAILED),
+                start_time,
+                error=error_details
+            )
             final_node_output = {"run_state": run_state, **node_result}
             node_context.add_node_result(node_id, final_node_output)
             self.root_context.add_node_result(node_id, final_node_output)
+
             if self.event_callback:
                 status = 'error' if error_details else 'success'
                 end_ts = time.time()

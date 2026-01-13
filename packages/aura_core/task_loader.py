@@ -14,6 +14,7 @@ from cachetools.keys import hashkey
 
 from packages.aura_core.logger import logger
 from packages.aura_core.config_loader import get_config_value
+from packages.aura_core.schema_validator import validate_task_definition
 
 
 class TaskLoader:
@@ -36,6 +37,10 @@ class TaskLoader:
         cache_ttl = int(get_config_value("task_loader.cache_ttl_sec", 300))
         self.cache = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
 
+        # Schema 验证配置
+        self.enable_schema_validation = get_config_value("task_loader.enable_schema_validation", True)
+        self.strict_validation = get_config_value("task_loader.strict_validation", False)
+
     def _load_and_parse_file(self, file_path: Path) -> Dict[str, Any]:
         """(私有) 加载并解析一个 YAML 文件，同时填充默认值并进行缓存。"""
         key = hashkey(file_path)
@@ -49,6 +54,18 @@ class TaskLoader:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     data = yaml.safe_load(f)
                     result = data if isinstance(data, dict) else {}
+
+                # Schema 验证（如果启用）
+                if self.enable_schema_validation and result:
+                    is_valid, error = validate_task_definition(result)
+                    if not is_valid:
+                        logger.error(f"任务文件 '{file_path.name}' Schema 验证失败: {error}")
+                        if self.strict_validation:
+                            # 严格模式：验证失败抛出异常
+                            raise ValueError(f"Schema 验证失败: {error}")
+                        else:
+                            # 非严格模式：记录警告但继续执行
+                            logger.warning(f"Schema 验证失败，但继续加载（非严格模式）")
 
                 # 为文件中的每个任务设置默认的 'execution_mode'
                 for task_def in result.values():
@@ -86,10 +103,10 @@ class TaskLoader:
             direct_data = self._load_and_parse_file(direct_path)
             if isinstance(direct_data, dict):
                 if isinstance(direct_data.get('steps'), (list, dict)):
-                    return direct_data
+                    return self._normalize_task_concurrency(direct_data)
                 task_data = direct_data.get(task_key)
                 if isinstance(task_data, dict) and 'steps' in task_data:
-                    return task_data
+                    return self._normalize_task_concurrency(task_data)
 
         # 兼容旧规则：tasks/a/b.yaml 内的 key=c
         file_path_parts = parts[:-1]
@@ -100,9 +117,9 @@ class TaskLoader:
             all_tasks_in_file = self._load_and_parse_file(file_path)
             task_data = all_tasks_in_file.get(task_key)
             if isinstance(task_data, dict) and 'steps' in task_data:
-                return task_data
+                return self._normalize_task_concurrency(task_data)
             if isinstance(all_tasks_in_file, dict) and isinstance(all_tasks_in_file.get('steps'), (list, dict)):
-                return all_tasks_in_file
+                return self._normalize_task_concurrency(all_tasks_in_file)
 
         attempts = []
         if direct_path:
@@ -114,6 +131,91 @@ class TaskLoader:
             f"(尝试路径: {', '.join(attempts)})"
         )
         return None
+
+    def _normalize_task_concurrency(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """规范化任务的并发配置。
+
+        Args:
+            task_data: 任务定义字典
+
+        Returns:
+            规范化后的任务定义（会修改原字典）
+        """
+        if not isinstance(task_data, dict):
+            return task_data
+
+        meta = task_data.get('meta', {})
+        if not isinstance(meta, dict):
+            return task_data
+
+        concurrency = meta.get('concurrency')
+        normalized = self._normalize_concurrency(concurrency)
+        meta['__normalized_concurrency__'] = normalized
+
+        return task_data
+
+    def _normalize_concurrency(self, concurrency: Any) -> Dict[str, Any]:
+        """规范化并发配置为统一格式。
+
+        Args:
+            concurrency: 原始并发配置（可以是 None, str, dict）
+
+        Returns:
+            规范化的并发配置字典:
+            {
+                'mode': 'exclusive' | 'concurrent' | 'shared',
+                'resources': ['resource1', 'resource2:5'],
+                'mutex_group': str or None,
+                'max_instances': int or None
+            }
+        """
+        # 默认值：独占模式（向后兼容）
+        if concurrency is None:
+            return {
+                'mode': 'exclusive',
+                'resources': [],
+                'mutex_group': None,
+                'max_instances': None
+            }
+
+        # 简化语法：concurrency: concurrent
+        if isinstance(concurrency, str):
+            return {
+                'mode': concurrency,
+                'resources': [],
+                'mutex_group': None,
+                'max_instances': None
+            }
+
+        # 完整语法
+        if isinstance(concurrency, dict):
+            mode = concurrency.get('mode')
+            resources = concurrency.get('resources', [])
+            mutex_group = concurrency.get('mutex_group')
+            max_instances = concurrency.get('max_instances')
+
+            # 简化语法：只有 resources（推断为 shared 模式）
+            if not mode and resources:
+                mode = 'shared'
+
+            # 简化语法：只有 mutex_group（推断为 shared 模式）
+            if not mode and mutex_group:
+                mode = 'shared'
+
+            # 如果还是没有 mode，默认为 shared
+            if not mode:
+                mode = 'shared'
+
+            return {
+                'mode': mode,
+                'resources': resources if isinstance(resources, list) else [resources] if resources else [],
+                'mutex_group': mutex_group,
+                'max_instances': max_instances
+            }
+
+        # 无法识别，默认独占
+        logger.warning(f"无法识别的并发配置格式: {concurrency}，使用默认独占模式")
+        return self._normalize_concurrency(None)
 
     def get_all_task_definitions(self) -> Dict[str, Any]:
         """获取此 Plan 下所有已发现的任务定义。
@@ -142,7 +244,7 @@ class TaskLoader:
 
         return all_definitions
 
-    def reload_task_file(self, file_path: Path):
+    def reload_task_file(self, file_path: Path) -> None:
         """重新加载或更新单个任务 YAML 文件中的定义。
 
         此方法的核心是清除该文件在缓存中的条目，这样下次访问时

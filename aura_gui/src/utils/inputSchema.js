@@ -21,6 +21,8 @@ const inferEnumType = (values) => {
 export function normalizeInputSchema(schema = {}) {
   if (typeof schema !== 'object' || !schema) return { type: 'string' };
   const normalized = { ...schema };
+
+  // 1. 统一 enum 和 options
   if (normalized.enum === undefined && normalized.options !== undefined) {
     normalized.enum = normalized.options;
   }
@@ -28,6 +30,41 @@ export function normalizeInputSchema(schema = {}) {
     normalized.enum = normalized.enum || [];
   }
 
+  // 2. 处理 count 语法糖（新增）
+  if (normalized.count !== undefined) {
+    const count = normalized.count;
+
+    if (typeof count === 'number') {
+      // count: 3 → min: 3, max: 3
+      normalized.min = count;
+      normalized.max = count;
+    } else if (typeof count === 'string') {
+      // count: "<=5" → max: 5
+      const maxMatch = count.match(/^<=(\d+)$/);
+      if (maxMatch) {
+        normalized.max = parseInt(maxMatch[1]);
+      }
+
+      // count: ">=2" → min: 2
+      const minMatch = count.match(/^>=(\d+)$/);
+      if (minMatch) {
+        normalized.min = parseInt(minMatch[1]);
+      }
+
+      // count: "1-3" → min: 1, max: 3
+      const rangeMatch = count.match(/^(\d+)-(\d+)$/);
+      if (rangeMatch) {
+        normalized.min = parseInt(rangeMatch[1]);
+        normalized.max = parseInt(rangeMatch[2]);
+      }
+    } else if (Array.isArray(count) && count.length === 2) {
+      // count: [1, 3] → min: 1, max: 3
+      normalized.min = count[0];
+      normalized.max = count[1];
+    }
+  }
+
+  // 3. 类型推断和规范化
   let typeRaw = normalized.type;
   if (typeRaw === undefined || typeRaw === null || typeRaw === '') {
     typeRaw = inferEnumType(normalized.enum) || 'string';
@@ -38,6 +75,7 @@ export function normalizeInputSchema(schema = {}) {
     typeRaw = inferEnumType(normalized.enum) || 'string';
   }
 
+  // 4. 处理 list<type> 语法
   const listMatch = typeRaw.match(/^list<(.+)>$/);
   if (listMatch) {
     normalized.type = 'list';
@@ -60,6 +98,7 @@ export function normalizeInputSchema(schema = {}) {
       normalized.properties = props;
     }
   }
+
   return normalized;
 }
 

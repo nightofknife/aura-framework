@@ -195,8 +195,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import axios from 'axios';
+import { useDebounceFn } from '@vueuse/core';
 import SchemePanel from '../components/SchemePanel.vue';
 import TaskMiniCard from '../components/TaskMiniCard.vue';
 import ProContextPanel from '../components/ProContextPanel.vue';
@@ -219,9 +220,20 @@ const engineRunning = ref(false);
 const plans = ref([]);
 const tasks = ref([]);
 const ui = reactive({ planSelected: '', query: '' });
+const debouncedQuery = ref(''); // 防抖后的查询字符串
 const open = reactive({ byPlan: true, favs: true });
 const favKey = 'exec.favs';
 const favSet = ref(new Set(JSON.parse(localStorage.getItem(favKey) || '[]')));
+
+// 防抖更新查询（300ms）
+const updateDebouncedQuery = useDebounceFn((value) => {
+  debouncedQuery.value = value;
+}, 300);
+
+// 监听 ui.query 变化并防抖更新
+watch(() => ui.query, (newValue) => {
+  updateDebouncedQuery(newValue);
+}, { immediate: true });
 
 function toggleFav(plan, task) {
   const key = `${plan}::${task}`;
@@ -246,7 +258,7 @@ const favTasksView = computed(() => {
 
 const filteredTasks = computed(() => {
   const plan = ui.planSelected || plans.value[0]?.name || '';
-  const query = (ui.query || '').trim().toLowerCase();
+  const query = (debouncedQuery.value || '').trim().toLowerCase(); // 使用防抖后的查询
   const match = (item) => !query || `${item.plan}${item.task}${item.title}${item.desc}`.toLowerCase().includes(query);
   const inPlan = tasks.value.filter(item => item.plan === plan && match(item));
   const outPlan = tasks.value.filter(item => item.plan !== plan && match(item));

@@ -23,7 +23,6 @@ import queue
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from datetime import datetime
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
-from contextlib import AsyncExitStack
 
 from packages.aura_core.api import hook_manager
 from packages.aura_core.task_queue import Tasklet
@@ -94,6 +93,7 @@ class ExecutionManager:
             is_interrupt_handler: 标记此任务是否为中断处理程序，
                 若是，则不进行状态规划和某些状态更新。
         """
+        # ✅ 修复: 在获取任何资源之前先检查执行器状态
         if self._io_pool is None or self._cpu_pool is None:
             logger.error("ExecutionManager: 尝试在未启动的执行器上提交任务。请先调用 startup()。")
             raise RuntimeError("Executor pools are not running.")
@@ -103,51 +103,64 @@ class ExecutionManager:
         now = datetime.now()
         task_context = {"tasklet": tasklet, "start_time": now}
 
-        if task_id_for_status and not is_interrupt_handler:
-            self.scheduler.update_run_status(task_id_for_status, {'status': 'running', 'started_at': now})
-
-        # current_task = asyncio.current_task()
-        # if not is_interrupt_handler:
-        #     async with self.scheduler.get_async_lock():
-        #         self.scheduler.running_tasks[tasklet.task_name] = current_task
-
+        # ✅ 现在才获取信号量，确保之前的检查都通过
         semaphores = await self._get_semaphores_for(tasklet)
 
         cid_token = set_cid(tasklet.cid or (tasklet.payload.get('cid') if tasklet.payload else None))
 
+        # ✅ 修复顺序：先跟踪任务，再更新状态，保证一致性
+        current_task = asyncio.current_task()
+        if not is_interrupt_handler and tasklet.cid:
+            async with self.scheduler.get_async_lock():
+                self.scheduler.running_tasks[tasklet.cid] = current_task
+                self.scheduler._running_task_meta[tasklet.cid] = {
+                    'task_name': tasklet.task_name,
+                    'start_time': now,
+                    'tasklet': tasklet
+                }
+
+        # ✅ 在running_tasks记录后再更新run_status
+        if task_id_for_status and not is_interrupt_handler:
+            self.scheduler.update_run_status(task_id_for_status, {'status': 'running', 'started_at': now})
+
+        # ✅ 修复：使用手动信号量管理，更精确的异常控制
+        acquired_sems = []
         try:
-            async with AsyncExitStack() as stack:
-                for sem in semaphores:
-                    await stack.enter_async_context(sem)
+            # 手动获取所有信号量
+            for sem in semaphores:
+                await sem.acquire()
+                acquired_sems.append(sem)
 
-                if not is_interrupt_handler:
-                    planning_success = await self._handle_state_planning(tasklet)
-                    if not planning_success:
-                        raise StatePlanningError(f"任务 '{task_name_for_log}' 的初始状态规划失败。")
+            logger.debug(f"已获取 {len(acquired_sems)} 个信号量用于任务 '{task_name_for_log}'")
 
-                async with asyncio.timeout(tasklet.timeout):
-                    logger.info(f"开始执行主任务: '{task_name_for_log}' (模式: {tasklet.execution_mode})")
-                    await hook_manager.trigger('before_task_run', task_context=task_context)
-                    result = await self._run_execution_chain(tasklet)
-                    task_context['end_time'] = datetime.now()
-                    task_context['result'] = result
-                    result_status = None
-                    if isinstance(result, dict):
-                        result_status = result.get('status') or result.get('final_status')
-                    status_norm = str(result_status).upper() if result_status else ''
-                    if status_norm and status_norm not in {'SUCCESS', 'OK'}:
-                        task_context['exception'] = RuntimeError(f"Task result status: {result_status}")
-                        await hook_manager.trigger('after_task_failure', task_context=task_context)
-                        logger.error(f"任务 '{task_name_for_log}' 执行失败: {result_status}")
-                        if task_id_for_status and not is_interrupt_handler:
-                            self.scheduler.update_run_status(task_id_for_status,
-                                                             {'status': 'idle', 'last_run': now, 'result': 'failure'})
-                    else:
-                        await hook_manager.trigger('after_task_success', task_context=task_context)
-                        logger.info(f"任务 '{task_name_for_log}' 执行成功。")
-                        if task_id_for_status and not is_interrupt_handler:
-                            self.scheduler.update_run_status(task_id_for_status,
-                                                             {'status': 'idle', 'last_run': now, 'result': 'success'})
+            if not is_interrupt_handler:
+                planning_success = await self._handle_state_planning(tasklet)
+                if not planning_success:
+                    raise StatePlanningError(f"任务 '{task_name_for_log}' 的初始状态规划失败。")
+
+            async with asyncio.timeout(tasklet.timeout):
+                logger.info(f"开始执行主任务: '{task_name_for_log}' (模式: {tasklet.execution_mode})")
+                await hook_manager.trigger('before_task_run', task_context=task_context)
+                result = await self._run_execution_chain(tasklet)
+                task_context['end_time'] = datetime.now()
+                task_context['result'] = result
+                result_status = None
+                if isinstance(result, dict):
+                    result_status = result.get('status') or result.get('final_status')
+                status_norm = str(result_status).upper() if result_status else ''
+                if status_norm and status_norm not in {'SUCCESS', 'OK'}:
+                    task_context['exception'] = RuntimeError(f"Task result status: {result_status}")
+                    await hook_manager.trigger('after_task_failure', task_context=task_context)
+                    logger.error(f"任务 '{task_name_for_log}' 执行失败: {result_status}")
+                    if task_id_for_status and not is_interrupt_handler:
+                        self.scheduler.update_run_status(task_id_for_status,
+                                                         {'status': 'idle', 'last_run': now, 'result': 'failure'})
+                else:
+                    await hook_manager.trigger('after_task_success', task_context=task_context)
+                    logger.info(f"任务 '{task_name_for_log}' 执行成功。")
+                    if task_id_for_status and not is_interrupt_handler:
+                        self.scheduler.update_run_status(task_id_for_status,
+                                                         {'status': 'idle', 'last_run': now, 'result': 'success'})
 
         except (asyncio.TimeoutError, asyncio.CancelledError, StatePlanningError) as e:
             status_update = {'status': 'idle', 'last_run': now}
@@ -172,12 +185,24 @@ class ExecutionManager:
                                                  {'status': 'idle', 'last_run': now, 'result': 'failure'})
             await hook_manager.trigger('after_task_failure', task_context=task_context)
         finally:
-            # if not is_interrupt_handler:
-            #     try:
-            #         async with self.scheduler.get_async_lock():
-            #             self.scheduler.running_tasks.pop(tasklet.task_name, None)
-            #     except Exception as lock_e:
-            #         logger.warning(f"清理 running_tasks 锁异常 (忽略): {lock_e}")
+            # ✅ 修复：确保所有已获取的信号量都被释放
+            for sem in reversed(acquired_sems):
+                try:
+                    sem.release()
+                except Exception as sem_e:
+                    logger.error(f"释放信号量时发生异常: {sem_e}", exc_info=True)
+
+            logger.debug(f"已释放 {len(acquired_sems)} 个信号量")
+
+            # ✅ 清理运行中任务跟踪
+            if not is_interrupt_handler and tasklet.cid:
+                try:
+                    async with self.scheduler.get_async_lock():
+                        self.scheduler.running_tasks.pop(tasklet.cid, None)
+                        self.scheduler._running_task_meta.pop(tasklet.cid, None)
+                except Exception as lock_e:
+                    logger.warning(f"清理 running_tasks 时发生异常 (cid: {tasklet.cid}): {lock_e}")
+
             await hook_manager.trigger('after_task_run', task_context=task_context)
             logger.debug(f"任务 '{task_name_for_log}' 执行完毕，资源已释放。")
             reset_cid(cid_token)
@@ -194,6 +219,22 @@ class ExecutionManager:
         Returns:
             bool: 如果成功到达目标状态则返回 True，否则返回 False。
         """
+        # ✅ 修复：检查规划深度，防止无限递归
+        max_planning_depth = int(get_config_value("execution.state_planning.max_depth", 3))
+
+        if tasklet.planning_depth >= max_planning_depth:
+            logger.error(
+                f"状态规划深度达到上限 {max_planning_depth}，"
+                f"可能存在循环依赖。任务: {tasklet.task_name}, "
+                f"当前深度: {tasklet.planning_depth}"
+            )
+            return False
+
+        # ✅ 检查是否已在状态规划中（通过source标记）
+        if tasklet.source == 'state_planning':
+            logger.debug(f"跳过转移任务 '{tasklet.task_name}' 的状态规划（source=state_planning）")
+            return True
+
         task_def = self.scheduler.all_tasks_definitions.get(tasklet.task_name)
         if not task_def: return True
 
@@ -237,7 +278,12 @@ class ExecutionManager:
 
                 logger.info(f"执行转移任务: '{full_task_id}' (期望到达: '{expected_state}')...")
 
-                transition_tfr = await orchestrator.execute_task(transition_task)
+                # ✅ 修复：传递planning_depth+1，并标记source为state_planning
+                transition_tfr = await orchestrator.execute_task(
+                    transition_task,
+                    source='state_planning',
+                    planning_depth=tasklet.planning_depth + 1
+                )
 
                 if not transition_tfr or transition_tfr.get('status') != 'SUCCESS':
                     logger.warning(f"转移任务 '{full_task_id}' 本身执行失败。将重新规划。")
@@ -305,7 +351,7 @@ class ExecutionManager:
         if not orchestrator:
             raise RuntimeError(f"在执行任务时找不到方案包 '{plan_name}' 的 Orchestrator。")
 
-        # ✅ 修改：传递 tasklet.cid
+        # ✅ 修改：传递 tasklet.cid 和 planning_depth
         return await orchestrator.execute_task(
             task_name_in_plan,
             tasklet.triggering_event,
@@ -313,7 +359,8 @@ class ExecutionManager:
             cid=tasklet.cid,
             trace_id=tasklet.trace_id,
             trace_label=tasklet.trace_label,
-            source=tasklet.source
+            source=tasklet.source,
+            planning_depth=tasklet.planning_depth
         )
 
     def startup(self):

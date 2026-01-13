@@ -1,0 +1,289 @@
+# ============ 插件元信息 ============
+package:
+  name: "@Aura-Project/base"
+  version: "1.0.0"
+  description: "Provides the foundational services (like OCR, Vision, Controller) and atomic actions for the Aura framework. This package is essential for most automation tasks."
+  license: "MIT"
+  authors:
+    - name: "Aura Project Team"
+      email: "team@aura-project.com"
+  homepage: "https://github.com/aura-project/aura"
+  repository: "https://github.com/aura-project/aura.git"
+  keywords: ["base", "core", "automation", "vision", "ocr", "controller"]
+  categories: ["core", "automation"]
+
+# ============ 运行时要求 ============
+requires:
+  aura: ">=3.0.0, <4.0.0"
+  python: ">=3.10"
+  platform: "all"
+
+# ============ 依赖管理 ============
+dependencies: {}
+
+pypi-dependencies:
+  # OCR 相关
+  paddleocr: "*"
+  paddlepaddle: "*"
+  # 屏幕和图像处理
+  pillow: "*"
+  opencv-python: "*"
+  numpy: "*"
+  # UI 自动化
+  pyautogui: "*"
+  pygetwindow: "*"
+  # 其他
+  pyyaml: "*"
+
+# ============ 导出定义 ============
+exports:
+  services:
+    # 应用程序提供器服务
+    - name: "app"
+      source: "services.app_provider_service:AppProviderService"
+      description: "Application provider service for managing applications"
+      visibility: "public"
+
+    # 配置服务
+    - name: "config"
+      source: "services.config_service:ConfigService"
+      description: "Configuration management service"
+      visibility: "public"
+
+    # 复合交互服务
+    - name: "composite-interaction"
+      source: "services.composite_interaction_service:CompositeInteractionService"
+      description: "Composite interaction service for complex UI interactions"
+      visibility: "public"
+
+    # 视觉服务
+    - name: "vision"
+      source: "services.vision_service:VisionService"
+      description: "Vision service for image recognition and template matching"
+      visibility: "public"
+
+    # 控制器服务
+    - name: "controller"
+      source: "services.controller_service:ControllerService"
+      description: "Controller service for mouse and keyboard control"
+      visibility: "public"
+
+    # 进程管理服务
+    - name: "process_manager"
+      source: "services.process_manager_service:ProcessManagerService"
+      description: "Process manager service for application lifecycle management"
+      visibility: "public"
+
+    # 屏幕服务
+    - name: "screen"
+      source: "services.screen_service:ScreenService"
+      description: "Screen service for screen capture and analysis"
+      visibility: "public"
+
+    # OCR 服务
+    - name: "ocr"
+      source: "services.ocr_service:OCRService"
+      description: "OCR service for text recognition"
+      visibility: "public"
+
+  actions:
+    # 模板库管理
+    - name: "register_template_library"
+      source: "actions.atomic_actions:register_template_library"
+      description: "Register a template library"
+      visibility: "public"
+
+    - name: "unregister_template_library"
+      source: "actions.atomic_actions:unregister_template_library"
+      description: "Unregister a template library"
+      visibility: "public"
+
+    - name: "list_template_libraries"
+      source: "actions.atomic_actions:list_template_libraries"
+      description: "List all registered template libraries"
+      visibility: "public"
+
+    # 屏幕捕获后端
+    - name: "list_capture_backends"
+      source: "actions.atomic_actions:list_capture_backends"
+      description: "List available screen capture backends"
+      visibility: "public"
+
+    - name: "set_capture_backend"
+      source: "actions.atomic_actions:set_capture_backend"
+      description: "Set the screen capture backend"
+      visibility: "public"
+
+    - name: "screen_selfcheck"
+      source: "actions.atomic_actions:screen_selfcheck"
+      description: "Perform screen service self-check"
+      visibility: "public"
+
+    # 图像查找和匹配
+    - name: "find_image"
+      source: "actions.atomic_actions:find_image"
+      description: "Find an image on screen"
+      visibility: "public"
+
+    - name: "find_all_images"
+      source: "actions.atomic_actions:find_all_images"
+      description: "Find all instances of an image on screen"
+      visibility: "public"
+
+    - name: "find_templates_in_set"
+      source: "actions.atomic_actions:find_templates_in_set"
+      description: "Find templates from a set on screen"
+      visibility: "public"
+
+    - name: "find_all_templates_in_set"
+      source: "actions.atomic_actions:find_all_templates_in_set"
+      description: "Find all instances of templates from a set"
+      visibility: "public"
+
+    - name: "find_unique_template_in_set"
+      source: "actions.atomic_actions:find_unique_template_in_set"
+      description: "Find unique template from a set"
+      visibility: "public"
+
+    - name: "find_best_template_in_set"
+      source: "actions.atomic_actions:find_best_template_in_set"
+      description: "Find best matching template from a set"
+      visibility: "public"
+
+    - name: "list_templates_in_set"
+      source: "actions.atomic_actions:list_templates_in_set"
+      description: "List all templates in a set"
+      visibility: "public"
+
+    # 断言和验证
+    - name: "assert_any_template_in_set"
+      source: "actions.atomic_actions:assert_any_template_in_set"
+      description: "Assert that any template from set exists"
+      visibility: "public"
+
+    - name: "assert_all_templates_in_set"
+      source: "actions.atomic_actions:assert_all_templates_in_set"
+      description: "Assert that all templates from set exist"
+      visibility: "public"
+
+    - name: "assert_image_exists"
+      source: "actions.atomic_actions:assert_image_exists"
+      description: "Assert that an image exists on screen"
+      visibility: "public"
+
+    - name: "assert_image_not_exists"
+      source: "actions.atomic_actions:assert_image_not_exists"
+      description: "Assert that an image does not exist on screen"
+      visibility: "public"
+
+    - name: "assert_text_exists"
+      source: "actions.atomic_actions:assert_text_exists"
+      description: "Assert that text exists on screen"
+      visibility: "public"
+
+    - name: "assert_text_not_exists"
+      source: "actions.atomic_actions:assert_text_not_exists"
+      description: "Assert that text does not exist on screen"
+      visibility: "public"
+
+    - name: "assert_text_equals"
+      source: "actions.atomic_actions:assert_text_equals"
+      description: "Assert that recognized text equals expected value"
+      visibility: "public"
+
+    # 等待操作
+    - name: "wait_for_any_template_in_set"
+      source: "actions.atomic_actions:wait_for_any_template_in_set"
+      description: "Wait for any template from set to appear"
+      visibility: "public"
+
+    - name: "wait_for_templates_in_set_to_disappear"
+      source: "actions.atomic_actions:wait_for_templates_in_set_to_disappear"
+      description: "Wait for templates from set to disappear"
+      visibility: "public"
+
+    - name: "wait_for_text"
+      source: "actions.atomic_actions:wait_for_text"
+      description: "Wait for text to appear on screen"
+      visibility: "public"
+
+    # 滚动区域查找
+    - name: "find_image_in_scrolling_area"
+      source: "actions.atomic_actions:find_image_in_scrolling_area"
+      description: "Find image in a scrolling area"
+      visibility: "public"
+
+    # OCR 操作
+    - name: "preload_ocr"
+      source: "actions.atomic_actions:preload_ocr"
+      description: "Preload OCR models"
+      visibility: "public"
+
+    - name: "find_text"
+      source: "actions.atomic_actions:find_text"
+      description: "Find text on screen using OCR"
+      visibility: "public"
+
+    - name: "recognize_all_text"
+      source: "actions.atomic_actions:recognize_all_text"
+      description: "Recognize all text on screen"
+      visibility: "public"
+
+    - name: "get_text_in_region"
+      source: "actions.atomic_actions:get_text_in_region"
+      description: "Get text in a specific region using OCR"
+      visibility: "public"
+
+    - name: "check_text_exists"
+      source: "actions.atomic_actions:check_text_exists"
+      description: "Check if text exists on screen"
+      visibility: "public"
+
+    - name: "check_image_exists"
+      source: "actions.atomic_actions:check_image_exists"
+      description: "Check if image exists on screen"
+      visibility: "public"
+
+  tasks: []
+
+# ============ 生命周期钩子 ============
+lifecycle: {}
+
+# ============ 配置管理 ============
+configuration:
+  default_config: null
+  config_schema: null
+  user_template: null
+  allow_user_override: true
+  merge_strategy: "merge"
+
+# ============ 资源文件映射 ============
+resources:
+  templates: {}
+  data: {}
+  assets: {}
+
+# ============ 构建与打包 ============
+build:
+  include:
+    - "services/**/*.py"
+    - "actions/**/*.py"
+    - "*.py"
+    - "plugin.yaml"
+    - "manifest.yaml"
+    - "requirements.txt"
+  exclude:
+    - "**/__pycache__"
+    - "**/*.pyc"
+    - "**/.pytest_cache"
+
+# ============ 元数据 ============
+metadata:
+  changelog:
+    - version: "1.0.0"
+      date: "2026-01-12"
+      changes:
+        added:
+          - "Initial manifest.yaml creation"
+          - "Core services: vision, ocr, controller, screen, process_manager, app, config, composite-interaction"
+          - "50+ atomic actions for automation"

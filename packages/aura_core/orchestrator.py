@@ -72,7 +72,8 @@ class Orchestrator:
             parent_cid: Optional[str] = None,
             trace_id: Optional[str] = None,
             trace_label: Optional[str] = None,
-            source: Optional[str] = None
+            source: Optional[str] = None,
+            planning_depth: int = 0  # ✅ 新增：状态规划深度
     ) -> Dict[str, Any]:
         """执行一个任务并返回一个标准化的 TFR (Task Final Result) 对象。
 
@@ -83,6 +84,7 @@ class Orchestrator:
             task_name_in_plan (str): 在当前 Plan 内的任务名称。
             triggering_event (Optional[Event]): 触发此次任务执行的事件（如有）。
             inputs (Optional[Dict[str, Any]]): 传递给任务的输入参数。
+            planning_depth (int): ✅ 状态规划深度，用于防止无限递归。
 
         Returns:
             一个包含任务执行最终结果的字典 (TFR)。
@@ -296,7 +298,7 @@ class Orchestrator:
         async with aiofiles.open(file_path, mode='rb') as f:
             return await f.read()
 
-    async def save_file_content(self, relative_path: str, content: Any):
+    async def save_file_content(self, relative_path: str, content: Any) -> None:
         """异步、安全地向 Plan 目录内的一个文件写入内容。
 
         如果内容是字典或列表，则自动保存为 YAML 格式；否则保存为文本。
@@ -319,19 +321,19 @@ class Orchestrator:
             else:
                 await f.write(str(content))
 
-    async def create_directory(self, relative_path: str):
+    async def create_directory(self, relative_path: str) -> None:
         """异步、安全地在 Plan 目录内创建一个新目录。"""
         dir_path = self._resolve_and_validate_path(relative_path)
         dir_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"目录已创建: {dir_path}")
 
-    async def create_file(self, relative_path: str, content: str = ""):
+    async def create_file(self, relative_path: str, content: str = "") -> None:
         """异步、安全地在 Plan 目录内创建一个新文件。"""
         file_path = self._resolve_and_validate_path(relative_path)
         await self.save_file_content(relative_path, content)
         logger.info(f"文件已创建: {file_path}")
 
-    async def rename_path(self, old_relative_path: str, new_relative_path: str):
+    async def rename_path(self, old_relative_path: str, new_relative_path: str) -> None:
         """异步、安全地在 Plan 目录内重命名一个文件或目录。"""
         old_path = self._resolve_and_validate_path(old_relative_path)
         new_path = self._resolve_and_validate_path(new_relative_path)
@@ -345,7 +347,7 @@ class Orchestrator:
         await loop.run_in_executor(None, os.rename, old_path, new_path)
         logger.info(f"路径已重命名: 从 '{old_relative_path}' 到 '{new_relative_path}'")
 
-    async def delete_path(self, relative_path: str):
+    async def delete_path(self, relative_path: str) -> None:
         """异步、安全地删除 Plan 目录内的一个文件或目录（如果是目录则递归删除）。"""
         path_to_delete = self._resolve_and_validate_path(relative_path)
 

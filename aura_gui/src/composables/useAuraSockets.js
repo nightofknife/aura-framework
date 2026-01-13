@@ -1,5 +1,5 @@
 // === src/composables/useAuraSockets.js ===
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
 import { getGuiConfig } from '../config.js';
 
 // --- 内部状态与逻辑 ---
@@ -157,6 +157,30 @@ if (LOGS_ENABLED) {
 
 const eventSocketManager = createManagedSocket(`${VITE_BASE_URL}${EVENTS_PATH}`, 'Events');
 
+// --- 系统状态管理（监听 WebSocket 推送）---
+const systemStatus = ref({ is_running: false });
+
+// 监听 events WebSocket 消息，提取系统状态更新
+watch(() => eventSocketManager.lastMessage.value, (msg) => {
+    if (!msg) return;
+
+    // 处理 master_status_update 事件
+    if (msg.type === 'master_status_update') {
+        const payload = msg.payload || msg.data || {};
+        if (typeof payload.is_running === 'boolean') {
+            systemStatus.value = { ...systemStatus.value, ...payload };
+        }
+    }
+
+    // 处理 full_status_update 事件（新客户端连接时的完整状态）
+    if (msg.type === 'full_status_update') {
+        const payload = msg.payload || msg.data || {};
+        if (payload.schedule && typeof payload.schedule.is_running === 'boolean') {
+            systemStatus.value = { is_running: payload.schedule.is_running };
+        }
+    }
+}, { immediate: false });
+
 export function useAuraSockets() {
     onMounted(() => {
         if (LOGS_ENABLED) {
@@ -175,5 +199,8 @@ export function useAuraSockets() {
     return {
         logs: logSocketManager,
         events: eventSocketManager,
+        // 导出系统状态（响应式）
+        systemStatus: computed(() => systemStatus.value),
+        isSystemRunning: computed(() => systemStatus.value?.is_running ?? false),
     };
 }

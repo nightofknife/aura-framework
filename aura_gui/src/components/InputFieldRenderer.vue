@@ -5,105 +5,151 @@
       <span v-if="normalized.required" class="req">*</span>
     </div>
 
-    <!-- base types -->
-    <template v-if="isEnumSelect">
-      <select class="select" v-model="innerValue" :disabled="normalized.readonly">
+    <!-- ========== 单选系列 ========== -->
+    <template v-if="!isList">
+      <!-- Radio 单选按钮组 (新增) -->
+      <RadioGroup
+        v-if="widgetConfig.widget === 'radio'"
+        v-model="innerValue"
+        :options="normalized.enum || []"
+        :layout="widgetConfig.layout || 'vertical'"
+        :required="normalized.required"
+        :name="normalized.name"
+        :disabled="normalized.readonly" />
+
+      <!-- Select 下拉框 (原有) -->
+      <select
+        v-else-if="isEnumSelect"
+        class="select"
+        v-model="innerValue"
+        :disabled="normalized.readonly">
+        <option v-if="!normalized.required" :value="null">请选择</option>
         <option v-for="opt in normalized.enum || []" :key="opt" :value="opt">{{ opt }}</option>
       </select>
-    </template>
-    <template v-else-if="normalized.type === 'string'">
-      <input class="input" type="text" :placeholder="normalized.placeholder || ''"
-             :disabled="normalized.readonly" v-model="innerValue" />
-    </template>
-    <template v-else-if="normalized.type === 'number'">
-      <input class="input" type="number" :placeholder="normalized.placeholder || ''"
-             :min="normalized.min" :max="normalized.max" :step="normalized.step || 'any'"
-             :disabled="normalized.readonly" v-model.number="innerValue" />
-    </template>
-    <template v-else-if="normalized.type === 'boolean'">
-      <label class="chk">
+
+      <!-- Boolean checkbox (原有) -->
+      <label v-else-if="normalized.type === 'boolean'" class="chk">
         <input type="checkbox" :disabled="normalized.readonly" v-model="innerValue" />
         {{ normalized.label || normalized.name }}
       </label>
+
+      <!-- Number 输入 (原有) -->
+      <input
+        v-else-if="normalized.type === 'number'"
+        class="input"
+        type="number"
+        :placeholder="normalized.placeholder || ''"
+        :min="normalized.min"
+        :max="normalized.max"
+        :step="normalized.step || 'any'"
+        :disabled="normalized.readonly"
+        v-model.number="innerValue" />
+
+      <!-- String 输入 (原有) -->
+      <input
+        v-else-if="normalized.type === 'string'"
+        class="input"
+        type="text"
+        :placeholder="normalized.placeholder || ''"
+        :disabled="normalized.readonly"
+        v-model="innerValue" />
     </template>
 
-    <!-- Table view for list of simple dicts -->
-    <div v-else-if="isSimpleDictList" class="table-block">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th v-for="col in tableColumns" :key="col.key">
-              {{ col.label || col.name || col.key }}
-              <span v-if="col.required" class="req">*</span>
-            </th>
-            <th class="action-col">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(item, idx) in listValue" :key="idx">
-            <td v-for="col in tableColumns" :key="col.key">
-               <!-- Render simple input directly here for performance and layout -->
-               <!-- Enum/Select -->
-               <select v-if="col.enum && col.enum.length" 
-                       :value="item[col.key]" 
-                       @change="updateTableItem(idx, col.key, $event.target.value)"
-                       class="table-input"
-                       :disabled="normalized.readonly">
-                  <option v-for="opt in col.enum" :key="opt" :value="opt">{{ opt }}</option>
-               </select>
-               
-               <!-- Boolean -->
-               <input v-else-if="col.type === 'boolean'" 
-                      type="checkbox"
-                      :checked="item[col.key]"
-                      @change="updateTableItem(idx, col.key, $event.target.checked)"
-                      :disabled="normalized.readonly" />
-               
-               <!-- Number -->
-               <input v-else-if="col.type === 'number'"
-                      type="number"
-                      :value="item[col.key]"
-                      @input="updateTableItem(idx, col.key, parseFloat($event.target.value))"
-                      :min="col.min" :max="col.max" :step="col.step || 'any'"
-                      class="table-input"
-                      :disabled="normalized.readonly" />
-                      
-               <!-- String (Default) -->
-               <input v-else
-                      type="text"
-                      :value="item[col.key]"
-                      @input="updateTableItem(idx, col.key, $event.target.value)"
-                      :placeholder="col.placeholder || ''"
-                      class="table-input"
-                      :disabled="normalized.readonly" />
-            </td>
-            <td class="action-col">
-              <button type="button" class="btn-ghost small remove-btn" @click="removeList(idx)">×</button>
-            </td>
-          </tr>
-          <tr v-if="listValue.length === 0">
-             <td :colspan="tableColumns.length + 1" class="empty-state">No items. Click Add to create one.</td>
-          </tr>
-        </tbody>
-      </table>
-      <button type="button" class="btn-secondary small add-btn" @click="addList">+ Add Row</button>
-    </div>
+    <!-- ========== 复选系列 ========== -->
+    <template v-else>
+      <!-- Checkbox 多选组 (新增) -->
+      <CheckboxGroup
+        v-if="widgetConfig.widget === 'checkbox'"
+        v-model="innerValue"
+        :options="normalized.enum || []"
+        :min="normalized.min"
+        :max="normalized.max"
+        :columns="widgetConfig.columns || 1"
+        :show-select-all="normalized.ui?.show_select_all" />
 
-    <!-- list -->
-    <div v-else-if="normalized.type === 'list'" class="list-block">
-      <div v-for="(item, idx) in listValue" :key="idx" class="list-row">
-        <InputFieldRenderer
-          :schema="normalized.item || {}"
-          :model-value="item"
-          @update:modelValue="updateList(idx, $event)"
-        />
-        <button type="button" class="btn-ghost small" @click="removeList(idx)">Del</button>
+      <!-- Tag Input 标签输入 (新增) -->
+      <TagInput
+        v-else-if="widgetConfig.widget === 'tag-input'"
+        v-model="innerValue"
+        :placeholder="normalized.placeholder || '输入后按Enter添加'" />
+
+      <!-- Table view for list of simple dicts (原有) -->
+      <div v-else-if="isSimpleDictList" class="table-block">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th v-for="col in tableColumns" :key="col.key">
+                {{ col.label || col.name || col.key }}
+                <span v-if="col.required" class="req">*</span>
+              </th>
+              <th class="action-col">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(item, idx) in listValue" :key="idx">
+              <td v-for="col in tableColumns" :key="col.key">
+                 <!-- Enum/Select -->
+                 <select v-if="col.enum && col.enum.length"
+                         :value="item[col.key]"
+                         @change="updateTableItem(idx, col.key, $event.target.value)"
+                         class="table-input"
+                         :disabled="normalized.readonly">
+                    <option v-for="opt in col.enum" :key="opt" :value="opt">{{ opt }}</option>
+                 </select>
+
+                 <!-- Boolean -->
+                 <input v-else-if="col.type === 'boolean'"
+                        type="checkbox"
+                        :checked="item[col.key]"
+                        @change="updateTableItem(idx, col.key, $event.target.checked)"
+                        :disabled="normalized.readonly" />
+
+                 <!-- Number -->
+                 <input v-else-if="col.type === 'number'"
+                        type="number"
+                        :value="item[col.key]"
+                        @input="updateTableItem(idx, col.key, parseFloat($event.target.value))"
+                        :min="col.min" :max="col.max" :step="col.step || 'any'"
+                        class="table-input"
+                        :disabled="normalized.readonly" />
+
+                 <!-- String (Default) -->
+                 <input v-else
+                        type="text"
+                        :value="item[col.key]"
+                        @input="updateTableItem(idx, col.key, $event.target.value)"
+                        :placeholder="col.placeholder || ''"
+                        class="table-input"
+                        :disabled="normalized.readonly" />
+              </td>
+              <td class="action-col">
+                <button type="button" class="btn-ghost small remove-btn" @click="removeList(idx)">×</button>
+              </td>
+            </tr>
+            <tr v-if="listValue.length === 0">
+               <td :colspan="tableColumns.length + 1" class="empty-state">No items. Click Add to create one.</td>
+            </tr>
+          </tbody>
+        </table>
+        <button type="button" class="btn-secondary small add-btn" @click="addList">+ Add Row</button>
       </div>
-      <button type="button" class="btn-ghost small" @click="addList">+ Add</button>
-    </div>
 
-    <!-- dict -->
-    <div v-else-if="normalized.type === 'dict'" class="dict-block">
+      <!-- Dynamic list (原有) -->
+      <div v-else class="list-block">
+        <div v-for="(item, idx) in listValue" :key="idx" class="list-row">
+          <InputFieldRenderer
+            :schema="normalized.item || {}"
+            :model-value="item"
+            @update:modelValue="updateList(idx, $event)"
+          />
+          <button type="button" class="btn-ghost small" @click="removeList(idx)">Del</button>
+        </div>
+        <button type="button" class="btn-ghost small" @click="addList">+ Add</button>
+      </div>
+    </template>
+
+    <!-- dict (原有) -->
+    <div v-if="normalized.type === 'dict'" class="dict-block">
       <InputFieldRenderer
         v-for="(child, key) in normalized.properties || {}"
         :key="key"
@@ -113,7 +159,10 @@
       />
     </div>
 
-    <div v-else class="unknown">Unsupported type: {{ normalized.type }}</div>
+    <!-- 未知类型 -->
+    <div v-if="!isList && normalized.type !== 'dict' && normalized.type !== 'string' && normalized.type !== 'number' && normalized.type !== 'boolean' && !isEnumSelect" class="unknown">
+      Unsupported type: {{ normalized.type }}
+    </div>
 
     <div v-if="normalized.description" class="desc">{{ normalized.description }}</div>
   </div>
@@ -121,7 +170,11 @@
 
 <script setup>
 import {computed, defineProps, defineEmits} from 'vue';
- import {buildDefaultFromSchema, cloneInputs, normalizeInputSchema, cloneDeep} from '../utils/inputSchema.js';
+import {buildDefaultFromSchema, cloneInputs, normalizeInputSchema, cloneDeep} from '../utils/inputSchema.js';
+import {inferWidget} from '../utils/widgetInference.js';
+import RadioGroup from './widgets/RadioGroup.vue';
+import CheckboxGroup from './widgets/CheckboxGroup.vue';
+import TagInput from './widgets/TagInput.vue';
 
 const props = defineProps({
   schema: {type: Object, required: true},
@@ -130,10 +183,25 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue']);
 
 const normalized = computed(() => normalizeInputSchema(props.schema || {}));
+
+// 自动推断UI控件
+const widgetConfig = computed(() => inferWidget(normalized.value));
+
+// 判断是否为列表类型（决定单选/复选）
+const isList = computed(() => {
+  const type = normalized.value.type || 'string';
+  return type === 'list' || type.startsWith('list<');
+});
+
+// 旧的逻辑 - 用于向后兼容，但现在通过 widgetConfig 控制
 const isEnumSelect = computed(() => {
   const s = normalized.value || {};
   if (!Array.isArray(s.enum) || s.enum.length === 0) return false;
   const t = s.type || 'string';
+  // 如果是列表类型，不使用旧的select
+  if (isList.value) return false;
+  // 检查是否应该用radio
+  if (widgetConfig.value.widget === 'radio') return false;
   return ['string', 'number', 'boolean'].includes(t);
 });
  

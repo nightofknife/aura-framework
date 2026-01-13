@@ -31,6 +31,7 @@ class Tasklet:
         resource_tags (List[str]): 用于并发控制的资源标签列表。
         timeout (Optional[float]): 任务的执行超时时间（秒）。
         cpu_bound (bool): 标记此任务是否为CPU密集型。
+        planning_depth (int): ✅ 状态规划深度，用于防止无限递归。
     """
     task_name: str
     cid: Optional[str] = None
@@ -46,6 +47,7 @@ class Tasklet:
     timeout: Optional[float] = 3600.0
     cpu_bound: bool = False
     enqueued_at: float = field(default_factory=time.time)
+    planning_depth: int = 0  # ✅ 新增：状态规划递归深度
 
 
 class TaskQueue:
