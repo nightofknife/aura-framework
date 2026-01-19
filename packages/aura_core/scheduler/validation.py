@@ -1,0 +1,302 @@
+# -*- coding: utf-8 -*-
+"""Scheduler输入验证器
+
+职责: 验证和规范化输入参数、Schema和值
+"""
+
+import re
+import json
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .core import Scheduler
+
+# 特殊标记：表示输入缺失
+_MISSING = object()
+
+
+class InputValidator:
+    """输入验证器
+
+    管理输入参数的验证和规范化，包括:
+    - Schema规范化
+    - 默认值构建
+    - 输入值验证
+    - 枚举类型推断
+    """
+
+    def __init__(self, scheduler: 'Scheduler'):
+        """初始化输入验证器
+
+        Args:
+            scheduler: 父调度器实例
+        """
+        self.scheduler = scheduler
+
+    def infer_enum_type(self, enum_vals: Any) -> Optional[str]:
+        """推断枚举值的类型
+
+        实现来自: scheduler.py 行862-876
+
+        Args:
+            enum_vals: 枚举值列表
+
+        Returns:
+            推断的类型('boolean', 'number', 'string')或None
+        """
+        if not isinstance(enum_vals, list) or not enum_vals:
+            return None
+        kinds = set()
+        for val in enum_vals:
+            if isinstance(val, bool):
+                kinds.add("boolean")
+            elif isinstance(val, (int, float)):
+                kinds.add("number")
+            elif isinstance(val, str):
+                kinds.add("string")
+            else:
+                return None
+        return kinds.pop() if len(kinds) == 1 else None
+
+    def normalize_input_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """规范化meta.inputs字段定义
+
+        实现来自: scheduler.py 行877-955
+
+        支持list<type>/dict/enum/count等写法。
+
+        Args:
+            schema: 原始Schema定义
+
+        Returns:
+            规范化后的Schema
+        """
+        if not isinstance(schema, dict):
+            return {"type": "string"}
+        normalized = dict(schema)
+
+        # 1. 统一 enum 和 options
+        enum_vals = normalized.get("enum")
+        if enum_vals is None and "options" in normalized:
+            enum_vals = normalized.get("options")
+        if enum_vals is not None:
+            normalized["enum"] = enum_vals or []
+
+        # 2. 处理 count 语法糖
+        if "count" in normalized:
+            count = normalized["count"]
+
+            if isinstance(count, int):
+                # count: 3 → min: 3, max: 3
+                normalized["min"] = count
+                normalized["max"] = count
+            elif isinstance(count, str):
+                # count: "<=5" → max: 5
+                max_match = re.match(r'^<=(\d+)$', count)
+                if max_match:
+                    normalized["max"] = int(max_match.group(1))
+
+                # count: ">=2" → min: 2
+                min_match = re.match(r'^>=(\d+)$', count)
+                if min_match:
+                    normalized["min"] = int(min_match.group(1))
+
+                # count: "1-3" → min: 1, max: 3
+                range_match = re.match(r'^(\d+)-(\d+)$', count)
+                if range_match:
+                    normalized["min"] = int(range_match.group(1))
+                    normalized["max"] = int(range_match.group(2))
+            elif isinstance(count, list) and len(count) == 2:
+                # count: [1, 3] → min: 1, max: 3
+                normalized["min"] = count[0]
+                normalized["max"] = count[1]
+
+        # 3. 保留 ui 字段（前端使用，不验证）
+        if "ui" in schema:
+            normalized["ui"] = schema["ui"]
+
+        # 4. 类型规范化
+        type_raw = normalized.get("type")
+        if type_raw is None or type_raw == "":
+            type_raw = self.infer_enum_type(normalized.get("enum")) or "string"
+        else:
+            type_raw = str(type_raw).lower()
+        if type_raw == "enum":
+            type_raw = self.infer_enum_type(normalized.get("enum")) or "string"
+
+        list_match = re.match(r"^list<(.+)>$", type_raw)
+        if list_match:
+            normalized["type"] = "list"
+            item_schema = normalized.get("item") or normalized.get("items") or {"type": list_match.group(1)}
+            normalized["item"] = self.normalize_input_schema(item_schema)
+        else:
+            if type_raw in {"array"}:
+                type_raw = "list"
+            elif type_raw in {"object"}:
+                type_raw = "dict"
+            allowed = {"string", "number", "boolean", "list", "dict"}
+            normalized["type"] = type_raw if type_raw in allowed else "string"
+            if normalized["type"] == "list":
+                item_schema = normalized.get("item") or normalized.get("items")
+                if item_schema is not None:
+                    normalized["item"] = self.normalize_input_schema(item_schema)
+            if normalized["type"] == "dict":
+                props = {}
+                for k, v in (normalized.get("properties") or {}).items():
+                    if isinstance(v, dict):
+                        props[k] = self.normalize_input_schema(v)
+                normalized["properties"] = props
+        return normalized
+
+    def build_default_from_schema(self, schema: Dict[str, Any]):
+        """递归构造默认值（若有），用于填充缺失字段
+
+        实现来自: scheduler.py 行956-995
+
+        Args:
+            schema: Schema定义
+
+        Returns:
+            默认值
+        """
+        schema_n = self.normalize_input_schema(schema or {})
+        if "default" in schema_n:
+            try:
+                return json.loads(json.dumps(schema_n.get("default")))
+            except Exception:
+                return schema_n.get("default")
+        enum_vals = schema_n.get("enum") or []
+        if enum_vals:
+            try:
+                return json.loads(json.dumps(enum_vals[0]))
+            except Exception:
+                return enum_vals[0]
+        t = schema_n.get("type")
+        if t == "list":
+            if isinstance(schema_n.get("default"), list):
+                try:
+                    return json.loads(json.dumps(schema_n.get("default")))
+                except Exception:
+                    return list(schema_n.get("default"))
+            return []
+        if t == "dict":
+            if isinstance(schema_n.get("default"), dict):
+                try:
+                    return json.loads(json.dumps(schema_n.get("default")))
+                except Exception:
+                    return dict(schema_n.get("default"))
+            result = {}
+            for k, v in (schema_n.get("properties") or {}).items():
+                child_default = self.build_default_from_schema(v)
+                if child_default is not None:
+                    result[k] = child_default
+            return result
+        if t == "boolean":
+            return False
+        if t == "number":
+            return 0
+        return ""
+
+    def validate_input_value(self, schema: Dict[str, Any], value: Any, path: str) -> Tuple[bool, Any, Optional[str]]:
+        """递归校验单个字段值
+
+        实现来自: scheduler.py 行996-1088
+
+        Args:
+            schema: Schema定义
+            value: 待验证的值
+            path: 字段路径（用于错误消息）
+
+        Returns:
+            (是否成功, 规范化后的值, 错误消息)
+        """
+        s = self.normalize_input_schema(schema or {})
+        required = bool(s.get("required"))
+        has_default = "default" in s
+        if value is _MISSING or value is None:
+            if value is None and not required and not has_default:
+                return True, None, None
+            if has_default:
+                return True, self.build_default_from_schema(s), None
+            if required:
+                return False, None, f"Missing required input: {path}"
+            return True, None, None
+
+        t = s.get("type", "string")
+        if t == "string":
+            val = str(value)
+        elif t == "number":
+            try:
+                if isinstance(value, bool):
+                    val = 1 if value else 0
+                elif isinstance(value, (int, float)):
+                    val = value
+                else:
+                    val = float(value)
+            except Exception:
+                return False, None, f"Input '{path}' must be a number."
+            if "min" in s and val < s["min"]:
+                return False, None, f"Input '{path}' must be >= {s['min']}."
+            if "max" in s and val > s["max"]:
+                return False, None, f"Input '{path}' must be <= {s['max']}."
+        elif t == "boolean":
+            if isinstance(value, bool):
+                val = value
+            elif isinstance(value, str):
+                low = value.lower()
+                if low in {"true", "1", "yes", "y"}:
+                    val = True
+                elif low in {"false", "0", "no", "n"}:
+                    val = False
+                else:
+                    return False, None, f"Input '{path}' must be a boolean."
+            else:
+                val = bool(value)
+        elif t == "list":
+            if not isinstance(value, list):
+                return False, None, f"Input '{path}' must be a list."
+            # 使用统一的 min/max 字段（优先使用新的 min/max）
+            min_items = s.get("min")
+            if min_items is None:
+                min_items = s.get("min_items") if s.get("min_items") is not None else s.get("minItems")
+            max_items = s.get("max")
+            if max_items is None:
+                max_items = s.get("max_items") if s.get("max_items") is not None else s.get("maxItems")
+
+            count = len(value)
+            if min_items is not None and count < min_items:
+                return False, None, f"Input '{path}' must contain at least {min_items} items (got {count})."
+            if max_items is not None and count > max_items:
+                return False, None, f"Input '{path}' must contain no more than {max_items} items (got {count})."
+
+            item_schema = s.get("item") or s.get("items") or {}
+            validated_list = []
+            for idx, item in enumerate(value):
+                ok, v, err = self.validate_input_value(item_schema, item, f"{path}[{idx}]")
+                if not ok:
+                    return False, None, err
+                validated_list.append(v)
+            val = validated_list
+        elif t == "dict":
+            if not isinstance(value, dict):
+                return False, None, f"Input '{path}' must be an object."
+            properties = s.get("properties") or {}
+            extra = set(value.keys()) - set(properties.keys())
+            if extra:
+                return False, None, f"Input '{path}' has unexpected fields: {', '.join(sorted(extra))}."
+            validated = {}
+            for key, subschema in properties.items():
+                ok, v, err = self.validate_input_value(subschema, value.get(key, _MISSING), f"{path}.{key}")
+                if not ok:
+                    return False, None, err
+                if v is not None or "default" in subschema or subschema.get("required"):
+                    validated[key] = v
+            val = validated
+        else:
+            val = value
+        allowed = s.get("enum")
+        if allowed is not None:
+            allowed = allowed or []
+            if val not in allowed:
+                return False, None, f"Input '{path}' must be one of {allowed}."
+        return True, val, None

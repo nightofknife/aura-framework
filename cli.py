@@ -27,8 +27,7 @@ try:
 
     # 现在可以安全地导入Scheduler了
     from packages.aura_core.scheduler import Scheduler
-    from packages.aura_core.builder import build_package_from_source, API_FILE_NAME
-    from packages.aura_core.logger import logger
+    from packages.aura_core.observability.logging.core_logger import logger
     from packages.aura_core.plugin_commands import plugin as plugin_group
 except ImportError as e:
     print(f"错误: 无法导入Aura核心模块。请确保你在项目根目录下运行此脚本，并且所有依赖都已安装。")
@@ -92,41 +91,25 @@ def package():
 @package.command()
 @click.argument('package_path', type=click.Path(exists=True, file_okay=False, resolve_path=True))
 def build(package_path: str):
-    """强制从源码构建一个包，并生成或更新其 api.yaml 文件。
+    """构建包 - 此功能已废弃。
 
-    此命令会扫描包的源代码，提取所有 action 和 service 的定义，
-    并将其序列化到 `api.yaml` 文件中。这对于分发不含源码的已打包插件非常重要。
+    新架构使用 manifest.yaml 而不是 api.yaml。
+    请手动创建 manifest.yaml 文件来定义包元数据。
 
     Args:
-        package_path (str): 要构建的包的根目录路径。
+        package_path (str): 包的根目录路径。
     """
-    scheduler = get_scheduler()
-    package_path_obj = Path(package_path)
-
-    # 从已加载的插件注册表中找到对应的PluginDefinition
-    plugin_def = None
-    for p_def in scheduler.plugin_registry.values():
-        if p_def.path == package_path_obj:
-            plugin_def = p_def
-            break
-
-    if not plugin_def:
-        click.secho(f"错误: 路径 '{package_path}' 不是一个已注册的Aura包。", fg='red')
-        return
-
-    click.echo(f"正在为包 '{plugin_def.canonical_id}' 从源码强制构建...")
-    try:
-        # 删除旧的api.yaml以确保重新生成
-        api_file = package_path_obj / API_FILE_NAME
-        if api_file.exists():
-            api_file.unlink()
-            click.echo(f"  - 已删除旧的 {API_FILE_NAME}")
-
-        build_package_from_source(plugin_def)
-        click.secho(f"成功！包 '{plugin_def.canonical_id}' 已构建，{API_FILE_NAME} 已更新。", fg='green')
-    except Exception as e:
-        logger.error(f"构建包 '{plugin_def.canonical_id}' 失败: {e}", exc_info=True)
-        click.secho(f"构建失败，请检查日志。", fg='red')
+    click.secho("⚠️  包构建功能已废弃", fg='yellow')
+    click.echo()
+    click.echo("新架构使用 manifest.yaml 来定义插件元数据，不再需要从源码构建 api.yaml。")
+    click.echo()
+    click.echo("如需创建新包，请手动创建包含以下文件的目录结构：")
+    click.echo("  - manifest.yaml  (包元数据)")
+    click.echo("  - actions/       (动作定义)")
+    click.echo("  - services/      (服务定义)")
+    click.echo("  - tasks/         (任务定义)")
+    click.echo()
+    click.echo("参考现有包的结构来创建新包。")
 
 
 # 在这里可以添加 package create, package check 等命令...
@@ -215,7 +198,15 @@ def list_services():
         is_public = "Yes" if s_def.get('public') else "No"
         fqid = s_def.get('fqid', 'N/A')
         status = s_def.get('status', 'N/A')
-        plugin_id = s_def.get('plugin', {}).get('canonical_id', 'N/A')
+
+        # plugin 现在是 PluginManifest 对象，需要特殊处理
+        plugin = s_def.get('plugin')
+        if plugin is None:
+            plugin_id = 'core'  # 核心服务
+        elif hasattr(plugin, 'package'):
+            plugin_id = plugin.package.canonical_id if hasattr(plugin.package, 'canonical_id') else 'N/A'
+        else:
+            plugin_id = 'N/A'
 
         # 根据状态着色
         color = 'green' if status == 'resolved' else 'yellow' if status == 'defined' else 'red'

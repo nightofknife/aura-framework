@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from packages.aura_core.api import register_hook, service_registry
-from packages.aura_core.logger import logger
+from packages.aura_core.observability.logging.core_logger import logger
 
 
 @register_hook("plan.after_load")

@@ -38,6 +38,9 @@ import RunsView from './pages/RunsView.vue'
 import ExecuteView from './pages/ExecuteView.vue'
 import TaskWorkspaceView from './pages/TaskWorkspaceView.vue'
 import AutomationView from './pages/AutomationView.vue'
+import ActionsView from './pages/ActionsView.vue'
+import ServicesView from './pages/ServicesView.vue'
+import PackagesView from './pages/PackagesView.vue'
 import SettingsView from './pages/SettingsView.vue'
 
 // Composables
@@ -59,6 +62,9 @@ const activeView = computed(() => {
     runs: RunsView,
     execute: ExecuteView,
     plans: PlansView,
+    actions: ActionsView,
+    services: ServicesView,
+    packages: PackagesView,
     automation: AutomationView,
     task_editor: TaskWorkspaceView,
     settings: SettingsView,
@@ -71,6 +77,9 @@ const sidebarItems = cfg?.navigation?.items || [
   { key: 'execute', label: '执行台', icon: 'execute' },
   { key: 'runs', label: '运行中', icon: 'runs' },
   { key: 'plans', label: '方案/任务', icon: 'plans' },
+  { key: 'actions', label: 'Action', icon: 'actions' },
+  { key: 'services', label: 'Service', icon: 'services' },
+  { key: 'packages', label: 'Package', icon: 'packages' },
   { key: 'automation', label: '自动化', icon: 'automation' },
   { key: 'task_editor', label: '任务编辑', icon: 'task_editor' },
   { key: 'settings', label: '设置', icon: 'settings' },

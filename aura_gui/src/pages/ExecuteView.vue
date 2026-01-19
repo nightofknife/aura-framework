@@ -296,11 +296,14 @@ async function loadTasks() {
     try {
       const { data } = await api.get(`/plans/${plan.name}/tasks`);
       (data || []).forEach((task) => {
+        const taskRef = task.task_ref || task.task_name_in_plan || task.task_name;  // 优先使用新格式
+        const taskDisplay = taskRef.startsWith('tasks:') ? taskRef.slice(6) : taskRef;  // 去掉 'tasks:' 前缀用于显示
         list.push({
-          __key: `${plan.name}::${task.task_name_in_plan || task.task_name}`,
+          __key: `${plan.name}::${taskRef}`,
           plan: plan.name,
-          task: task.task_name_in_plan || task.task_name,
-          title: task.meta?.title || task.task_name_in_plan || task.task_name,
+          task: taskRef,  // 使用新格式作为任务引用
+          taskDisplay: taskDisplay,  // 用于友好显示
+          title: task.meta?.title || taskDisplay,
           desc: task.meta?.description || '',
           meta: task.meta || {},
         });
@@ -333,17 +336,31 @@ const normalizedInputs = computed(() => {
 });
 const hasInputs = computed(() => normalizedInputs.value.length > 0);
 
-function deriveFilePath(taskName) {
-  const parts = taskName.split('/');
-  if (parts.length === 1) {
-    return `tasks/${parts[0]}.yaml`;
+function deriveFilePath(taskRef) {
+  // 处理新格式: tasks:test:draw_one_star -> tasks/test/draw_one_star.yaml
+  // 处理旧格式: test/draw_one_star/draw_one_star -> tasks/test/draw_one_star.yaml
+  if (taskRef.startsWith('tasks:')) {
+    // 新格式
+    const path = taskRef.slice(6).replace(/:/g, '/');  // 去掉 'tasks:' 并替换 ':' 为 '/'
+    return `tasks/${path}.yaml`;
+  } else {
+    // 旧格式
+    const parts = taskRef.split('/');
+    if (parts.length === 1) {
+      return `tasks/${parts[0]}.yaml`;
+    }
+    // 如果最后一部分与倒数第二部分相同，去掉重复
+    if (parts.length >= 2 && parts[parts.length - 1] === parts[parts.length - 2]) {
+      const filePath = parts.slice(0, -1).join('/');
+      return `tasks/${filePath}.yaml`;
+    }
+    const filePath = parts.join('/');
+    return `tasks/${filePath}.yaml`;
   }
-  const filePath = parts.slice(0, -1).join('/');
-  return `tasks/${filePath}.yaml`;
 }
 
-async function reloadTaskFile(plan, taskName) {
-  const filePath = deriveFilePath(taskName);
+async function reloadTaskFile(plan, taskRef) {
+  const filePath = deriveFilePath(taskRef);
   try {
     await api.post(`/plans/${plan}/files/reload`, null, { params: { path: filePath } });
   } catch (err) {
@@ -352,13 +369,23 @@ async function reloadTaskFile(plan, taskName) {
   return filePath;
 }
 
-async function resolveTaskMeta(plan, taskName, meta = {}) {
+async function resolveTaskMeta(plan, taskRef, meta = {}) {
   if (Array.isArray(meta?.inputs)) return meta;
-  const filePath = await reloadTaskFile(plan, taskName);
+  const filePath = await reloadTaskFile(plan, taskRef);
   try {
     const { data } = await api.get(`/plans/${plan}/files/content`, { params: { path: filePath } });
     const taskFile = parseTaskFile(data, filePath);
-    const taskKey = taskName.split('/').slice(-1)[0];
+    // 从任务引用中提取任务键
+    let taskKey;
+    if (taskRef.startsWith('tasks:')) {
+      // 新格式: tasks:test:draw_one_star -> draw_one_star
+      const parts = taskRef.slice(6).split(':');
+      taskKey = parts[parts.length - 1];
+    } else {
+      // 旧格式: test/draw_one_star/draw_one_star -> draw_one_star
+      const parts = taskRef.split('/');
+      taskKey = parts[parts.length - 1];
+    }
     const fileMeta = taskFile?.tasks?.[taskKey]?.meta;
     if (fileMeta && typeof fileMeta === 'object') {
       return { ...meta, ...fileMeta, inputs: fileMeta.inputs ?? meta.inputs };

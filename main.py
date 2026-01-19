@@ -2,16 +2,18 @@
 """Aura 框架的交互式命令行界面 (CLI)。
 
 该脚本提供了一个用户友好的菜单，用于与 Aura 调度器进行交互，
-包括启动/停止调度器、将任务添加到队列、以及查看已加载的插件信息。
+包括启动/停止调度器、将任务添加到队列、包管理以及查看框架信息。
 它作为 Aura 框架的主要用户入口点。
 
 主要功能:
-- 初始化并获取全局唯一的调度器实例。
-- 提供清晰的命令行菜单，展示可用操作。
-- 支持将预定任务和临时任务（Ad-hoc）添加到执行队列。
-- 管理调度器的生命周期（启动和停止）。
-- 实时显示调度器状态。
-- 优雅地处理启动同步和程序退出。
+- 初始化并获取全局唯一的调度器实例
+- 提供清晰的命令行菜单，展示可用操作
+- 任务管理：添加预定任务和临时任务（Ad-hoc）到执行队列
+- 信息查看：列出所有方案、动作、服务、任务定义和队列状态
+- 包管理：构建包并生成 api.yaml 文件
+- 调度器控制：管理调度器的生命周期（启动和停止）
+- 实时显示调度器状态
+- 优雅地处理启动同步和程序退出
 """
 import os
 import sys
@@ -26,7 +28,7 @@ try:
         sys.path.insert(0, str(project_root))
 
     from packages.aura_core.scheduler import Scheduler
-    from packages.aura_core.logger import logger
+    from packages.aura_core.observability.logging.core_logger import logger
 except ImportError as e:
     print(f"错误: 无法导入Aura核心模块。请确保你在项目根目录下运行此脚本。")
     print(f"原始错误: {e}")
@@ -53,7 +55,7 @@ def get_scheduler() -> Scheduler:
     if scheduler_instance is None:
         print("正在初始化Aura框架，加载所有定义...")
         try:
-            from packages.aura_core.config_loader import get_config_value
+            from packages.aura_core.config.loader import get_config_value
             logger.setup(
                 log_dir=str(get_config_value("logging.log_dir", "logs")),
                 task_name=str(get_config_value("logging.task_name.cli", "aura_cli_session")),
@@ -275,15 +277,28 @@ def list_all_plans(scheduler: Scheduler):
     """
     clear_screen()
     print_header("所有已加载的方案 (Plans)")
-    registry = scheduler.plan_manager.plugin_manager.plugin_registry
-    plan_defs = [p for p in registry.values() if p.plugin_type == 'plan']
-    if not plan_defs:
+
+    plan_manager = scheduler.plan_manager
+
+    # 从 PackageManager 获取
+    plans = []
+    for package_id, manifest in plan_manager.package_manager.loaded_packages.items():
+        if manifest.path.parent.name == "plans":
+            plans.append({
+                'canonical_id': manifest.package.canonical_id,
+                'version': manifest.package.version,
+                'path': manifest.path,
+                'name': manifest.path.name
+            })
+
+    if not plans:
         print("没有找到任何方案。")
     else:
         print(f"{'规范ID':<40} {'版本':<10} {'路径'}")
         print("-" * 80)
-        for p_def in sorted(plan_defs, key=lambda p: p.canonical_id):
-            print(f"{p_def.canonical_id:<40} {p_def.version:<10} {p_def.path}")
+        for p in sorted(plans, key=lambda x: x['canonical_id']):
+            print(f"{p['canonical_id']:<40} {p['version']:<10} {p['path']}")
+
     wait_for_enter()
 
 
@@ -302,8 +317,180 @@ def list_all_actions(scheduler: Scheduler):
         print(f"{'动作 FQID':<50} {'来源插件'}")
         print("-" * 80)
         for a_def in sorted(action_defs, key=lambda a: a.fqid):
-            plugin_id = a_def.plugin.canonical_id if a_def.plugin else "N/A"
+            # 兼容新旧两种系统
+            if not a_def.plugin:
+                plugin_id = "N/A"
+            elif hasattr(a_def.plugin, 'canonical_id'):
+                # 旧系统：PluginDefinition
+                plugin_id = a_def.plugin.canonical_id
+            elif hasattr(a_def.plugin, 'package'):
+                # 新系统：PluginManifest
+                plugin_id = a_def.plugin.package.canonical_id
+            else:
+                plugin_id = "Unknown"
             print(f"{a_def.fqid:<50} {plugin_id}")
+    wait_for_enter()
+
+
+def list_all_services(scheduler: Scheduler):
+    """显示所有已注册的服务（Services）及其状态。
+
+    Args:
+        scheduler: 当前的 Scheduler 实例。
+    """
+    clear_screen()
+    print_header("所有已注册的服务 (Services)")
+
+    definitions = scheduler.get_all_services_status()
+
+    if not definitions:
+        print("没有发现任何已注册的服务。")
+    else:
+        print(f"{'FQID':<40} {'Public':<8} {'Status':<12} {'Plugin':<30}")
+        print("-" * 95)
+
+        for s_def in definitions:
+            is_public = "Yes" if s_def.get('public') else "No"
+            fqid = s_def.get('fqid', 'N/A')
+            status = s_def.get('status', 'N/A')
+
+            # plugin 现在是 PluginManifest 对象，需要特殊处理
+            plugin = s_def.get('plugin')
+            if plugin is None:
+                plugin_id = 'core'  # 核心服务
+            elif hasattr(plugin, 'package'):
+                plugin_id = plugin.package.canonical_id if hasattr(plugin.package, 'canonical_id') else 'N/A'
+            else:
+                plugin_id = 'N/A'
+
+            # 使用不同的符号标记状态
+            status_symbol = "✅" if status == 'resolved' else "⚠️" if status == 'defined' else "❌"
+            print(f"{fqid:<40} {is_public:<8} {status_symbol} {status:<10} {plugin_id:<30}")
+
+    wait_for_enter()
+
+
+def list_all_tasks(scheduler: Scheduler):
+    """显示所有已定义的任务（Tasks）列表。
+
+    Args:
+        scheduler: 当前的 Scheduler 实例。
+    """
+    clear_screen()
+    print_header("所有已定义的任务 (Tasks)")
+
+    all_tasks = []
+    # 遍历所有方案的Orchestrator来收集任务定义
+    for plan_name, orchestrator in scheduler.plan_manager.plans.items():
+        for task_name, task_def in orchestrator.task_definitions.items():
+            all_tasks.append({
+                'fqid': f"{plan_name}/{task_name}",
+                'plan': plan_name,
+                'task': task_name,
+                'description': task_def.get('description', 'N/A')
+            })
+
+    if not all_tasks:
+        print("没有找到任何任务定义。")
+    else:
+        print(f"{'任务 FQID':<50} {'描述'}")
+        print("-" * 100)
+        for task in sorted(all_tasks, key=lambda t: t['fqid']):
+            desc = task['description'][:45] + "..." if len(task['description']) > 45 else task['description']
+            print(f"{task['fqid']:<50} {desc}")
+        print(f"\n共 {len(all_tasks)} 个任务")
+
+    wait_for_enter()
+
+
+def build_package(scheduler: Scheduler):
+    """从源码构建包 - 此功能已废弃。
+
+    Args:
+        scheduler: 当前的 Scheduler 实例。
+    """
+    clear_screen()
+    print_header("构建包")
+
+    print("⚠️  包构建功能已废弃")
+    print()
+    print("新架构使用 manifest.yaml 来定义插件元数据，不再需要从源码构建 api.yaml。")
+    print()
+    print("如需创建新包，请手动创建包含以下文件的目录结构：")
+    print("  - manifest.yaml  (包元数据)")
+    print("  - actions/       (动作定义)")
+    print("  - services/      (服务定义)")
+    print("  - tasks/         (任务定义)")
+    print()
+    print("参考现有包的结构来创建新包。")
+
+    wait_for_enter()
+
+
+def list_queue_tasks(scheduler: Scheduler):
+    """显示当前队列中的任务。
+
+    Args:
+        scheduler: 当前的 Scheduler 实例。
+    """
+    clear_screen()
+    print_header("队列中的任务")
+
+    # 获取队列中的任务
+    queue_items = []
+
+    # 尝试获取队列中的任务（不阻塞）
+    import queue
+    temp_items = []
+
+    try:
+        # 从主队列获取所有项目（不阻塞）
+        while True:
+            try:
+                item = scheduler.main_queue.get_nowait()
+                temp_items.append(item)
+            except queue.Empty:
+                break
+
+        # 将项目放回队列
+        for item in temp_items:
+            scheduler.main_queue.put(item)
+            queue_items.append({
+                'cid': item.get('cid', 'N/A'),
+                'plan': item.get('plan_name', 'N/A'),
+                'task': item.get('task_name', 'N/A'),
+                'type': item.get('type', 'N/A'),
+                'fqid': f"{item.get('plan_name', 'N/A')}/{item.get('task_name', 'N/A')}"
+            })
+    except Exception as e:
+        print(f"获取队列信息时出错: {e}")
+
+    # 显示当前正在运行的任务
+    if scheduler.current_running_task:
+        print("\n📌 当前正在运行的任务:")
+        current = scheduler.current_running_task
+        print(f"  CID:  {current.get('cid', 'N/A')}")
+        print(f"  FQID: {current.get('plan_name', 'N/A')}/{current.get('task_name', 'N/A')}")
+        print(f"  类型: {current.get('type', 'N/A')}")
+    else:
+        print("\n📌 当前没有正在运行的任务")
+
+    # 显示队列中等待的任务
+    print(f"\n📋 队列中等待的任务: {len(queue_items)} 个")
+
+    if queue_items:
+        print(f"\n{'CID':<15} {'任务 FQID':<50} {'类型'}")
+        print("-" * 85)
+        for item in queue_items:
+            print(f"{item['cid']:<15} {item['fqid']:<50} {item['type']}")
+    else:
+        print("  (队列为空)")
+
+    # 显示队列统计
+    print(f"\n📊 队列统计:")
+    print(f"  队列大小: {scheduler.main_queue.qsize()}")
+    print(f"  最大容量: {scheduler.main_queue.maxsize}")
+
     wait_for_enter()
 
 
@@ -315,17 +502,28 @@ def display_menu():
     status_text = "运行中 (正在执行任务...)" if scheduler_is_running else "已停止"
     print(f"  调度器状态: {status_text}")
     print("-" * 80)
-    print("  [1] 添加一个可调度任务到队列")
-    print("  [2] 添加一个任意任务到队列 (Ad-hoc)")
-    print("\n  [3] 列出所有已加载的方案")
-    print("  [4] 列出所有已注册的动作")
 
+    print("\n  📋 任务管理:")
+    print("  [1] 添加可调度任务到队列")
+    print("  [2] 添加任意任务到队列 (Ad-hoc)")
+
+    print("\n  📊 信息查看:")
+    print("  [3] 列出所有方案 (Plans)")
+    print("  [4] 列出所有动作 (Actions)")
+    print("  [5] 列出所有服务 (Services)")
+    print("  [6] 列出所有任务定义 (Tasks)")
+    print("  [7] 列出队列中的任务")
+
+    print("\n  📦 包管理:")
+    print("  [8] 构建包 (生成 api.yaml)")
+
+    print("\n  ⚙️  调度器控制:")
     if scheduler_is_running:
-        print("\n  [5] 停止调度器")
+        print("  [9] 停止调度器")
     else:
-        print("\n  [5] 启动调度器 (开始执行队列任务)")
+        print("  [9] 启动调度器 (开始执行队列任务)")
 
-    print("\n  [6] 退出")
+    print("\n  [0] 退出")
 
 
 def main():
@@ -350,8 +548,16 @@ def main():
         elif choice == '4':
             list_all_actions(scheduler)
         elif choice == '5':
-            manage_scheduler_lifecycle(scheduler)
+            list_all_services(scheduler)
         elif choice == '6':
+            list_all_tasks(scheduler)
+        elif choice == '7':
+            list_queue_tasks(scheduler)
+        elif choice == '8':
+            build_package(scheduler)
+        elif choice == '9':
+            manage_scheduler_lifecycle(scheduler)
+        elif choice == '0':
             if scheduler_is_running:
                 print("程序退出前，自动停止调度器...")
                 scheduler.stop_scheduler()

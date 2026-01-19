@@ -1,289 +1,388 @@
-# ============ 插件元信息 ============
 package:
-  name: "@Aura-Project/base"
-  version: "1.0.0"
-  description: "Provides the foundational services (like OCR, Vision, Controller) and atomic actions for the Aura framework. This package is essential for most automation tasks."
-  license: "MIT"
+  name: '@Aura-Project/base'
+  version: 1.0.0
+  description: Provides the foundational services (like OCR, Vision, Controller) and
+    atomic actions for the Aura framework. This package is essential for most automation
+    tasks.
+  license: MIT
   authors:
-    - name: "Aura Project Team"
-      email: "team@aura-project.com"
-  homepage: "https://github.com/aura-project/aura"
-  repository: "https://github.com/aura-project/aura.git"
-  keywords: ["base", "core", "automation", "vision", "ocr", "controller"]
-  categories: ["core", "automation"]
-
-# ============ 运行时要求 ============
+  - name: Aura Project Team
+    email: team@aura-project.com
+  homepage: https://github.com/aura-project/aura
+  repository: https://github.com/aura-project/aura.git
+  keywords:
+  - base
+  - core
+  - automation
+  - vision
+  - ocr
+  - controller
+  categories:
+  - core
+  - automation
 requires:
-  aura: ">=3.0.0, <4.0.0"
-  python: ">=3.10"
-  platform: "all"
-
-# ============ 依赖管理 ============
+  aura: '>=3.0.0, <4.0.0'
+  python: '>=3.10'
+  platform: all
 dependencies: {}
-
 pypi-dependencies:
-  # OCR 相关
-  paddleocr: "*"
-  paddlepaddle: "*"
-  # 屏幕和图像处理
-  pillow: "*"
-  opencv-python: "*"
-  numpy: "*"
-  # UI 自动化
-  pyautogui: "*"
-  pygetwindow: "*"
-  # 其他
-  pyyaml: "*"
-
-# ============ 导出定义 ============
+  paddleocr: '*'
+  paddlepaddle: '*'
+  pillow: '*'
+  opencv-python: '*'
+  numpy: '*'
+  pyautogui: '*'
+  pygetwindow: '*'
+  pyyaml: '*'
 exports:
   services:
-    # 应用程序提供器服务
-    - name: "app"
-      source: "services.app_provider_service:AppProviderService"
-      description: "Application provider service for managing applications"
-      visibility: "public"
-
-    # 配置服务
-    - name: "config"
-      source: "services.config_service:ConfigService"
-      description: "Configuration management service"
-      visibility: "public"
-
-    # 复合交互服务
-    - name: "composite-interaction"
-      source: "services.composite_interaction_service:CompositeInteractionService"
-      description: "Composite interaction service for complex UI interactions"
-      visibility: "public"
-
-    # 视觉服务
-    - name: "vision"
-      source: "services.vision_service:VisionService"
-      description: "Vision service for image recognition and template matching"
-      visibility: "public"
-
-    # 控制器服务
-    - name: "controller"
-      source: "services.controller_service:ControllerService"
-      description: "Controller service for mouse and keyboard control"
-      visibility: "public"
-
-    # 进程管理服务
-    - name: "process_manager"
-      source: "services.process_manager_service:ProcessManagerService"
-      description: "Process manager service for application lifecycle management"
-      visibility: "public"
-
-    # 屏幕服务
-    - name: "screen"
-      source: "services.screen_service:ScreenService"
-      description: "Screen service for screen capture and analysis"
-      visibility: "public"
-
-    # OCR 服务
-    - name: "ocr"
-      source: "services.ocr_service:OCRService"
-      description: "OCR service for text recognition"
-      visibility: "public"
-
+    - name: composite-interaction
+      source: src/services/composite_interaction_service:CompositeInteractionService
+      description: Composite interaction service
+      visibility: public
+    - name: app
+      source: src/services/app_provider_service:AppProviderService
+      description: Application provider service
+      visibility: public
+    - name: config
+      source: src/services/config_service:ConfigService
+      description: Configuration service
+      visibility: public
+    - name: controller
+      source: src/services/controller_service:ControllerService
+      description: Controller service for input automation
+      visibility: public
+    - name: ocr
+      source: src/services/ocr_service:OcrService
+      description: OCR service for text recognition
+      visibility: public
+    - name: process_manager
+      source: src/services/process_manager_service:ProcessManagerService
+      description: Process manager service
+      visibility: public
+    - name: screen
+      source: src/services/screen_service:ScreenService
+      description: Screen capture service
+      visibility: public
+    - name: vision
+      source: src/services/vision_service:VisionService
+      description: Vision service for image matching
+      visibility: public
   actions:
-    # 模板库管理
-    - name: "register_template_library"
-      source: "actions.atomic_actions:register_template_library"
-      description: "Register a template library"
-      visibility: "public"
-
-    - name: "unregister_template_library"
-      source: "actions.atomic_actions:unregister_template_library"
-      description: "Unregister a template library"
-      visibility: "public"
-
-    - name: "list_template_libraries"
-      source: "actions.atomic_actions:list_template_libraries"
-      description: "List all registered template libraries"
-      visibility: "public"
-
-    # 屏幕捕获后端
-    - name: "list_capture_backends"
-      source: "actions.atomic_actions:list_capture_backends"
-      description: "List available screen capture backends"
-      visibility: "public"
-
-    - name: "set_capture_backend"
-      source: "actions.atomic_actions:set_capture_backend"
-      description: "Set the screen capture backend"
-      visibility: "public"
-
-    - name: "screen_selfcheck"
-      source: "actions.atomic_actions:screen_selfcheck"
-      description: "Perform screen service self-check"
-      visibility: "public"
-
-    # 图像查找和匹配
-    - name: "find_image"
-      source: "actions.atomic_actions:find_image"
-      description: "Find an image on screen"
-      visibility: "public"
-
-    - name: "find_all_images"
-      source: "actions.atomic_actions:find_all_images"
-      description: "Find all instances of an image on screen"
-      visibility: "public"
-
-    - name: "find_templates_in_set"
-      source: "actions.atomic_actions:find_templates_in_set"
-      description: "Find templates from a set on screen"
-      visibility: "public"
-
-    - name: "find_all_templates_in_set"
-      source: "actions.atomic_actions:find_all_templates_in_set"
-      description: "Find all instances of templates from a set"
-      visibility: "public"
-
-    - name: "find_unique_template_in_set"
-      source: "actions.atomic_actions:find_unique_template_in_set"
-      description: "Find unique template from a set"
-      visibility: "public"
-
-    - name: "find_best_template_in_set"
-      source: "actions.atomic_actions:find_best_template_in_set"
-      description: "Find best matching template from a set"
-      visibility: "public"
-
-    - name: "list_templates_in_set"
-      source: "actions.atomic_actions:list_templates_in_set"
-      description: "List all templates in a set"
-      visibility: "public"
-
-    # 断言和验证
-    - name: "assert_any_template_in_set"
-      source: "actions.atomic_actions:assert_any_template_in_set"
-      description: "Assert that any template from set exists"
-      visibility: "public"
-
-    - name: "assert_all_templates_in_set"
-      source: "actions.atomic_actions:assert_all_templates_in_set"
-      description: "Assert that all templates from set exist"
-      visibility: "public"
-
-    - name: "assert_image_exists"
-      source: "actions.atomic_actions:assert_image_exists"
-      description: "Assert that an image exists on screen"
-      visibility: "public"
-
-    - name: "assert_image_not_exists"
-      source: "actions.atomic_actions:assert_image_not_exists"
-      description: "Assert that an image does not exist on screen"
-      visibility: "public"
-
-    - name: "assert_text_exists"
-      source: "actions.atomic_actions:assert_text_exists"
-      description: "Assert that text exists on screen"
-      visibility: "public"
-
-    - name: "assert_text_not_exists"
-      source: "actions.atomic_actions:assert_text_not_exists"
-      description: "Assert that text does not exist on screen"
-      visibility: "public"
-
-    - name: "assert_text_equals"
-      source: "actions.atomic_actions:assert_text_equals"
-      description: "Assert that recognized text equals expected value"
-      visibility: "public"
-
-    # 等待操作
-    - name: "wait_for_any_template_in_set"
-      source: "actions.atomic_actions:wait_for_any_template_in_set"
-      description: "Wait for any template from set to appear"
-      visibility: "public"
-
-    - name: "wait_for_templates_in_set_to_disappear"
-      source: "actions.atomic_actions:wait_for_templates_in_set_to_disappear"
-      description: "Wait for templates from set to disappear"
-      visibility: "public"
-
-    - name: "wait_for_text"
-      source: "actions.atomic_actions:wait_for_text"
-      description: "Wait for text to appear on screen"
-      visibility: "public"
-
-    # 滚动区域查找
-    - name: "find_image_in_scrolling_area"
-      source: "actions.atomic_actions:find_image_in_scrolling_area"
-      description: "Find image in a scrolling area"
-      visibility: "public"
-
-    # OCR 操作
-    - name: "preload_ocr"
-      source: "actions.atomic_actions:preload_ocr"
-      description: "Preload OCR models"
-      visibility: "public"
-
-    - name: "find_text"
-      source: "actions.atomic_actions:find_text"
-      description: "Find text on screen using OCR"
-      visibility: "public"
-
-    - name: "recognize_all_text"
-      source: "actions.atomic_actions:recognize_all_text"
-      description: "Recognize all text on screen"
-      visibility: "public"
-
-    - name: "get_text_in_region"
-      source: "actions.atomic_actions:get_text_in_region"
-      description: "Get text in a specific region using OCR"
-      visibility: "public"
-
-    - name: "check_text_exists"
-      source: "actions.atomic_actions:check_text_exists"
-      description: "Check if text exists on screen"
-      visibility: "public"
-
-    - name: "check_image_exists"
-      source: "actions.atomic_actions:check_image_exists"
-      description: "Check if image exists on screen"
-      visibility: "public"
-
+    - name: register_template_library
+      source: src/actions/atomic_actions:register_template_library
+      description: Register a template library
+      visibility: public
+    - name: unregister_template_library
+      source: src/actions/atomic_actions:unregister_template_library
+      description: Unregister a template library
+      visibility: public
+    - name: list_template_libraries
+      source: src/actions/atomic_actions:list_template_libraries
+      description: List all registered template libraries
+      visibility: public
+    - name: list_capture_backends
+      source: src/actions/atomic_actions:list_capture_backends
+      description: List available capture backends
+      visibility: public
+    - name: set_capture_backend
+      source: src/actions/atomic_actions:set_capture_backend
+      description: Set the capture backend
+      visibility: public
+    - name: screen_selfcheck
+      source: src/actions/atomic_actions:screen_selfcheck
+      description: Perform screen capture self-check
+      visibility: public
+    - name: find_image
+      source: src/actions/atomic_actions:find_image
+      description: Find an image on screen
+      visibility: public
+    - name: find_all_images
+      source: src/actions/atomic_actions:find_all_images
+      description: Find all occurrences of an image
+      visibility: public
+    - name: find_templates_in_set
+      source: src/actions/atomic_actions:find_templates_in_set
+      description: Find templates from a template set
+      visibility: public
+    - name: find_all_templates_in_set
+      source: src/actions/atomic_actions:find_all_templates_in_set
+      description: Find all templates in a template set
+      visibility: public
+    - name: find_unique_template_in_set
+      source: src/actions/atomic_actions:find_unique_template_in_set
+      description: Find a unique template in a template set
+      visibility: public
+    - name: find_best_template_in_set
+      source: src/actions/atomic_actions:find_best_template_in_set
+      description: Find the best matching template in a set
+      visibility: public
+    - name: list_templates_in_set
+      source: src/actions/atomic_actions:list_templates_in_set
+      description: List all templates in a set
+      visibility: public
+    - name: assert_any_template_in_set
+      source: src/actions/atomic_actions:assert_any_template_in_set
+      description: Assert any template in set is found
+      visibility: public
+    - name: assert_all_templates_in_set
+      source: src/actions/atomic_actions:assert_all_templates_in_set
+      description: Assert all templates in set are found
+      visibility: public
+    - name: wait_for_any_template_in_set
+      source: src/actions/atomic_actions:wait_for_any_template_in_set
+      description: Wait for any template in set to appear
+      visibility: public
+    - name: wait_for_templates_in_set_to_disappear
+      source: src/actions/atomic_actions:wait_for_templates_in_set_to_disappear
+      description: Wait for templates in set to disappear
+      visibility: public
+    - name: find_image_in_scrolling_area
+      source: src/actions/atomic_actions:find_image_in_scrolling_area
+      description: Find image in a scrolling area
+      visibility: public
+    - name: preload_ocr
+      source: src/actions/atomic_actions:preload_ocr
+      description: Preload OCR engine
+      visibility: public
+    - name: find_text
+      source: src/actions/atomic_actions:find_text
+      description: Find text on screen using OCR
+      visibility: public
+    - name: recognize_all_text
+      source: src/actions/atomic_actions:recognize_all_text
+      description: Recognize all text on screen
+      visibility: public
+    - name: get_text_in_region
+      source: src/actions/atomic_actions:get_text_in_region
+      description: Get text in a specific region
+      visibility: public
+    - name: check_text_exists
+      source: src/actions/atomic_actions:check_text_exists
+      description: Check if text exists on screen
+      visibility: public
+    - name: check_image_exists
+      source: src/actions/atomic_actions:check_image_exists
+      description: Check if image exists on screen
+      visibility: public
+    - name: assert_image_exists
+      source: src/actions/atomic_actions:assert_image_exists
+      description: Assert that image exists
+      visibility: public
+    - name: assert_image_not_exists
+      source: src/actions/atomic_actions:assert_image_not_exists
+      description: Assert that image does not exist
+      visibility: public
+    - name: assert_text_exists
+      source: src/actions/atomic_actions:assert_text_exists
+      description: Assert that text exists
+      visibility: public
+    - name: assert_text_not_exists
+      source: src/actions/atomic_actions:assert_text_not_exists
+      description: Assert that text does not exist
+      visibility: public
+    - name: assert_text_equals
+      source: src/actions/atomic_actions:assert_text_equals
+      description: Assert that text equals expected value
+      visibility: public
+    - name: wait_for_text
+      source: src/actions/atomic_actions:wait_for_text
+      description: Wait for text to appear
+      visibility: public
+    - name: wait_for_text_to_disappear
+      source: src/actions/atomic_actions:wait_for_text_to_disappear
+      description: Wait for text to disappear
+      visibility: public
+    - name: wait_for_image
+      source: src/actions/atomic_actions:wait_for_image
+      description: Wait for image to appear
+      visibility: public
+    - name: click
+      source: src/actions/atomic_actions:click
+      description: Click at coordinates
+      visibility: public
+    - name: double_click
+      source: src/actions/atomic_actions:double_click
+      description: Double click at coordinates
+      visibility: public
+    - name: right_click
+      source: src/actions/atomic_actions:right_click
+      description: Right click at coordinates
+      visibility: public
+    - name: move_to
+      source: src/actions/atomic_actions:move_to
+      description: Move mouse to coordinates
+      visibility: public
+    - name: drag
+      source: src/actions/atomic_actions:drag
+      description: Drag from start to end coordinates
+      visibility: public
+    - name: press_key
+      source: src/actions/atomic_actions:press_key
+      description: Press a keyboard key
+      visibility: public
+    - name: press_hotkey
+      source: src/actions/atomic_actions:press_hotkey
+      description: Press a keyboard hotkey combination
+      visibility: public
+    - name: type_text
+      source: src/actions/atomic_actions:type_text
+      description: Type text
+      visibility: public
+    - name: scroll
+      source: src/actions/atomic_actions:scroll
+      description: Scroll the mouse wheel
+      visibility: public
+    - name: get_pixel_color
+      source: src/actions/atomic_actions:get_pixel_color
+      description: Get pixel color at coordinates
+      visibility: public
+    - name: mouse_move_relative
+      source: src/actions/atomic_actions:mouse_move_relative
+      description: Move mouse relative to current position
+      visibility: public
+    - name: key_down
+      source: src/actions/atomic_actions:key_down
+      description: Press and hold a key
+      visibility: public
+    - name: key_up
+      source: src/actions/atomic_actions:key_up
+      description: Release a key
+      visibility: public
+    - name: mouse_down
+      source: src/actions/atomic_actions:mouse_down
+      description: Press and hold mouse button
+      visibility: public
+    - name: mouse_up
+      source: src/actions/atomic_actions:mouse_up
+      description: Release mouse button
+      visibility: public
+    - name: sleep
+      source: src/actions/atomic_actions:sleep
+      description: Sleep for specified duration
+      visibility: public
+    - name: log
+      source: src/actions/atomic_actions:log
+      description: Log a message
+      visibility: public
+    - name: stop_task
+      source: src/actions/atomic_actions:stop_task
+      description: Stop the current task
+      visibility: private
+    - name: assert_condition
+      source: src/actions/atomic_actions:assert_condition
+      description: Assert a condition is true
+      visibility: public
+    - name: set_variable
+      source: src/actions/atomic_actions:set_variable
+      description: Set a variable in context
+      visibility: public
+    - name: string_format
+      source: src/actions/atomic_actions:string_format
+      description: Format a string
+      visibility: public
+    - name: string_split
+      source: src/actions/atomic_actions:string_split
+      description: Split a string
+      visibility: public
+    - name: string_join
+      source: src/actions/atomic_actions:string_join
+      description: Join strings
+      visibility: public
+    - name: regex_search
+      source: src/actions/atomic_actions:regex_search
+      description: Search using regex
+      visibility: public
+    - name: math_compute
+      source: src/actions/atomic_actions:math_compute
+      description: Compute mathematical expression
+      visibility: public
+    - name: publish_event
+      source: src/actions/atomic_actions:publish_event
+      description: Publish an event to the event bus
+      visibility: public
+    - name: get_window_size
+      source: src/actions/atomic_actions:get_window_size
+      description: Get window size
+      visibility: public
+    - name: focus_window
+      source: src/actions/atomic_actions:focus_window
+      description: Focus a window
+      visibility: public
+    - name: file_read
+      source: src/actions/atomic_actions:file_read
+      description: Read file content
+      visibility: public
+    - name: file_write
+      source: src/actions/atomic_actions:file_write
+      description: Write content to file
+      visibility: public
+    - name: find_image_and_click
+      source: src/actions/atomic_actions:find_image_and_click
+      description: Find image and click on it
+      visibility: public
+    - name: find_text_and_click
+      source: src/actions/atomic_actions:find_text_and_click
+      description: Find text and click on it
+      visibility: public
+    - name: drag_to_find
+      source: src/actions/atomic_actions:drag_to_find
+      description: Drag until target is found
+      visibility: public
+    - name: run_task
+      source: src/actions/atomic_actions:run_task
+      description: Run a task
+      visibility: public
+    - name: scan_and_find_best_match
+      source: src/actions/atomic_actions:scan_and_find_best_match
+      description: Scan and find best matching template
+      visibility: public
+    - name: start_process
+      source: src/actions/atomic_actions:start_process
+      description: Start a process
+      visibility: public
+    - name: stop_process
+      source: src/actions/atomic_actions:stop_process
+      description: Stop a process
+      visibility: public
+    - name: get_process_status
+      source: src/actions/atomic_actions:get_process_status
+      description: Get process status
+      visibility: public
+    - name: wait_for_process_exit
+      source: src/actions/atomic_actions:wait_for_process_exit
+      description: Wait for process to exit
+      visibility: public
   tasks: []
-
-# ============ 生命周期钩子 ============
 lifecycle: {}
-
-# ============ 配置管理 ============
 configuration:
   default_config: null
   config_schema: null
   user_template: null
   allow_user_override: true
-  merge_strategy: "merge"
-
-# ============ 资源文件映射 ============
+  merge_strategy: merge
 resources:
   templates: {}
   data: {}
   assets: {}
-
-# ============ 构建与打包 ============
 build:
   include:
-    - "services/**/*.py"
-    - "actions/**/*.py"
-    - "*.py"
-    - "plugin.yaml"
-    - "manifest.yaml"
-    - "requirements.txt"
+  - src/**/*.py
+  - tasks/**/*.yaml
+  - config/**/*
+  - manifest.yaml
+  - requirements.txt
   exclude:
-    - "**/__pycache__"
-    - "**/*.pyc"
-    - "**/.pytest_cache"
-
-# ============ 元数据 ============
+  - '**/__pycache__'
+  - '**/*.pyc'
+  - '**/.pytest_cache'
 metadata:
   changelog:
-    - version: "1.0.0"
-      date: "2026-01-12"
-      changes:
-        added:
-          - "Initial manifest.yaml creation"
-          - "Core services: vision, ocr, controller, screen, process_manager, app, config, composite-interaction"
-          - "50+ atomic actions for automation"
+  - version: 1.0.0
+    date: '2026-01-12'
+    changes:
+      added:
+      - Initial manifest.yaml creation
+      - 'Core services: vision, ocr, controller, screen, process_manager, app, config,
+        composite-interaction'
+      - 50+ atomic actions for automation

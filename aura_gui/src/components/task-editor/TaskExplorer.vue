@@ -108,21 +108,45 @@ const emitCreate = () => {
   cancelCreate()
 }
 
-const deriveFilePath = (taskName) => {
-  const parts = taskName.split('/')
-  if (parts.length === 1) {
-    return `tasks/${parts[0]}.yaml`
+const deriveFilePath = (taskNameOrRef) => {
+  // 处理新格式: tasks:test:draw_one_star -> tasks/test/draw_one_star.yaml
+  // 处理旧格式: test/draw_one_star/draw_one_star -> tasks/test/draw_one_star.yaml
+  if (taskNameOrRef.startsWith('tasks:')) {
+    // 新格式
+    const path = taskNameOrRef.slice(6).replace(/:/g, '/')  // 去掉 'tasks:' 并替换 ':' 为 '/'
+    return `tasks/${path}.yaml`
+  } else {
+    // 旧格式
+    const parts = taskNameOrRef.split('/')
+    if (parts.length === 1) {
+      return `tasks/${parts[0]}.yaml`
+    }
+    // 如果最后一部分与倒数第二部分相同，去掉重复
+    if (parts.length >= 2 && parts[parts.length - 1] === parts[parts.length - 2]) {
+      const filePath = parts.slice(0, -1).join('/')
+      return `tasks/${filePath}.yaml`
+    }
+    const filePath = parts.join('/')
+    return `tasks/${filePath}.yaml`
   }
-  const filePath = parts.slice(0, -1).join('/')
-  return `tasks/${filePath}.yaml`
 }
 
 const groupedFiles = computed(() => {
   const map = new Map()
   for (const task of props.tasks) {
-    const taskName = task.task_name_in_plan || task.task_name
-    const filePath = deriveFilePath(taskName)
-    const taskKey = taskName.split('/').slice(-1)[0]
+    const taskNameOrRef = task.task_ref || task.task_name_in_plan || task.task_name
+    const filePath = deriveFilePath(taskNameOrRef)
+    // 从任务引用中提取任务键
+    let taskKey
+    if (taskNameOrRef.startsWith('tasks:')) {
+      // 新格式: tasks:test:draw_one_star -> draw_one_star
+      const parts = taskNameOrRef.slice(6).split(':')
+      taskKey = parts[parts.length - 1]
+    } else {
+      // 旧格式: test/draw_one_star/draw_one_star -> draw_one_star
+      const parts = taskNameOrRef.split('/')
+      taskKey = parts[parts.length - 1]
+    }
     const title = task.meta?.title || taskKey
 
     if (!map.has(filePath)) {

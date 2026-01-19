@@ -9,22 +9,31 @@
     --bg-surface: rgba(255, 255, 255, 0.75);
     --border-frosted: rgba(255, 255, 255, 0.45);
     --primary-accent: #5865F2;
+    --primary-accent-hover: #4752C4;
+    --primary-accent-active: #3642A0;
     --glow-accent: rgba(106, 117, 255, 0.6);
     --secondary-accent: #08D9D6;
-    --text-primary: #1E2330;
-    --text-secondary: #6C7288;
-    --text-tertiary: #9DA3B8;
+    --text-primary: #0F172A;              /* 增强对比度：原 #1E2330 → #0F172A */
+    --text-secondary: #475569;            /* 增强对比度：原 #6C7288 → #475569 */
+    --text-tertiary: #64748B;             /* 增强对比度：原 #9DA3B8 → #64748B */
+    --text-3: var(--text-tertiary);       /* 别名，保持兼容 */
     --success: #16A34A; --error: #DC2626; --info: #0EA5E9;
+    --warning: #F59E0B;
 
     /* --- Shape & Shadow --- */
     --radius-sm: 6px; --radius: 12px; --radius-lg: 16px;
     --shadow-glow: 0 0 16px 0 var(--glow-accent);
     --shadow-card: 0 4px 12px rgba(30, 35, 48, 0.04);
     --shadow-panel: 0 8px 24px rgba(30, 35, 48, 0.08);
+    --shadow-button: 0 2px 8px rgba(88, 101, 242, 0.25);
+    --shadow-button-hover: 0 4px 12px rgba(88, 101, 242, 0.35);
+    --shadow-button-active: 0 1px 4px rgba(88, 101, 242, 0.4);
 
     /* --- Motion --- */
     --dur: .22s;
+    --dur-fast: .12s;
     --ease: cubic-bezier(.22, .61, .36, 1);
+    --ease-bounce: cubic-bezier(.34, 1.56, .64, 1);
 
     /* --- Typography --- */
     --font-main: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -35,9 +44,14 @@
     --bg-main: #0B1220;
     --bg-surface: rgba(15, 23, 42, 0.7);
     --border-frosted: rgba(45, 59, 92, 0.5);
-    --text-primary: #E6E9F2;
-    --text-secondary: #9DA3B8;
-    --text-tertiary: #6C7288;
+    --primary-accent-hover: #6B77FF;
+    --primary-accent-active: #8794FF;
+    --text-primary: #F1F5F9;              /* 增强对比度：原 #E6E9F2 → #F1F5F9 */
+    --text-secondary: #CBD5E1;            /* 增强对比度：原 #9DA3B8 → #CBD5E1 */
+    --text-tertiary: #94A3B8;             /* 增强对比度：原 #6C7288 → #94A3B8 */
+    --shadow-button: 0 2px 8px rgba(88, 101, 242, 0.4);
+    --shadow-button-hover: 0 4px 12px rgba(88, 101, 242, 0.5);
+    --shadow-button-active: 0 1px 4px rgba(88, 101, 242, 0.6);
 }
 
 /* --- Global Base --- */
@@ -114,6 +128,7 @@ html, body {
     border-radius: var(--radius-sm);
     padding: 8px 12px;
     color: var(--text-primary);
+    font-weight: 500;                     /* 增强文本可读性 */
     transition: all var(--dur) var(--ease);
 }
 .input:focus, .select:focus {
@@ -121,50 +136,332 @@ html, body {
     border-color: var(--primary-accent);
     box-shadow: 0 0 0 3px var(--glow-accent);
 }
+
+/* === 按钮系统 - 增强版 === */
 .btn {
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
     padding: 8px 14px;
     cursor: pointer;
     font-weight: 600;
-    transition: all var(--dur) var(--ease);
+    font-size: 14px;                      /* 明确字号 */
+    line-height: 1.5;
+    position: relative;
+    user-select: none;
+    transition: all var(--dur-fast) var(--ease);
 }
-.btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--glow-accent); }
+
+/* 聚焦状态 - 键盘导航可见性 */
+.btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--glow-accent);
+    z-index: 1;
+}
+
+/* 禁用状态 */
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none !important;
+}
+
+/* 主按钮 - 增强对比度和反馈 */
 .btn-primary {
     color: #fff;
     background: var(--primary-accent);
-    box-shadow: 0 4px 8px rgba(88, 101, 242, 0.2);
+    box-shadow: var(--shadow-button);
+    border: 1px solid rgba(88, 101, 242, 0.3);
 }
-.btn-primary:hover { filter: brightness(1.1); box-shadow: 0 6px 12px rgba(88, 101, 242, 0.3); }
-.btn-ghost { background: transparent; color: var(--text-secondary); }
-.btn-ghost:hover { background: rgba(128,128,128,0.1); color: var(--text-primary); }
 
-/* --- Pills & Status --- */
+.btn-primary:hover:not(:disabled) {
+    background: var(--primary-accent-hover);
+    box-shadow: var(--shadow-button-hover);
+    transform: translateY(-1px);
+}
+
+.btn-primary:active:not(:disabled) {
+    background: var(--primary-accent-active);
+    box-shadow: var(--shadow-button-active);
+    transform: translateY(0) scale(0.98);   /* 按下效果 */
+    transition: all var(--dur-fast) var(--ease);
+}
+
+/* 幽灵按钮 - 增强可视性 */
+.btn-ghost {
+    background: transparent;
+    color: var(--text-primary);            /* 改用主文本色 */
+    border: 1px solid var(--border-frosted);
+    font-weight: 600;
+}
+
+.btn-ghost:hover:not(:disabled) {
+    background: rgba(128,128,128,0.15);     /* 加深背景 */
+    color: var(--text-primary);
+    border-color: var(--primary-accent);
+    transform: translateY(-1px);
+}
+
+.btn-ghost:active:not(:disabled) {
+    background: rgba(128,128,128,0.25);
+    transform: translateY(0) scale(0.97);
+    transition: all var(--dur-fast) var(--ease);
+}
+
+/* 危险按钮 */
+.btn-danger {
+    color: #fff;
+    background: var(--error);
+    box-shadow: 0 2px 8px rgba(220, 38, 38, 0.25);
+    border: 1px solid rgba(220, 38, 38, 0.3);
+}
+
+.btn-danger:hover:not(:disabled) {
+    background: #B91C1C;
+    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.35);
+    transform: translateY(-1px);
+}
+
+.btn-danger:active:not(:disabled) {
+    background: #991B1B;
+    box-shadow: 0 1px 4px rgba(220, 38, 38, 0.4);
+    transform: translateY(0) scale(0.98);
+}
+
+/* 警告按钮 */
+.btn-warning {
+    color: #fff;
+    background: var(--warning);
+    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.25);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.btn-warning:hover:not(:disabled) {
+    background: #D97706;
+    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.35);
+    transform: translateY(-1px);
+}
+
+.btn-warning:active:not(:disabled) {
+    background: #B45309;
+    box-shadow: 0 1px 4px rgba(245, 158, 11, 0.4);
+    transform: translateY(0) scale(0.98);
+}
+
+/* 按钮尺寸变体 */
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 13px;
+}
+
+.btn-lg {
+    padding: 12px 20px;
+    font-size: 16px;
+}
+
+/* 按钮加载状态 */
+.btn.loading {
+    position: relative;
+    color: transparent !important;
+    pointer-events: none;
+}
+
+.btn.loading::after {
+    content: "";
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    top: 50%;
+    left: 50%;
+    margin-left: -7px;
+    margin-top: -7px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-radius: 50%;
+    border-top-color: #fff;
+    animation: btn-spin 0.6s linear infinite;
+}
+
+@keyframes btn-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* --- Pills & Status - 增强版 --- */
 .pill {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+    padding: 5px 11px;                     /* 略微增加内边距 */
+    border-radius: 99px;
+    font-size: 12px;
+    font-weight: 700;                      /* 增强字重 */
     border: 1px solid var(--border-frosted);
-    background: rgba(128,128,128,0.05);
-    color: var(--text-secondary);
+    background: rgba(128,128,128,0.08);
+    color: var(--text-primary);            /* 增强默认色 */
+    letter-spacing: 0.02em;                /* 轻微字间距 */
 }
-.pill-green { background: rgba(22, 163, 74, 0.1); color: var(--success); border-color: rgba(22, 163, 74, 0.2); }
-.pill-red { background: rgba(220, 38, 38, 0.1); color: var(--error); border-color: rgba(220, 38, 38, 0.2); }
-.pill-blue { background: rgba(14, 165, 233, 0.1); color: var(--info); border-color: rgba(14, 165, 233, 0.2); }
-.dot { width: 8px; height: 8px; border-radius: 50%; }
-.dot.ok { background: var(--success); }
-.dot.bad { background: var(--error); }
 
-/* --- Table --- */
+/* 成功/运行状态 - 增强对比度 */
+.pill-green {
+    background: rgba(22, 163, 74, 0.15);   /* 加深背景 */
+    color: #15803D;                        /* 深绿色文本 */
+    border-color: rgba(22, 163, 74, 0.3);
+}
+.theme-dark .pill-green {
+    background: rgba(22, 163, 74, 0.2);
+    color: #4ADE80;                        /* 亮绿色文本 */
+    border-color: rgba(22, 163, 74, 0.4);
+}
+
+/* 错误/失败状态 */
+.pill-red {
+    background: rgba(220, 38, 38, 0.15);
+    color: #B91C1C;
+    border-color: rgba(220, 38, 38, 0.3);
+}
+.theme-dark .pill-red {
+    background: rgba(220, 38, 38, 0.2);
+    color: #F87171;
+    border-color: rgba(220, 38, 38, 0.4);
+}
+
+/* 信息/队列状态 */
+.pill-blue {
+    background: rgba(14, 165, 233, 0.15);
+    color: #0369A1;
+    border-color: rgba(14, 165, 233, 0.3);
+}
+.theme-dark .pill-blue {
+    background: rgba(14, 165, 233, 0.2);
+    color: #38BDF8;
+    border-color: rgba(14, 165, 233, 0.4);
+}
+
+/* 灰色/中性状态 */
+.pill-gray {
+    background: rgba(100, 116, 139, 0.12);
+    color: #475569;
+    border-color: rgba(100, 116, 139, 0.25);
+}
+.theme-dark .pill-gray {
+    background: rgba(148, 163, 184, 0.15);
+    color: #CBD5E1;
+    border-color: rgba(148, 163, 184, 0.3);
+}
+
+/* 警告状态 */
+.pill-yellow, .pill-warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #D97706;
+    border-color: rgba(245, 158, 11, 0.3);
+}
+.theme-dark .pill-yellow,
+.theme-dark .pill-warning {
+    background: rgba(245, 158, 11, 0.2);
+    color: #FCD34D;
+    border-color: rgba(245, 158, 11, 0.4);
+}
+
+/* 状态点 */
+.dot {
+    width: 10px;                           /* 略微放大 */
+    height: 10px;
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.2); /* 增加外圈 */
+}
+.dot.ok {
+    background: var(--success);
+    box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.2),
+                0 0 8px rgba(22, 163, 74, 0.4);
+}
+.dot.bad {
+    background: var(--error);
+    box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.2),
+                0 0 8px rgba(220, 38, 38, 0.4);
+}
+
+/* --- Table - 增强可读性 --- */
 .table-wrap { overflow: auto; }
-table { width: 100%; border-collapse: separate; border-spacing: 0; }
-th { text-align: left; padding: 10px 12px; color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border-frosted); }
-td { padding: 12px; border-bottom: 1px solid var(--border-frosted); }
+table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+th {
+    text-align: left;
+    padding: 10px 12px;
+    color: var(--text-primary);           /* 改为主文本色 */
+    font-weight: 700;                     /* 增强字重 */
+    font-size: 13px;
+    border-bottom: 2px solid var(--border-frosted); /* 加粗边框 */
+    background: rgba(128,128,128,0.03);   /* 轻微背景 */
+}
+
+td {
+    padding: 12px;
+    border-bottom: 1px solid var(--border-frosted);
+    color: var(--text-primary);           /* 确保文本清晰 */
+    font-size: 14px;
+}
+
+/* 表格行悬停效果 */
+tbody tr {
+    transition: background-color var(--dur-fast) var(--ease);
+}
+
+tbody tr:hover {
+    background-color: rgba(88, 101, 242, 0.05);
+    cursor: pointer;
+}
+
+tbody tr:active {
+    background-color: rgba(88, 101, 242, 0.08);
+}
+
 tr:last-child td { border-bottom: none; }
-code { background: rgba(128,128,128,0.1); padding: 2px 6px; border-radius: 4px; font-family: monospace; }
-pre.json { padding: 12px; border-radius: var(--radius-sm); }
+
+/* 代码和预格式化文本 */
+code {
+    background: rgba(128,128,128,0.12);   /* 加深背景 */
+    color: var(--text-primary);
+    padding: 3px 7px;                     /* 略微增加内边距 */
+    border-radius: 4px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.9em;
+    font-weight: 500;
+    border: 1px solid rgba(128,128,128,0.15);
+}
+
+pre.json {
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    background: rgba(128,128,128,0.08);
+    border: 1px solid var(--border-frosted);
+    overflow-x: auto;
+}
+
+/* 空状态文本 - 统一样式 */
+.empty-state, .empty-cell {
+    color: var(--text-tertiary);
+    text-align: center;
+    padding: 24px 16px;
+    font-style: italic;
+}
+
+/* 标签/标记 */
+.label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);           /* 增强标签可读性 */
+    margin-bottom: 6px;
+    display: block;
+}
+
+.hint, .help {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+}
 /* === END src/styles/aetherium-theme.css (FIXED) === */
 
-/* === Aetherium micro-interactions pack === */
+/* === Aetherium micro-interactions pack - 增强版 === */
 
 /* 1) 主要按钮/状态胶囊轻微律动 */
 @keyframes aether-glow-pulse {
@@ -179,9 +476,37 @@ pre.json { padding: 12px; border-radius: var(--radius-sm); }
 .reveal { opacity: 0; transform: translateY(8px); transition: opacity .5s var(--ease), transform .5s var(--ease); }
 .reveal-in { opacity: 1; transform: none; }
 
-/* 3) 按住进度（Run/Pause按钮底部进度条） */
+/* 3) 按钮涟漪效果 */
+.btn {
+    overflow: hidden;
+    position: relative;
+}
+
+.btn::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s, height 0.6s;
+}
+
+.btn:active::before {
+    width: 300px;
+    height: 300px;
+    transition: width 0s, height 0s;
+}
+
+/* 4) 按住进度（Run/Pause按钮底部进度条） */
 /* --- Hold progress: track + fill（主按钮用白色条，幽灵按钮用主题色） --- */
-.hold-btn { position: relative; overflow: hidden; }
+.hold-btn {
+    position: relative;
+    overflow: hidden;
+}
 
 /* 轨道（淡色，始终可见） */
 .hold-btn::before {
@@ -222,13 +547,7 @@ pre.json { padding: 12px; border-radius: var(--radius-sm); }
     --hold-track: rgba(88,101,242,.25);
 }
 
-/* 动效减少时不显示动画 */
-@media (prefers-reduced-motion: reduce) {
-    .hold-btn::after { transition: none; }
-}
-
-
-/* 4) 卡片悬停轻浮 */
+/* 5) 卡片悬停轻浮 - 增强反馈 */
 .card-floaty, .task-card, .kpi-card {
     transition: transform .25s var(--ease), box-shadow .25s var(--ease);
     will-change: transform;
@@ -237,11 +556,41 @@ pre.json { padding: 12px; border-radius: var(--radius-sm); }
     transform: translateY(-3px);
     box-shadow: 0 10px 24px rgba(0,0,0,.08), var(--shadow-glow);
 }
+.card-floaty:active, .task-card:active, .kpi-card:active {
+    transform: translateY(-1px) scale(0.99);
+    transition: transform .1s var(--ease);
+}
 
-/* 5) 尊重“减少动态”偏好 */
+/* 6) 链接和可点击元素反馈 */
+a, .clickable {
+    position: relative;
+    transition: color var(--dur-fast) var(--ease);
+}
+
+a:hover, .clickable:hover {
+    color: var(--primary-accent);
+}
+
+a:active, .clickable:active {
+    transform: scale(0.98);
+}
+
+/* 7) 输入框聚焦增强 */
+.input:focus, .select:focus, textarea:focus {
+    transform: scale(1.01);
+    transition: all var(--dur-fast) var(--ease-bounce);
+}
+
+/* 8) 尊重"减少动态"偏好 */
 @media (prefers-reduced-motion: reduce) {
     .btn-primary.pulse, .pill-green.pulse, .pill-blue.pulse { animation: none !important; }
     .reveal { transition: none !important; opacity: 1 !important; transform: none !important; }
+    .hold-btn::after { transition: none; }
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }
 
 
