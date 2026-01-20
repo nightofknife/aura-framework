@@ -26,6 +26,20 @@ class ObservabilityService:
         self._obs_delayed: Dict[str, Dict[str, Any]] = {}
         self._obs_runs_by_trace: Dict[str, str] = {}
 
+        # ✅ NEW: 已完成任务的历史记录（选项3）
+        self._obs_completed: Dict[str, Dict[str, Any]] = {}
+
+        # ✅ NEW: TTL清理配置（选项4）
+        # 已完成任务保留时间（秒），默认30分钟
+        self.completed_task_ttl = int(get_config_value("observability.completed_task_ttl", 1800))
+        # 清理间隔（秒），默认5分钟
+        self.cleanup_interval = int(get_config_value("observability.cleanup_interval", 300))
+        # 最大保留的已完成任务数量，默认1000
+        self.max_completed_tasks = int(get_config_value("observability.max_completed_tasks", 1000))
+
+        # 后台清理任务
+        self._cleanup_task: Optional[asyncio.Task] = None
+
         runs_dir_cfg = get_config_value(
             "observability.runs.dir",
             str(base_path / "logs" / "runs"),
@@ -204,6 +218,12 @@ class ObservabilityService:
                     run["queue_wait_ms"] = p.get("queue_wait_ms")
                 if p.get("duration_ms") is not None:
                     run["duration_ms"] = int(p.get("duration_ms") or 0)
+
+                # ✅ NEW: 将完成的任务从运行队列移动到已完成队列（选项3）
+                # 添加完成时间戳用于TTL清理
+                run["completed_timestamp"] = time.time()
+                self._obs_completed[cid] = run
+                self._obs_runs.pop(cid, None)
 
                 persist_event = True
                 run_snapshot = run
@@ -543,7 +563,12 @@ class ObservabilityService:
             cid = cid_or_trace
             if cid_or_trace in self._obs_runs_by_trace:
                 cid = self._obs_runs_by_trace.get(cid_or_trace, cid_or_trace)
+
+            # ✅ NEW: 先从运行队列查找，再从已完成队列查找
             run = self._obs_runs.get(cid)
+            if not run:
+                run = self._obs_completed.get(cid)
+
             if not run:
                 return {}
             return {
@@ -617,7 +642,11 @@ class ObservabilityService:
         results = []
         with self._lock:
             for cid in cids:
+                # ✅ NEW: 先从运行队列查找，再从已完成队列查找
                 run_data = self._obs_runs.get(cid)
+                if not run_data:
+                    run_data = self._obs_completed.get(cid)
+
                 if run_data:
                     results.append(
                         {
@@ -644,3 +673,85 @@ class ObservabilityService:
                     )
 
         return results
+
+    # ========== ✅ NEW: TTL清理方法（选项4） ==========
+
+    def _cleanup_completed_tasks(self):
+        """清理过期的已完成任务（基于TTL和数量限制）。"""
+        now = time.time()
+        removed_count = 0
+
+        with self._lock:
+            # 1. 基于TTL清理
+            expired_cids = [
+                cid for cid, run in self._obs_completed.items()
+                if now - run.get("completed_timestamp", 0) > self.completed_task_ttl
+            ]
+            for cid in expired_cids:
+                self._obs_completed.pop(cid, None)
+                removed_count += 1
+
+            # 2. 基于数量限制清理（保留最新的N个）
+            if len(self._obs_completed) > self.max_completed_tasks:
+                # 按完成时间排序，删除最旧的
+                sorted_items = sorted(
+                    self._obs_completed.items(),
+                    key=lambda x: x[1].get("completed_timestamp", 0),
+                    reverse=True
+                )
+                # 保留前 max_completed_tasks 个
+                to_keep = dict(sorted_items[:self.max_completed_tasks])
+                removed = len(self._obs_completed) - len(to_keep)
+                self._obs_completed = to_keep
+                removed_count += removed
+
+        if removed_count > 0:
+            logger.debug(f"[ObservabilityService] Cleaned up {removed_count} completed tasks")
+
+    async def _cleanup_loop(self):
+        """后台清理循环任务。"""
+        logger.info(f"[ObservabilityService] Cleanup loop started (interval={self.cleanup_interval}s, ttl={self.completed_task_ttl}s)")
+        try:
+            while True:
+                await asyncio.sleep(self.cleanup_interval)
+                self._cleanup_completed_tasks()
+        except asyncio.CancelledError:
+            logger.info("[ObservabilityService] Cleanup loop cancelled")
+            raise
+
+    def start_cleanup_task(self):
+        """启动后台清理任务。"""
+        if self._cleanup_task is None or self._cleanup_task.done():
+            try:
+                self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+                logger.info("[ObservabilityService] Cleanup task started")
+            except RuntimeError:
+                # 如果没有运行的事件循环，记录警告
+                logger.warning("[ObservabilityService] Cannot start cleanup task: no running event loop")
+
+    async def stop_cleanup_task(self):
+        """停止后台清理任务。"""
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("[ObservabilityService] Cleanup task stopped")
+
+    # ========== ✅ NEW: 前端查询API（选项3扩展） ==========
+
+    def get_completed_runs(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """获取已完成任务列表（按完成时间倒序）。"""
+        with self._lock:
+            sorted_runs = sorted(
+                self._obs_completed.values(),
+                key=lambda x: x.get("completed_timestamp", 0),
+                reverse=True
+            )
+            return sorted_runs[:limit]
+
+    def get_running_runs(self) -> List[Dict[str, Any]]:
+        """获取正在运行的任务列表。"""
+        with self._lock:
+            return list(self._obs_runs.values())

@@ -133,6 +133,20 @@ class ResourceMapping:
 
 
 @dataclass
+class TaskConfiguration:
+    """任务目录配置"""
+    task_paths: List[str] = field(default_factory=lambda: ["tasks"])
+
+    def validate(self):
+        """验证任务路径配置"""
+        if not self.task_paths:
+            raise ValueError("task_paths cannot be empty")
+        for path in self.task_paths:
+            if '..' in path or path.startswith('/') or path.startswith('\\'):
+                raise ValueError(f"Invalid task path: {path}")
+
+
+@dataclass
 class PluginManifest:
     """插件清单"""
     package: PackageInfo
@@ -147,6 +161,7 @@ class PluginManifest:
     resources: ResourceMapping = field(default_factory=ResourceMapping)
     build: BuildConfig = field(default_factory=BuildConfig)
     trust: TrustInfo = field(default_factory=TrustInfo)
+    task_config: TaskConfiguration = field(default_factory=TaskConfiguration)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     # 插件路径（加载时填充）

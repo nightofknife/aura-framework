@@ -42,15 +42,28 @@ class TaskLoader:
     _file_locks: Dict[str, threading.RLock] = {}
     _locks_lock = threading.Lock()  # 保护_file_locks字典的锁
 
-    def __init__(self, plan_name: str, plan_path: Path):
+    def __init__(self, plan_name: str, plan_path: Path, manifest: Optional[Any] = None):
         """初始化任务加载器。
 
         Args:
             plan_name (str): 所属 Plan 的名称。
             plan_path (Path): 所属 Plan 的根目录路径。
+            manifest (Optional[Manifest]): 可选的 Manifest 对象，用于配置任务目录。
         """
         self.plan_name = plan_name
-        self.tasks_dir = plan_path / "tasks"
+
+        # ✅ 支持多任务目录配置
+        if manifest and hasattr(manifest, 'task_config'):
+            self.task_paths = [plan_path / p for p in manifest.task_config.task_paths]
+        else:
+            self.task_paths = [plan_path / "tasks"]
+
+        # 过滤出实际存在的目录
+        self.task_paths = [p for p in self.task_paths if p.is_dir()]
+
+        # 保留 tasks_dir 用于向后兼容（指向第一个任务目录）
+        self.tasks_dir = self.task_paths[0] if self.task_paths else plan_path / "tasks"
+
         cache_maxsize = int(get_config_value("task_loader.cache_maxsize", 1024))
         cache_ttl = int(get_config_value("task_loader.cache_ttl_sec", 300))
         self.cache = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
@@ -151,6 +164,8 @@ class TaskLoader:
         此方法能处理多级目录结构，例如 `subdir/mytask` 会被解析为
         在 `tasks/subdir.yaml` 文件中寻找 `mytask` 这个键。
 
+        ✅ 新增：支持在多个任务目录中查找任务。
+
         Args:
             task_name_in_plan (str): 任务在 Plan 内的相对名称
                 (e.g., "main_task" or "sub/other_task")。
@@ -163,36 +178,40 @@ class TaskLoader:
             return None
 
         task_key = parts[-1]
+        attempts = []
 
-        # 优先尝试完整路径文件：tasks/a/b/c.yaml
-        direct_path = self.tasks_dir.joinpath(*parts).with_suffix(".yaml")
-        if direct_path.is_file():
-            direct_data = self._load_and_parse_file(direct_path)
-            if isinstance(direct_data, dict):
-                if isinstance(direct_data.get('steps'), (list, dict)):
-                    return self._normalize_task_concurrency(direct_data)
-                task_data = direct_data.get(task_key)
+        # ✅ 在所有配置的任务目录中查找
+        for task_dir in self.task_paths:
+            # 优先尝试完整路径文件：tasks/a/b/c.yaml
+            direct_path = task_dir.joinpath(*parts).with_suffix(".yaml")
+            if direct_path.is_file():
+                direct_data = self._load_and_parse_file(direct_path)
+                if isinstance(direct_data, dict):
+                    if isinstance(direct_data.get('steps'), (list, dict)):
+                        return self._normalize_task_concurrency(direct_data)
+                    task_data = direct_data.get(task_key)
+                    if isinstance(task_data, dict) and 'steps' in task_data:
+                        return self._normalize_task_concurrency(task_data)
+
+            # 兼容旧规则：tasks/a/b.yaml 内的 key=c
+            file_path_parts = parts[:-1]
+            if not file_path_parts:
+                file_path_parts.append(task_key)
+            file_path = task_dir.joinpath(*file_path_parts).with_suffix(".yaml")
+            if file_path.is_file():
+                all_tasks_in_file = self._load_and_parse_file(file_path)
+                task_data = all_tasks_in_file.get(task_key)
                 if isinstance(task_data, dict) and 'steps' in task_data:
                     return self._normalize_task_concurrency(task_data)
+                if isinstance(all_tasks_in_file, dict) and isinstance(all_tasks_in_file.get('steps'), (list, dict)):
+                    return self._normalize_task_concurrency(all_tasks_in_file)
 
-        # 兼容旧规则：tasks/a/b.yaml 内的 key=c
-        file_path_parts = parts[:-1]
-        if not file_path_parts:
-            file_path_parts.append(task_key)
-        file_path = self.tasks_dir.joinpath(*file_path_parts).with_suffix(".yaml")
-        if file_path.is_file():
-            all_tasks_in_file = self._load_and_parse_file(file_path)
-            task_data = all_tasks_in_file.get(task_key)
-            if isinstance(task_data, dict) and 'steps' in task_data:
-                return self._normalize_task_concurrency(task_data)
-            if isinstance(all_tasks_in_file, dict) and isinstance(all_tasks_in_file.get('steps'), (list, dict)):
-                return self._normalize_task_concurrency(all_tasks_in_file)
+            # 记录尝试的路径
+            if direct_path:
+                attempts.append(str(direct_path))
+            if file_path and str(file_path) not in attempts:
+                attempts.append(str(file_path))
 
-        attempts = []
-        if direct_path:
-            attempts.append(str(direct_path))
-        if file_path and str(file_path) not in attempts:
-            attempts.append(str(file_path))
         logger.warning(
             f"在方案 '{self.plan_name}' 中找不到任务定义: '{task_name_in_plan}' "
             f"(尝试路径: {', '.join(attempts)})"
@@ -287,27 +306,32 @@ class TaskLoader:
     def get_all_task_definitions(self) -> Dict[str, Any]:
         """获取此 Plan 下所有已发现的任务定义。
 
+        ✅ 新增：支持从多个任务目录中扫描任务。
+
         Returns:
             一个字典，键是任务在 Plan 内的完整名称，值是任务定义。
         """
         all_definitions = {}
-        if not self.tasks_dir.is_dir():
-            return {}
 
-        for task_file_path in self.tasks_dir.rglob("*.yaml"):
-            all_tasks_in_file = self._load_and_parse_file(task_file_path)
-            relative_path_str = task_file_path.relative_to(self.tasks_dir).with_suffix('').as_posix()
-
-            if isinstance(all_tasks_in_file, dict) and isinstance(all_tasks_in_file.get('steps'), (list, dict)):
-                all_definitions[relative_path_str] = all_tasks_in_file
+        # ✅ 在所有配置的任务目录中扫描
+        for task_dir in self.task_paths:
+            if not task_dir.is_dir():
                 continue
 
-            for task_key, task_definition in all_tasks_in_file.items():
-                if isinstance(task_definition, dict) and 'steps' in task_definition:
-                    task_id = f"{relative_path_str}/{task_key}"
-                    all_definitions[task_id] = task_definition
-                    if task_key == Path(relative_path_str).name:
-                        all_definitions.setdefault(relative_path_str, task_definition)
+            for task_file_path in task_dir.rglob("*.yaml"):
+                all_tasks_in_file = self._load_and_parse_file(task_file_path)
+                relative_path_str = task_file_path.relative_to(task_dir).with_suffix('').as_posix()
+
+                if isinstance(all_tasks_in_file, dict) and isinstance(all_tasks_in_file.get('steps'), (list, dict)):
+                    all_definitions[relative_path_str] = all_tasks_in_file
+                    continue
+
+                for task_key, task_definition in all_tasks_in_file.items():
+                    if isinstance(task_definition, dict) and 'steps' in task_definition:
+                        task_id = f"{relative_path_str}/{task_key}"
+                        all_definitions[task_id] = task_definition
+                        if task_key == Path(relative_path_str).name:
+                            all_definitions.setdefault(relative_path_str, task_definition)
 
         return all_definitions
 

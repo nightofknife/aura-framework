@@ -13,7 +13,7 @@ from .schema import (
     PluginManifest, PackageInfo, DependencySpec,
     Exports, ExportedService, ExportedAction, ExportedTask,
     LifecycleHooks, BuildConfig, TrustInfo,
-    ConfigurationSpec, ResourceMapping
+    ConfigurationSpec, ResourceMapping, TaskConfiguration
 )
 
 
@@ -68,6 +68,13 @@ class ManifestParser:
         # 解析信任信息
         trust = TrustInfo(**data.get("trust", {}))
 
+        # 解析任务配置
+        task_config_data = data.get("task_paths", ["tasks"])
+        task_config = TaskConfiguration(
+            task_paths=task_config_data if isinstance(task_config_data, list) else ["tasks"]
+        )
+        task_config.validate()
+
         return PluginManifest(
             package=package,
             requires=data.get("requires", {}),
@@ -81,6 +88,7 @@ class ManifestParser:
             resources=resources,
             build=build,
             trust=trust,
+            task_config=task_config,
             metadata=data.get("metadata", {}),
             path=manifest_path.parent
         )

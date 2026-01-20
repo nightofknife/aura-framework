@@ -67,7 +67,11 @@ class Orchestrator:
         self.plan_name = plan_name
         self.current_plan_path = Path(base_dir) / 'plans' / plan_name
         self.pause_event = pause_event
-        self.task_loader = TaskLoader(self.plan_name, self.current_plan_path)
+
+        # ✅ 从 loaded_package 中获取 manifest（如果有）
+        manifest = loaded_package.manifest if loaded_package and hasattr(loaded_package, 'manifest') else None
+        self.task_loader = TaskLoader(self.plan_name, self.current_plan_path, manifest)
+
         self.state_planner = state_planner
         self.event_bus = service_registry.get_service_instance('event_bus')
         self.state_store: StateStoreService = service_registry.get_service_instance('state_store')
@@ -130,7 +134,7 @@ class Orchestrator:
         """加载任务文件并返回其中的所有任务定义。
 
         Args:
-            task_file_path: 任务文件路径，相对于 plan 根目录，如 "tasks/test/draw_one_star.yaml"
+            task_file_path: 任务文件路径，相对于 plan 根目录，如 "tasks/test/draw_one_star" 或 "tasks/test/draw_one_star.yaml"
 
         Returns:
             包含任务定义的字典，键为任务名，值为任务数据
@@ -138,8 +142,14 @@ class Orchestrator:
         Raises:
             ValueError: 如果文件不存在或格式错误
         """
+        # ✅ 为文件系统操作准备路径（添加 .yaml 后缀如果需要）
+        # 注意：这不会影响调用者的 task_file_path 参数（字符串不可变）
+        file_path_for_loading = task_file_path
+        if not file_path_for_loading.endswith('.yaml'):
+            file_path_for_loading = file_path_for_loading + '.yaml'
+
         # 构建完整文件路径
-        full_path = self.current_plan_path / task_file_path
+        full_path = self.current_plan_path / file_path_for_loading
 
         # 安全检查：确保文件在 plan 目录内
         try:
@@ -207,35 +217,52 @@ class Orchestrator:
                 f"Please use 'task_file_path' and 'task_key' instead."
             )
 
-            # 转换旧格式到新格式
-            # 旧格式: "test/draw_one_star/draw_one_star" 或 "test/draw_one_star"
-            # 新格式: task_file_path="tasks/test/draw_one_star.yaml", task_key="draw_one_star" 或 None
+            # 检测是新格式（冒号分隔）还是旧格式（斜杠分隔）
+            if ':' in task_name_in_plan:
+                # 新格式: "tasks:test:draw_one_star" 或 "tasks:test:example.yaml:custom"
+                # 使用 TaskReference 进行转换
+                from packages.aura_core.types import TaskReference
 
-            parts = task_name_in_plan.split('/')
+                task_ref = TaskReference.from_string(task_name_in_plan, default_package=self.plan_name)
 
-            if len(parts) >= 2:
-                # 检查最后一部分是否是任务键名（通常与倒数第二部分相同）
-                # 例如: "test/draw_one_star/draw_one_star" -> 最后的 draw_one_star 是任务键
-                if len(parts) >= 3 and parts[-1] == parts[-2]:
-                    # 有重复，最后一个是任务键名
-                    task_key = parts[-1]
-                    file_path_parts = parts[:-1]  # 去掉最后的任务键名
-                else:
-                    # 没有重复，整个路径都是文件路径
-                    task_key = None
-                    file_path_parts = parts
+                # 转换为文件路径格式
+                task_file_path = task_ref.task_path.replace(':', '/')
 
-                # 构建文件路径：添加 "tasks" 前缀和 ".yaml" 后缀
-                task_file_path = "tasks/" + "/".join(file_path_parts) + ".yaml"
+                # 提取任务键（如果有）
+                task_key = task_ref.task_key
+
+                logger.debug(
+                    f"Converted new colon format: '{task_name_in_plan}' -> "
+                    f"file='{task_file_path}', key='{task_key}'"
+                )
             else:
-                # 单级路径，直接转换
-                task_file_path = f"tasks/{task_name_in_plan}.yaml"
-                task_key = None
+                # 旧格式: "test/draw_one_star/draw_one_star" 或 "test/draw_one_star"
+                # 保持原有的斜杠格式转换逻辑
+                parts = task_name_in_plan.split('/')
 
-            logger.debug(
-                f"Converted legacy format: '{task_name_in_plan}' -> "
-                f"file='{task_file_path}', key='{task_key}'"
-            )
+                if len(parts) >= 2:
+                    # 检查最后一部分是否是任务键名（通常与倒数第二部分相同）
+                    # 例如: "test/draw_one_star/draw_one_star" -> 最后的 draw_one_star 是任务键
+                    if len(parts) >= 3 and parts[-1] == parts[-2]:
+                        # 有重复，最后一个是任务键名
+                        task_key = parts[-1]
+                        file_path_parts = parts[:-1]  # 去掉最后的任务键名
+                    else:
+                        # 没有重复，整个路径都是文件路径
+                        task_key = None
+                        file_path_parts = parts
+
+                    # 构建文件路径：添加 "tasks" 前缀和 ".yaml" 后缀
+                    task_file_path = "tasks/" + "/".join(file_path_parts) + ".yaml"
+                else:
+                    # 单级路径，直接转换
+                    task_file_path = f"tasks/{task_name_in_plan}.yaml"
+                    task_key = None
+
+                logger.debug(
+                    f"Converted legacy slash format: '{task_name_in_plan}' -> "
+                    f"file='{task_file_path}', key='{task_key}'"
+                )
 
         if not task_file_path:
             raise ValueError("Either 'task_file_path' or 'task_name_in_plan' must be provided.")
@@ -294,23 +321,39 @@ class Orchestrator:
             if not task_file_data:
                 raise ValueError(f"Task file not found: {task_file_path}")
 
-            # 选择任务键
+            # ✅ 三种任务查找逻辑（基于文件后缀语义）
+            # 1. 显式任务键: task_key 参数已指定
+            # 2. 同名任务: task_file_path 以 .yaml 结尾且没有指定 task_key
+            # 3. 第一个任务: task_file_path 不以 .yaml 结尾
+
+            def has_yaml_suffix(path: str) -> bool:
+                """检查路径是否以.yaml结尾（且不包含.yaml:）"""
+                return path.endswith('.yaml')
+
             if task_key:
-                # 指定了任务键，直接获取
+                # 情况1: 显式指定任务键
                 task_data = task_file_data.get(task_key)
                 if not task_data:
-                    available_keys = list(task_file_data.keys())
                     raise ValueError(
-                        f"Task key '{task_key}' not found in file '{task_file_path}'. "
-                        f"Available keys: {available_keys}"
+                        f"Task '{task_key}' not found in file '{task_file_path}'"
                     )
+            elif has_yaml_suffix(task_file_path):
+                # 情况2: 有.yaml后缀 → 执行同名任务
+                # 从文件路径提取文件名作为任务键
+                filename = task_file_path.replace('.yaml', '').split('/')[-1]
+                task_data = task_file_data.get(filename)
+                if not task_data:
+                    raise ValueError(
+                        f"Task '{filename}' not found in file '{task_file_path}'"
+                    )
+                task_key = filename  # 更新task_key以便后续使用
             else:
-                # 未指定任务键，使用第一个任务
+                # 情况3: 无.yaml后缀 → 执行第一个任务
                 if not task_file_data:
                     raise ValueError(f"Task file '{task_file_path}' is empty")
                 task_key = list(task_file_data.keys())[0]
                 task_data = task_file_data[task_key]
-                logger.debug(f"No task_key specified, using first task: '{task_key}'")
+                logger.debug(f"No .yaml suffix, using first task: '{task_key}'")
 
             # 构建标准化的任务ID，去掉 'tasks/' 前缀和 '.yaml' 后缀
             # tasks/test/draw_one_star.yaml + draw_one_star -> MyTestPlan/test/draw_one_star/draw_one_star

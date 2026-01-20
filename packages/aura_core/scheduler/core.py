@@ -285,6 +285,10 @@ class Scheduler:
                     tg.create_task(self._event_worker_loop(i + 1))
                 tg.create_task(self.scheduling_service.run())
                 tg.create_task(self.interrupt_service.run())
+
+                # ✅ NEW: 启动 ObservabilityService 的清理任务
+                self.observability.start_cleanup_task()
+
                 self.file_watcher_service.start()
                 logger.info("所有核心后台服务已启动，向主线程发出信号。")
                 self.startup_complete_event.set()
@@ -292,6 +296,10 @@ class Scheduler:
             logger.info("调度器主任务被取消，正在优雅关闭...")
         finally:
             self.is_running.clear()
+
+            # ✅ NEW: 停止 ObservabilityService 的清理任务
+            await self.observability.stop_cleanup_task()
+
             self.file_watcher_service.stop()
             self._loop = None
             self._main_task = None

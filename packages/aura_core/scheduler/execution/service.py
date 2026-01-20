@@ -130,11 +130,21 @@ class ExecutionService:
                 orchestrator = self._scheduler.plan_manager.get_plan(plan_name)
                 if not orchestrator:
                     return {"status": "error", "message": f"Plan '{plan_name}' not found or not loaded."}
-                if orchestrator.task_loader.get_task_data(task_name) is None:
-                    return {"status": "error", "message": f"Task '{task_name}' not found in plan '{plan_name}'."}
+
+                # ✅ 使用 TaskReference 转换任务名称格式
+                from packages.aura_core.types import TaskReference
+                try:
+                    task_ref = TaskReference.from_string(task_name, default_package=plan_name)
+                    loader_path = task_ref.as_loader_path()
+                except Exception as e:
+                    return {"status": "error", "message": f"Invalid task reference '{task_name}': {e}"}
+
+                # 检查任务是否存在
+                if orchestrator.task_loader.get_task_data(loader_path) is None:
+                    return {"status": "error", "message": f"在方案 '{plan_name}' 中找不到任务定义: '{task_name}'"}
 
                 full_task_id = convert_task_reference_to_id(plan_name, task_name)
-                task_def = self._scheduler.all_tasks_definitions.get(full_task_id) or orchestrator.task_loader.get_task_data(task_name)
+                task_def = self._scheduler.all_tasks_definitions.get(full_task_id) or orchestrator.task_loader.get_task_data(loader_path)
                 if not task_def:
                     return {"status": "error", "message": f"Task '{task_name}' not found in plan '{plan_name}'."}
 

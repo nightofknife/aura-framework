@@ -206,40 +206,16 @@ class ActionInjector:
             task_path = task_name
 
         # 步骤2: 解析 task_path（使用 : 分隔）
-        # 检查是否包含 .yaml
-        if '.yaml' not in task_path:
-            # 语法糖：自动添加 .yaml
-            task_path = task_path + '.yaml'
-            task_key = None
-            logger.debug(f"Applied syntax sugar: '{task_name}' -> '{task_path}'")
-        else:
+        # ❌ 移除自动添加 .yaml 的语法糖（改变了文件后缀语义）
+        # 检查是否包含显式任务键
+        if '.yaml:' in task_path:
             # 分离文件路径和任务键
-            parts = task_path.split(':')
-
-            # 找到包含 .yaml 的部分
-            yaml_index = -1
-            for i, part in enumerate(parts):
-                if '.yaml' in part:
-                    yaml_index = i
-                    break
-
-            if yaml_index == -1:
-                raise ValueError(f"Task path must include .yaml file: {task_path}")
-
-            # 提取文件路径部分和任务键
-            file_parts = parts[:yaml_index + 1]
-
-            # 任务键（如果有）
-            if len(parts) > yaml_index + 1:
-                task_key = parts[yaml_index + 1]
-
-                # 检查：不允许使用语法糖 + 任务键
-                # 这个检查已经通过上面的逻辑保证了
-            else:
-                task_key = None
-
-            # 重建 task_path
-            task_path = ':'.join(file_parts)
+            path_and_key = task_path.rsplit('.yaml:', 1)
+            task_path = path_and_key[0] + '.yaml'
+            task_key = path_and_key[1]
+        else:
+            # 保持原样，不添加任何后缀
+            task_key = None
 
         # 步骤3: 转换为文件路径
         # "tasks:test:draw_one_star.yaml" -> "tasks/test/draw_one_star.yaml"

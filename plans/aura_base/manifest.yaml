@@ -361,6 +361,8 @@ configuration:
   user_template: null
   allow_user_override: true
   merge_strategy: merge
+task_paths:
+  - tasks
 resources:
   templates: {}
   data: {}
