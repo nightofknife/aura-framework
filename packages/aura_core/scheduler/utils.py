@@ -174,37 +174,42 @@ def convert_task_reference_to_id(plan_name: str, task_ref: str) -> str:
     # 新格式: tasks:path1:path2:file 或 tasks:path1:path2:file:task_key
     parts = task_ref.split(':')
 
-    # 移除 "tasks" 前缀（如果存在）
+    # Remove leading 'tasks' segment if present
     if parts[0] == 'tasks':
         parts = parts[1:]
 
-    # 如果为空，返回原格式
+    # Empty path fallback
     if not parts:
         return f"{plan_name}/{task_ref}"
 
-    # 检查最后一个部分是否包含 .yaml
-    last_part = parts[-1]
+    # Locate explicit .yaml segment (file name)
+    yaml_index = None
+    for idx, part in enumerate(parts):
+        if part.endswith('.yaml'):
+            yaml_index = idx
+            break
 
-    if '.yaml' in last_part:
-        # 格式: tasks:path:file.yaml 或 tasks:path:file.yaml:task_key
-        if len(parts) > 1 and not last_part.endswith('.yaml'):
-            # tasks:path:file.yaml:task_key
-            task_key = last_part
-            file_parts = parts[:-1]
-            file_parts[-1] = file_parts[-1].replace('.yaml', '')
-            path = '/'.join(file_parts)
+    if yaml_index is not None:
+        # tasks:path:file.yaml or tasks:path:file.yaml:task_key
+        file_parts = parts[:yaml_index + 1]
+        file_parts[-1] = file_parts[-1].replace('.yaml', '')
+        path = '/'.join(file_parts)
+        if yaml_index + 1 < len(parts):
+            task_key = parts[-1]
             return f"{plan_name}/{path}/{task_key}"
-        else:
-            # tasks:path:file.yaml
-            file_parts = parts.copy()
-            file_parts[-1] = file_parts[-1].replace('.yaml', '')
-            path = '/'.join(file_parts)
-            # 假设任务键与文件名相同
-            task_key = file_parts[-1]
+        # Default to same-name task key
+        task_key = file_parts[-1]
+        return f"{plan_name}/{path}/{task_key}"
+
+    # No .yaml: treat last segment as task key
+    if len(parts) >= 2:
+        if len(parts) > 2:
+            path = '/'.join(parts[:-1])
+            task_key = parts[-1]
             return f"{plan_name}/{path}/{task_key}"
-    else:
-        # 格式: tasks:path:file（语法糖，省略了.yaml）
-        # 假设任务键与文件名相同
         path = '/'.join(parts)
         task_key = parts[-1]
         return f"{plan_name}/{path}/{task_key}"
+
+    # Single segment fallback
+    return f"{plan_name}/{parts[0]}/{parts[0]}"

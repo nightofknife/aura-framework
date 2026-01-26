@@ -66,7 +66,7 @@ class ConfigService:
         logger.info("ConfigService v4.0 (Context Isolation) 已初始化。")
 
     def load_environment_configs(self, base_path: Path):
-        # ... 此方法内容不变 ...
+
         try:
             from dotenv import load_dotenv
             dotenv_path = base_path / '.env'
@@ -131,7 +131,7 @@ class ConfigService:
         except KeyError:
             return default
 
-    # ... _set_nested_key 和 _deep_merge 方法保持不变，尽管 _deep_merge 不再被 register_plan_config 使用 ...
+
     def _set_nested_key(self, d: dict, key_path: str, value: Any):
         keys = key_path.split('.')
         for key in keys[:-1]:

@@ -5,10 +5,12 @@
 """
 
 import asyncio
+import inspect
 import threading
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Dict, Any, Iterable
 from packages.aura_core.observability.logging.core_logger import logger
 from packages.aura_core.observability.events import Event
+from packages.aura_core.api.registries import service_registry
 
 if TYPE_CHECKING:
     from .core import Scheduler
@@ -104,6 +106,8 @@ class LifecycleManager:
         if hasattr(self.scheduler, 'ui_bridge'):
             self.scheduler.ui_bridge.push_update('master_status_update', {"is_running": True})
 
+        self._schedule_service_preload()
+
     def stop(self):
         """停止调度器及所有后台服务
 
@@ -149,6 +153,26 @@ class LifecycleManager:
                     logger.info("scheduler.stopping 事件发布成功")
                 except Exception as e:
                     logger.error(f"发布 scheduler.stopping 事件失败: {e}")
+
+                # ✅ 修复内存泄漏：清理所有事件订阅
+                try:
+                    logger.info("正在清理事件总线订阅...")
+                    cleanup_future = asyncio.run_coroutine_threadsafe(
+                        self.scheduler.event_bus.clear_subscriptions(keep_persistent=False),
+                        self._loop
+                    )
+                    cleanup_future.result(timeout=5)
+
+                    # 获取清理后的统计信息
+                    stats = self.scheduler.event_bus.get_stats()
+                    logger.info(
+                        f"事件订阅已清理完成。剩余订阅: {stats['total_subscriptions']} "
+                        f"(持久: {stats['persistent_subscriptions']}, 临时: {stats['transient_subscriptions']})"
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("清理事件订阅超时")
+                except Exception as e:
+                    logger.error(f"清理事件订阅失败: {e}", exc_info=True)
 
             # 请求停止
             if self._loop:  # ✅ 添加检查：确保事件循环存在
@@ -243,6 +267,118 @@ class LifecycleManager:
             logger.critical(f"调度器主事件循环崩溃: {e}", exc_info=True)
         finally:
             self._cleanup_resources()
+
+    def _schedule_service_preload(self) -> None:
+        if not self._loop or not self._loop.is_running():
+            logger.warning("Service preload skipped: event loop not ready.")
+            return
+
+        config_service = None
+        try:
+            config_service = service_registry.get_service_instance('config')
+        except Exception:
+            config_service = None
+
+        services_cfg = config_service.get('services', {}) if config_service else {}
+        preload_cfg = services_cfg.get('preload', {}) if isinstance(services_cfg, dict) else {}
+        enabled = bool(preload_cfg.get('enabled', False))
+        warmup_default = bool(preload_cfg.get('warmup', False))
+        configured_targets = preload_cfg.get('targets', []) or []
+        target_list = []
+        seen = set()
+        if isinstance(configured_targets, list):
+            for item in configured_targets:
+                if isinstance(item, str) and item not in seen:
+                    target_list.append(item)
+                    seen.add(item)
+
+        if isinstance(services_cfg, dict):
+            for name, svc_cfg in services_cfg.items():
+                if name == 'preload' or not isinstance(svc_cfg, dict):
+                    continue
+                if svc_cfg.get('lazy_load') is False or svc_cfg.get('preload_on_start'):
+                    if name not in seen:
+                        target_list.append(name)
+                        seen.add(name)
+
+        if not target_list:
+            return
+
+        async def _runner():
+            await self._preload_services(
+                targets=target_list,
+                enabled=enabled,
+                warmup_default=warmup_default,
+                config_service=config_service,
+            )
+
+        asyncio.run_coroutine_threadsafe(_runner(), self._loop)
+
+    async def _preload_services(
+        self,
+        *,
+        targets: Iterable[str],
+        enabled: bool,
+        warmup_default: bool,
+        config_service: Any,
+    ) -> None:
+        for name in targets:
+            svc_cfg = config_service.get(f"services.{name}", {}) if config_service else {}
+            if not isinstance(svc_cfg, dict):
+                svc_cfg = {}
+            lazy_load = svc_cfg.get('lazy_load', True)
+            preload_on_start = svc_cfg.get('preload_on_start', False)
+            warmup = bool(svc_cfg.get('warmup', warmup_default))
+
+            should_preload = enabled or preload_on_start or (lazy_load is False)
+            if not should_preload:
+                continue
+
+            try:
+                service = service_registry.get_service_instance(name)
+            except Exception as exc:
+                logger.warning("Service preload skipped: '%s' not available (%s).", name, exc)
+                continue
+
+            await self._preload_service_instance(name, service, warmup=warmup)
+
+    async def _preload_service_instance(self, name: str, service: Any, *, warmup: bool) -> None:
+        candidates = (
+            ("preload_engine", {"warmup": warmup}),
+            ("preload", {"warmup": warmup}),
+            ("initialize_engine", {}),
+            ("initialize", {}),
+            ("self_check", {}),
+        )
+
+        for method_name, kwargs in candidates:
+            method = getattr(service, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                await self._run_preload_method(method, kwargs)
+                logger.info("Service '%s' preloaded via %s.", name, method_name)
+            except Exception as exc:
+                logger.warning("Service '%s' preload via %s failed: %s", name, method_name, exc)
+            return
+
+        logger.debug("Service '%s' has no preload method, skipping.", name)
+
+    async def _run_preload_method(self, method, kwargs: Dict[str, Any]) -> Any:
+        if inspect.iscoroutinefunction(method):
+            try:
+                return await method(**kwargs)
+            except TypeError:
+                return await method()
+        return await asyncio.to_thread(self._call_preload_method, method, kwargs)
+
+    def _call_preload_method(self, method, kwargs: Dict[str, Any]) -> Any:
+        if not kwargs:
+            return method()
+        try:
+            return method(**kwargs)
+        except TypeError:
+            return method()
 
     def initialize_async_components(self):
         """在事件循环内部初始化所有需要事件循环的组件

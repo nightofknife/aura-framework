@@ -193,9 +193,56 @@ class ScreenService:
         await asyncio.to_thread(self._update_hwnd)
         if self.hwnd:
             try:
+                # 步骤1: 恢复窗口（如果最小化）
                 await asyncio.to_thread(win32gui.ShowWindow, self.hwnd, win32con.SW_RESTORE)
-                await asyncio.to_thread(win32gui.SetForegroundWindow, self.hwnd)
-                return True
+
+                # 步骤2: 强制激活窗口
+                # 使用 AttachThreadInput 技巧来绕过 SetForegroundWindow 的限制
+                import win32process
+                import win32api
+
+                def force_activate_window():
+                    try:
+                        # 获取前台窗口的线程ID
+                        foreground_hwnd = win32gui.GetForegroundWindow()
+                        foreground_thread_id = win32process.GetWindowThreadProcessId(foreground_hwnd)[0]
+
+                        # 获取目标窗口的线程ID
+                        target_thread_id = win32process.GetWindowThreadProcessId(self.hwnd)[0]
+
+                        # 如果不是同一个线程，需要附加线程输入
+                        if foreground_thread_id != target_thread_id:
+                            # 附加线程输入，让我们可以设置焦点
+                            win32process.AttachThreadInput(foreground_thread_id, target_thread_id, True)
+
+                        # 设置为前台窗口
+                        win32gui.SetForegroundWindow(self.hwnd)
+
+                        # 激活窗口
+                        win32gui.SetActiveWindow(self.hwnd)
+
+                        # 设置键盘焦点
+                        win32gui.SetFocus(self.hwnd)
+
+                        # 分离线程输入
+                        if foreground_thread_id != target_thread_id:
+                            win32process.AttachThreadInput(foreground_thread_id, target_thread_id, False)
+
+                        return True
+                    except Exception as e:
+                        logger.debug(f"Force activate failed (fallback to simple method): {e}")
+                        # 如果复杂方法失败，回退到简单方法
+                        try:
+                            win32gui.SetForegroundWindow(self.hwnd)
+                            return True
+                        except:
+                            return False
+
+                success = await asyncio.to_thread(force_activate_window)
+                if success:
+                    logger.debug(f"Window {self.hwnd} successfully activated with keyboard focus")
+                return success
+
             except Exception as e:
                 logger.error("Failed to focus window %s: %s", self.hwnd, e)
                 return False

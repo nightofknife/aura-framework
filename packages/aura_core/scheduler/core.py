@@ -289,6 +289,9 @@ class Scheduler:
                 # ✅ NEW: 启动 ObservabilityService 的清理任务
                 self.observability.start_cleanup_task()
 
+                # ✅ 新增：启动订阅监控任务
+                tg.create_task(self._monitor_event_subscriptions())
+
                 self.file_watcher_service.start()
                 logger.info("所有核心后台服务已启动，向主线程发出信号。")
                 self.startup_complete_event.set()
@@ -545,9 +548,102 @@ class Scheduler:
                 persistent=True
             )
             self._core_subscriptions_ready = True
+            logger.info("[EventBus] 核心持久订阅已注册")
+        else:
+            # ✅ 修复内存泄漏：重新加载时，先清理所有非持久订阅
+            logger.info("[EventBus] 正在清理旧的动态订阅...")
+            stats_before = self.event_bus.get_stats()
+
+            await self.event_bus.clear_subscriptions(keep_persistent=True)
+
+            stats_after = self.event_bus.get_stats()
+            logger.info(
+                f"[EventBus] 动态订阅已清理。"
+                f"清理前: {stats_before['total_subscriptions']} 个订阅, "
+                f"清理后: {stats_after['total_subscriptions']} 个订阅 "
+                f"(移除了 {stats_before['total_subscriptions'] - stats_after['total_subscriptions']} 个)"
+            )
 
         # 计划/触发器订阅需要在 reload 时刷新
         await self.dispatcher.subscribe_event_triggers()
+
+    async def _monitor_event_subscriptions(self):
+        """(私有) 定期监控事件总线订阅统计，检测内存泄漏风险。
+
+        功能：
+        - 每5分钟记录一次订阅统计
+        - 如果临时订阅超过1000个，触发自动清理
+        - 如果检测到订阅持续增长，发出警告
+        """
+        logger.info("[EventBus监控] 订阅监控任务已启动")
+        check_interval_sec = int(get_config_value("scheduler.subscription_monitor.interval_sec", 300))
+        max_transient_subs = int(get_config_value("scheduler.subscription_monitor.max_transient", 1000))
+        cleanup_age_hours = float(get_config_value("scheduler.subscription_monitor.cleanup_age_hours", 1))
+
+        previous_total = 0
+        growth_count = 0  # 连续增长次数
+
+        while self.is_running.is_set():
+            try:
+                await asyncio.sleep(check_interval_sec)
+
+                if not self.is_running.is_set():
+                    break
+
+                # 获取统计信息
+                stats = self.event_bus.get_stats()
+
+                logger.info(
+                    f"[EventBus监控] "
+                    f"订阅总数: {stats['total_subscriptions']} "
+                    f"(持久: {stats['persistent_subscriptions']}, "
+                    f"临时: {stats['transient_subscriptions']}), "
+                    f"活跃循环: {stats['active_loops']}, "
+                    f"唯一模式: {stats['unique_patterns']}"
+                )
+
+                # 检测订阅持续增长（可能的内存泄漏）
+                if stats['total_subscriptions'] > previous_total:
+                    growth_count += 1
+                    if growth_count >= 3:
+                        logger.warning(
+                            f"[EventBus监控] 检测到订阅数连续增长 {growth_count} 次，"
+                            f"可能存在内存泄漏！当前订阅: {stats['total_subscriptions']}"
+                        )
+                else:
+                    growth_count = 0
+
+                previous_total = stats['total_subscriptions']
+
+                # 如果临时订阅过多，触发清理
+                if stats['transient_subscriptions'] > max_transient_subs:
+                    logger.warning(
+                        f"[EventBus监控] 临时订阅数量过多 "
+                        f"({stats['transient_subscriptions']} > {max_transient_subs})，"
+                        f"触发自动清理..."
+                    )
+                    removed_count = await self.event_bus.cleanup_stale_subscriptions(
+                        max_age_hours=cleanup_age_hours
+                    )
+                    logger.info(f"[EventBus监控] 自动清理完成，移除了 {removed_count} 个过期订阅")
+
+                # 验证索引一致性（检测数据结构损坏）
+                fix_result = self.event_bus.verify_and_fix_index_consistency()
+                if fix_result['total_fixed'] > 0:
+                    logger.warning(
+                        f"[EventBus监控] 检测到索引不一致并已修复: "
+                        f"孤立索引: {fix_result['orphaned_count']}, "
+                        f"缺失索引: {fix_result['missing_count']}"
+                    )
+
+            except asyncio.CancelledError:
+                logger.info("[EventBus监控] 监控任务被取消")
+                break
+            except Exception as e:
+                logger.error(f"[EventBus监控] 监控过程中发生异常: {e}", exc_info=True)
+                # 继续运行，不因异常而中断监控
+
+        logger.info("[EventBus监控] 订阅监控任务已停止")
 
     async def _consume_main_task_queue(self):
         """(private) Delegate main queue consumption to dispatch service."""
@@ -607,20 +703,20 @@ class Scheduler:
         """
         parts = task_name_in_plan.split('/')
 
-        if len(parts) >= 2:
-            # 检查最后一部分是否与倒数第二部分相同（完整格式）
-            if parts[-1] == parts[-2]:
-                # 去掉重复的任务键名
-                path_parts = parts[:-1]
-            else:
-                # 简化格式，使用所有部分
-                path_parts = parts
-        else:
-            # 单级路径
-            path_parts = parts
+        if len(parts) >= 3:
+            file_name = parts[-2]
+            task_key = parts[-1]
+            path_parts = parts[:-1]
+            if task_key == file_name:
+                # tasks:path:file.yaml (same-name task key)
+                path_parts[-1] = f"{file_name}.yaml"
+                return 'tasks:' + ':'.join(path_parts)
+            # tasks:path:file.yaml:task_key
+            path_parts[-1] = f"{file_name}.yaml"
+            return 'tasks:' + ':'.join(path_parts + [task_key])
 
-        # 构建新格式：tasks:path1:path2:...
-        return 'tasks:' + ':'.join(path_parts)
+        # 1-2 segments fallback
+        return 'tasks:' + ':'.join(parts)
 
     def get_all_services_status(self) -> List[Dict[str, Any]]:
         """获取所有已注册服务的当前状态列表。"""

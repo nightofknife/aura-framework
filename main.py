@@ -108,19 +108,105 @@ def run_task(scheduler: Scheduler, ad_hoc_mode: bool):
     """
     if ad_hoc_mode:
         all_tasks = []
+        seen_tasks = set()  # ✅ 用于去重
+        task_keys_by_plan = {}  # 按plan分组存储所有键
+
         # 遍历所有方案的Orchestrator来收集任务定义
         for plan_name, orchestrator in scheduler.plan_manager.plans.items():
-            for task_name in orchestrator.task_definitions.keys():
-                all_tasks.append(f"{plan_name}/{task_name}")
+            task_keys_by_plan[plan_name] = list(orchestrator.task_definitions.keys())
+
+        # 处理每个plan的任务
+        for plan_name, task_keys in task_keys_by_plan.items():
+            orchestrator = scheduler.plan_manager.plans[plan_name]
+
+            # ✅ 策略：先处理3段格式，再处理2段和1段，避免重复
+
+            # 第一遍：处理3段格式（优先级最高）
+            for task_name in task_keys:
+                parts = task_name.split('/')
+                if len(parts) != 3:
+                    continue
+
+                # ✅ 检查是否为入口任务
+                task_def = orchestrator.task_definitions.get(task_name, {})
+                meta = task_def.get('meta', {})
+                if not meta.get('entry_point', False):
+                    continue  # 跳过非入口任务
+
+                if parts[-1] == parts[-2]:
+                    # 语法糖：test/draw_star/draw_star → tasks:test:draw_star.yaml
+                    # ✅ 关键修复：必须包含.yaml后缀，这样TaskReference.as_loader_path()才能正确推断任务键
+                    file_path = '/'.join(parts[:-1])
+                    task_name_formatted = 'tasks:' + file_path.replace('/', ':') + '.yaml'
+                else:
+                    # 多任务文件：check_state/state_checks/is_in_view → tasks:check_state:state_checks.yaml:is_in_view
+                    file_path = '/'.join(parts[:-1])
+                    task_key = parts[-1]
+                    task_name_formatted = 'tasks:' + file_path.replace('/', ':') + '.yaml:' + task_key
+
+                full_task_ref = f"{plan_name}/{task_name_formatted}"
+                if full_task_ref not in seen_tasks:
+                    seen_tasks.add(full_task_ref)
+                    all_tasks.append(full_task_ref)
+
+            # 第二遍：处理2段格式（检查是否有3段版本）
+            for task_name in task_keys:
+                parts = task_name.split('/')
+                if len(parts) != 2:
+                    continue
+
+                # 检查是否有对应的3段版本（语法糖）
+                three_part_version = f"{task_name}/{parts[-1]}"
+                if three_part_version in task_keys:
+                    # 有3段版本，跳过这个2段版本（避免重复）
+                    continue
+
+                # ✅ 检查是否为入口任务
+                task_def = orchestrator.task_definitions.get(task_name, {})
+                meta = task_def.get('meta', {})
+                if not meta.get('entry_point', False):
+                    continue  # 跳过非入口任务
+
+                # 没有3段版本，这是真正的多任务文件
+                # test_state_transitions/test_main_to_pass_reward → tasks:test_state_transitions.yaml:test_main_to_pass_reward
+                file_path = parts[0]
+                task_key = parts[1]
+                task_name_formatted = 'tasks:' + file_path + '.yaml:' + task_key
+
+                full_task_ref = f"{plan_name}/{task_name_formatted}"
+                if full_task_ref not in seen_tasks:
+                    seen_tasks.add(full_task_ref)
+                    all_tasks.append(full_task_ref)
+
+            # 第三遍：处理1段格式
+            for task_name in task_keys:
+                parts = task_name.split('/')
+                if len(parts) != 1:
+                    continue
+
+                # ✅ 检查是否为入口任务
+                task_def = orchestrator.task_definitions.get(task_name, {})
+                meta = task_def.get('meta', {})
+                if not meta.get('entry_point', False):
+                    continue  # 跳过非入口任务
+
+                # 单段：collect_daily_tasks → tasks:collect_daily_tasks
+                task_name_formatted = 'tasks:' + task_name
+
+                full_task_ref = f"{plan_name}/{task_name_formatted}"
+                if full_task_ref not in seen_tasks:
+                    seen_tasks.add(full_task_ref)
+                    all_tasks.append(full_task_ref)
 
         if not all_tasks:
-            print("在所有方案中都未能找到任何任务定义。")
+            print("在所有方案中都未能找到任何入口任务。")
+            print("提示: 只有在任务的 meta 中设置了 'entry_point: true' 的任务才会显示在此列表中。")
             wait_for_enter()
             return
 
         all_tasks.sort()
         task_map: Dict[int, Any] = {i + 1: fqid for i, fqid in enumerate(all_tasks)}
-        header_title = "选择要运行的任意任务 (Ad-hoc)"
+        header_title = "选择要运行的入口任务 (Ad-hoc)"
     else:
         schedulable_tasks = scheduler.get_schedule_status()
         if not schedulable_tasks:
@@ -505,7 +591,7 @@ def display_menu():
 
     print("\n  📋 任务管理:")
     print("  [1] 添加可调度任务到队列")
-    print("  [2] 添加任意任务到队列 (Ad-hoc)")
+    print("  [2] 添加入口任务到队列 (Ad-hoc)")
 
     print("\n  📊 信息查看:")
     print("  [3] 列出所有方案 (Plans)")

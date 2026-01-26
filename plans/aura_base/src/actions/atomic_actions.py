@@ -104,7 +104,7 @@ def screen_selfcheck(screen: ScreenService) -> Dict[str, Any]:
 def find_image(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
                region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
-               preprocess: str = "none") -> MatchResult:
+               preprocess: str = "none", mask: Optional[str] = None) -> MatchResult:
     # [MODIFIED] __is_inspect_mode__ 现在从 initial context 获取
     is_inspect_mode = engine.root_context.data.get("initial", {}).get("__is_inspect_mode__", False)
     capture = app.capture(rect=region)
@@ -115,9 +115,15 @@ def find_image(app: AppProviderService, vision: VisionService, engine: Execution
     source_image_for_debug = capture.image.copy()
     template_path = _resolve_template_path(engine, vision, template)
 
+    # 解析mask路径（如果提供）
+    mask_path = None
+    if mask:
+        mask_path = _resolve_template_path(engine, vision, mask)
+
     match_result = vision.find_template(
         source_image=source_image_for_debug,
         template_image=template_path,
+        mask_image=mask_path,
         threshold=threshold,
         use_grayscale=use_grayscale,
         match_method=match_method,
@@ -600,7 +606,7 @@ def check_text_exists(app: AppProviderService, ocr: OcrService, engine: Executio
 def check_image_exists(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
                        region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                        use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
-                       preprocess: str = "none") -> bool:
+                       preprocess: str = "none", mask: Optional[str] = None) -> bool:
     match_result = find_image(
         app,
         vision,
@@ -611,6 +617,7 @@ def check_image_exists(app: AppProviderService, vision: VisionService, engine: E
         use_grayscale,
         match_method,
         preprocess,
+        mask,
     )
     return match_result.found
 
@@ -622,7 +629,8 @@ def check_image_exists(app: AppProviderService, vision: VisionService, engine: E
 def assert_image_exists(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
                         region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                         message: Optional[str] = None, use_grayscale: bool = True,
-                        match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none"):
+                        match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none",
+                        mask: Optional[str] = None):
     match_result = find_image(
         app,
         vision,
@@ -633,6 +641,7 @@ def assert_image_exists(app: AppProviderService, vision: VisionService, engine: 
         use_grayscale,
         match_method,
         preprocess,
+        mask,
     )
     if not match_result.found:
         error_message = message or f"断言失败：期望的图像 '{template}' 不存在。"
@@ -1032,6 +1041,57 @@ def get_window_size(app: AppProviderService) -> Optional[Tuple[int, int]]:
 def focus_window(app: AppProviderService) -> bool:
     # 假设AppProviderService有screen属性
     return app.screen.focus()
+
+
+@register_action(name="focus_window_with_input", public=True)
+@requires_services(app='app')
+def focus_window_with_input(app: AppProviderService, click_delay: float = 0.3) -> bool:
+    """置顶窗口并激活键盘输入焦点
+
+    此action在置顶窗口后会自动点击窗口中心，
+    以确保键盘输入焦点也被激活（而不仅仅是视觉焦点）。
+
+    Args:
+        app: AppProviderService实例
+        click_delay: 置顶后到点击的延迟时间（秒），默认0.3秒
+
+    Returns:
+        成功返回True，失败返回False
+    """
+    import time
+
+    # 第1步：置顶窗口
+    if not app.screen.focus():
+        logger.warning("无法置顶窗口")
+        return False
+
+    # 第2步：短暂延迟，让窗口完全置顶
+    time.sleep(click_delay)
+
+    # 第3步：获取窗口矩形区域
+    import win32gui
+    try:
+        hwnd = app.screen.hwnd
+        if not hwnd:
+            logger.warning("无法获取窗口句柄")
+            return False
+
+        # 获取窗口客户区坐标
+        left, top, right, bottom = win32gui.GetClientRect(hwnd)
+
+        # 计算窗口中心点（客户区坐标）
+        center_x = (left + right) // 2
+        center_y = (top + bottom) // 2
+
+        # 第4步：点击窗口中心以激活键盘焦点
+        logger.info(f"点击窗口中心位置 ({center_x}, {center_y}) 以激活键盘焦点")
+        app.click(center_x, center_y, button='left', clicks=1)
+
+        return True
+
+    except Exception as e:
+        logger.error(f"激活键盘焦点时出错: {e}")
+        return False
 
 
 @register_action(name="file_read", read_only=True, public=True)

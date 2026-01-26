@@ -236,7 +236,8 @@ class ExecutionManager:
             return True
 
         task_def = self.scheduler.all_tasks_definitions.get(tasklet.task_name)
-        if not task_def: return True
+        if not task_def:
+            return False
 
         target_state = task_def.get('meta', {}).get('requires_initial_state')
         if not target_state:

@@ -36,13 +36,13 @@ class DispatchService:
                 queue_size = self._scheduler.task_queue.qsize()
                 running_keys = list(self._scheduler.running_tasks.keys())
                 if current_running_count > 0 or queue_size > 0:
-                    logger.info(
+                    logger.debug(  # 改为DEBUG级别，避免过多INFO日志
                         f"[Queue Consumer] current status running={current_running_count}/{max_cc}, "
                         f"queue_size={queue_size}, keys={running_keys}"
                     )
 
                 if len(self._scheduler.running_tasks) >= max_cc:
-                    logger.warning("[Queue Consumer] concurrency limit reached, waiting...")
+                    logger.debug("[Queue Consumer] concurrency limit reached, waiting...")  # 改为DEBUG级别
                     await asyncio.sleep(queue_full_sleep)
                     continue
 

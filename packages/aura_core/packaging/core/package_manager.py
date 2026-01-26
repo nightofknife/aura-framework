@@ -230,6 +230,7 @@ class PackageManager:
             if plugin_path not in sys.path:
                 sys.path.insert(0, plugin_path)
                 path_added = True  # ✅ 记录我们添加了路径
+                logger.debug(f"已添加到 sys.path: {plugin_path}")
 
             for service in manifest.exports.services:
                 module_path, class_name = service.source.split(':')
@@ -237,6 +238,9 @@ class PackageManager:
                 # 导入模块（source格式: src/services/config_service）
                 # 转换为完整的导入路径
                 full_module_path = module_path.replace('/', '.')
+
+                logger.debug(f"尝试导入服务模块: {full_module_path} (from {plugin_path})")
+                logger.debug(f"当前 sys.path: {sys.path[:3]}")  # 只显示前3个
 
                 module = importlib.import_module(full_module_path)
                 service_class = getattr(module, class_name)

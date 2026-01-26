@@ -83,7 +83,8 @@ class ActionInjector:
             ValueError: 如果找不到 Action 定义或缺少必要参数。
             TypeError: 如果 `aura.run_task` 的 `inputs` 参数类型不正确。
         """
-        if action_name == "aura.run_task":
+        # ✅ 支持 run_task 和 aura.run_task 两种写法
+        if action_name in ("aura.run_task", "run_task"):
             return await self._execute_run_task(raw_params)
 
         # 解析 FQID

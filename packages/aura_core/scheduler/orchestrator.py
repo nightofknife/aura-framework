@@ -161,7 +161,26 @@ class Orchestrator:
 
         # 检查文件是否存在
         if not full_path.exists():
-            raise ValueError(f"Task file not found: {task_file_path} (resolved to {full_path})")
+            # 尝试提供友好的错误提示
+            error_msg = f"Task file not found: {task_file_path} (resolved to {full_path})"
+
+            # 检测常见错误：多任务文件引用缺少.yaml后缀
+            # 例如：tasks/test_state_transitions/test_main_to_pass_reward (错误)
+            # 应该是：tasks/test_state_transitions.yaml (文件) + task_key (任务键)
+            parent_dir = full_path.parent
+            if parent_dir.exists() and parent_dir.is_dir():
+                # 检查父目录下是否有同名的.yaml文件
+                possible_file = parent_dir / (full_path.stem + '.yaml')
+                if possible_file.exists():
+                    error_msg += (
+                        f"\n\n💡 提示：检测到可能的格式错误！"
+                        f"\n   找到了文件：{possible_file.relative_to(self.current_plan_path)}"
+                        f"\n   这是一个多任务文件，请使用以下格式引用："
+                        f"\n   ✅ 正确：'tasks:test_state_transitions.yaml:task_name'"
+                        f"\n   ❌ 错误：'tasks:test_state_transitions:task_name' (缺少.yaml)"
+                    )
+
+            raise ValueError(error_msg)
 
         # 读取并解析 YAML 文件
         try:
