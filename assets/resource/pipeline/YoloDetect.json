@@ -1,0 +1,203 @@
+﻿{
+    "YoloDetectStart": {
+        "next": [
+            "YoloDetect01"
+        ],
+        "post_delay": 0,
+        "pre_delay": 0
+    },
+    "YoloDetect01": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (01) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (01)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetect02"
+        ]
+    },
+    "YoloDetect02": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (02) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (02)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetect03"
+        ]
+    },
+    "YoloDetect03": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (03) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (03)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetect04"
+        ]
+    },
+    "YoloDetect04": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (04) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (04)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetect05"
+        ]
+    },
+    "YoloDetect05": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (05) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (05)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetect06"
+        ]
+    },
+    "YoloDetect06": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (06) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (06)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetect07"
+        ]
+    },
+    "YoloDetect07": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (07) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (07)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetect08"
+        ]
+    },
+    "YoloDetect08": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (08) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (08)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetect09"
+        ]
+    },
+    "YoloDetect09": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (09) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (09)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetect10"
+        ]
+    },
+    "YoloDetect10": {
+        "recognition": {
+            "type": "NeuralNetworkDetect",
+            "param": {
+                "model": "level_battle.onnx",
+                "roi": [0, 0, 1280, 720],
+                "order_by": "Score",
+                "index": 0
+            }
+        },
+        "focus": {
+            "Node.Recognition.Succeeded": "YOLO 检测命中 (10) - 结果见日志",
+            "Node.Recognition.Failed": "YOLO 检测未命中 (10)"
+        },
+        "post_delay": 1000,
+        "next": [
+            "YoloDetectEnd"
+        ]
+    },
+    "YoloDetectEnd": {
+        "post_delay": 0,
+        "pre_delay": 0
+    }
+}

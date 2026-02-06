@@ -45,7 +45,7 @@ func initLogger() (*os.File, error) {
 			Out:        os.Stdout,
 			TimeFormat: time.RFC3339,
 		},
-		minLevel: zerolog.ErrorLevel,
+		minLevel: zerolog.DebugLevel,
 	}
 
 	// 文件输出所有级别的日志

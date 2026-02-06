@@ -1,0 +1,10 @@
+﻿{
+    "task": [
+        {
+            "name": "YoloDetectTest",
+            "label": "YOLO Detect Test",
+            "entry": "YoloDetectStart",
+            "description": "Run YOLO ONNX detect 10 times, 1s interval."
+        }
+    ]
+}

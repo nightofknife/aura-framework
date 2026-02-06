@@ -1,0 +1,780 @@
+﻿{
+    "task": [
+        {
+            "name": "AutoBattleNavigate",
+            "label": "$task.AutoBattleNavigate.label",
+            "entry": "AutoBattleNavigateStart",
+            "description": "$task.AutoBattleNavigate.description",
+            "option": [
+                "AutoBattleCategory"
+            ]
+        }
+    ],
+    "option": {
+        "AutoBattleCategory": {
+            "type": "select",
+            "label": "$option.AutoBattleCategory.label",
+            "cases": [
+                {
+                    "name": "Operator",
+                    "label": "干员养成",
+                    "pipeline_override": {
+                        "AutoBattleSelectCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "干员养成"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleSubCategoryOperator"
+                    ]
+                },
+                {
+                    "name": "Weapon",
+                    "label": "武器养成",
+                    "pipeline_override": {
+                        "AutoBattleSelectCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "武器养成"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleSubCategoryWeapon"
+                    ]
+                },
+                {
+                    "name": "Reappearance",
+                    "label": "危境再现",
+                    "pipeline_override": {
+                        "AutoBattleSelectCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "危境再现"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleSubCategoryReappearance"
+                    ]
+                },
+                {
+                    "name": "Preview",
+                    "label": "危境预演",
+                    "pipeline_override": {
+                        "AutoBattleSelectCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "危境预演"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleSubCategoryPreview"
+                    ]
+                }
+            ]
+        },
+        "AutoBattleSubCategoryOperator": {
+            "type": "select",
+            "label": "$option.AutoBattleSubCategory.label",
+            "cases": [
+                {
+                    "name": "OperatorExp",
+                    "label": "干员经验",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "干员经验"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleLevel_1_5"
+                    ]
+                },
+                {
+                    "name": "OperatorEvolve",
+                    "label": "干员进阶",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "干员进阶"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleLevel_1_5"
+                    ]
+                },
+                {
+                    "name": "Money",
+                    "label": "钱本收集",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "钱本收集"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleLevel_1_5"
+                    ]
+                },
+                {
+                    "name": "Skill",
+                    "label": "技能提升",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "技能提升"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleLevel_1_5"
+                    ]
+                }
+            ]
+        },
+        "AutoBattleSubCategoryWeapon": {
+            "type": "select",
+            "label": "$option.AutoBattleSubCategory.label",
+            "cases": [
+                {
+                    "name": "WeaponExp",
+                    "label": "武器经验",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "武器经验"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleLevel_1_5_NoReward"
+                    ]
+                },
+                {
+                    "name": "WeaponEvolve",
+                    "label": "武器进阶",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "武器进阶"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleLevel_1_5"
+                    ]
+                }
+            ]
+        },
+        "AutoBattleSubCategoryReappearance": {
+            "type": "select",
+            "label": "$option.AutoBattleSubCategory.label",
+            "cases": [
+                {
+                    "name": "Rodan",
+                    "label": "罗丹",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "罗丹"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleLevel_1_4_NoReward"
+                    ]
+                },
+                {
+                    "name": "Trinity",
+                    "label": "三位一体",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "三位一体"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleLevel_1_3_NoReward"
+                    ]
+                },
+                {
+                    "name": "Chalk",
+                    "label": "白垩界卫",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "白垩界卫"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleLevel_1_3_NoReward"
+                    ]
+                }
+            ]
+        },
+        "AutoBattleSubCategoryPreview": {
+            "type": "select",
+            "label": "$option.AutoBattleSubCategory.label",
+            "cases": [
+                {
+                    "name": "AdvTrainI",
+                    "label": "高阶培养Ⅰ",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "高阶培养Ⅰ"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectLevel": {
+                            "enabled": false
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "AdvTrainII",
+                    "label": "高阶培养Ⅱ",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "高阶培养Ⅱ"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectLevel": {
+                            "enabled": false
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "AdvTrainIII",
+                    "label": "高阶培养Ⅲ",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "高阶培养Ⅲ"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectLevel": {
+                            "enabled": false
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "AdvTrainIV",
+                    "label": "高阶培养Ⅳ",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "高阶培养Ⅳ"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectLevel": {
+                            "enabled": false
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "AdvTrainV",
+                    "label": "高阶培养Ⅴ",
+                    "pipeline_override": {
+                        "AutoBattleSelectSubCategory": {
+                            "recognition": {
+                                "param": {
+                                    "expected": "高阶培养Ⅴ"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectLevel": {
+                            "enabled": false
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                }
+            ]
+        },
+        "AutoBattleLevel_1_5": {
+            "type": "select",
+            "label": "$option.AutoBattleLevel.label",
+            "cases": [
+                {
+                    "name": "1",
+                    "label": "1",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "一级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "2",
+                    "label": "2",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "二级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "3",
+                    "label": "3",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "三级"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleReward",
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "4",
+                    "label": "4",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "四级"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleReward",
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "5",
+                    "label": "5",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "五级"
+                                }
+                            }
+                        }
+                    },
+                    "option": [
+                        "AutoBattleReward",
+                        "AutoBattleRepeat"
+                    ]
+                }
+            ]
+        },
+        "AutoBattleLevel_1_5_NoReward": {
+            "type": "select",
+            "label": "$option.AutoBattleLevel.label",
+            "cases": [
+                {
+                    "name": "1",
+                    "label": "1",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "一级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "2",
+                    "label": "2",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "二级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "3",
+                    "label": "3",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "三级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "4",
+                    "label": "4",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "四级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "5",
+                    "label": "5",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "五级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                }
+            ]
+        },
+        "AutoBattleLevel_1_4_NoReward": {
+            "type": "select",
+            "label": "$option.AutoBattleLevel.label",
+            "cases": [
+                {
+                    "name": "1",
+                    "label": "1",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "一级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "2",
+                    "label": "2",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "二级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "3",
+                    "label": "3",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "三级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "4",
+                    "label": "4",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "四级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                }
+            ]
+        },
+        "AutoBattleLevel_1_3_NoReward": {
+            "type": "select",
+            "label": "$option.AutoBattleLevel.label",
+            "cases": [
+                {
+                    "name": "1",
+                    "label": "1",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "一级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "2",
+                    "label": "2",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "二级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                },
+                {
+                    "name": "3",
+                    "label": "3",
+                    "pipeline_override": {
+                        "AutoBattleSelectLevel": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "三级"
+                                }
+                            }
+                        },
+                        "AutoBattleSelectReward": {
+                            "enabled": false
+                        }
+                    },
+                    "option": [
+                        "AutoBattleRepeat"
+                    ]
+                }
+            ]
+        },
+        "AutoBattleReward": {
+            "type": "select",
+            "label": "$option.AutoBattleReward.label",
+            "cases": [
+                {
+                    "name": "A",
+                    "label": "A",
+                    "pipeline_override": {
+                        "AutoBattleSelectReward": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "A"
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "B",
+                    "label": "B",
+                    "pipeline_override": {
+                        "AutoBattleSelectReward": {
+                            "enabled": true,
+                            "recognition": {
+                                "param": {
+                                    "expected": "B"
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        },
+        "AutoBattleRepeat1": {
+            "type": "input",
+            "label": "$option.AutoBattleRepeat.label",
+            "inputs": [
+                {
+                    "name": "Repeat",
+                    "label": "",
+                    "description": "$option.AutoBattleRepeat.input.description",
+                    "pipeline_type": "int",
+                    "verify": "^[1-9]\\d*$",
+                    "default": 1
+                }
+            ],
+            "pipeline_override": {
+                "AutoBattleExecuteAction": {
+                    "action": {
+                        "param": {
+                            "custom_action_param": {
+                                "repeat_times": "{Repeat}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

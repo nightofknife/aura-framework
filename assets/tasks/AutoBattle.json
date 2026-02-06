@@ -1,0 +1,40 @@
+﻿{
+    "task": [
+        {
+            "name": "AutoBattle",
+            "label": "自动战斗(测试)",
+            "entry": "AutoBattleStart",
+            "description": "仅执行 AutoBattleExecuteAction，用于调试",
+            "option": [
+                "AutoBattleRepeat"
+            ]
+        }
+    ],
+    "option": {
+        "AutoBattleRepeat": {
+            "type": "input",
+            "label": "运行次数",
+            "inputs": [
+                {
+                    "name": "Repeat",
+                    "label": "",
+                    "description": "执行次数",
+                    "pipeline_type": "int",
+                    "verify": "^[1-9]\\d*$",
+                    "default": 1
+                }
+            ],
+            "pipeline_override": {
+                "AutoBattleExecuteAction": {
+                    "action": {
+                        "param": {
+                            "custom_action_param": {
+                                "repeat_times": "{Repeat}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
