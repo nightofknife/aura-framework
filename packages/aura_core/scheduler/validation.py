@@ -6,7 +6,7 @@
 
 import re
 import json
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List, Union
 
 if TYPE_CHECKING:
     from .core import Scheduler
@@ -300,3 +300,30 @@ class InputValidator:
             if val not in allowed:
                 return False, None, f"Input '{path}' must be one of {allowed}."
         return True, val, None
+
+    def validate_inputs_against_meta(
+        self, inputs_meta: List[Dict[str, Any]], provided_inputs: Dict[str, Any]
+    ) -> Tuple[bool, Union[str, Dict[str, Any]]]:
+        """Validate and normalize user inputs against task meta.inputs."""
+        if not isinstance(inputs_meta, list):
+            return False, "Task meta.inputs must be a list."
+        provided_inputs = provided_inputs or {}
+        if not isinstance(provided_inputs, dict):
+            return False, "Inputs must be an object/dict."
+
+        expected_names = [item.get("name") for item in inputs_meta if isinstance(item, dict) and item.get("name")]
+        extra = set(provided_inputs.keys()) - set(expected_names)
+        if extra:
+            return False, f"Unexpected inputs provided: {', '.join(extra)}"
+
+        full_params: Dict[str, Any] = {}
+        for item in inputs_meta:
+            if not isinstance(item, dict) or "name" not in item:
+                continue
+            name = item["name"]
+            ok, val, err = self.validate_input_value(item, provided_inputs.get(name, _MISSING), name)
+            if not ok:
+                return False, err
+            if val is not None or "default" in item or item.get("required"):
+                full_params[name] = val
+        return True, full_params
