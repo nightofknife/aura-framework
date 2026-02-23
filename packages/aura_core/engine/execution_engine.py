@@ -5,7 +5,6 @@ ExecutionEngine类的重构版本，使用组合模式集成所有子组件：
 - GraphBuilder: DAG图构建
 - DAGScheduler: DAG调度
 - NodeExecutor: 节点执行
-- ControlFlowHandler: 控制流处理
 
 保持与原始engine.py相同的公共API，确保向后兼容性。
 """
@@ -32,7 +31,6 @@ if TYPE_CHECKING:
 from .graph_builder import GraphBuilder
 from .dag_scheduler import DAGScheduler
 from .node_executor import NodeExecutor
-from .control_flow import ControlFlowHandler
 
 
 class StepState(Enum):
@@ -51,7 +49,6 @@ class ExecutionEngine:
     - GraphBuilder: 构建DAG图
     - DAGScheduler: 调度和执行节点
     - NodeExecutor: 执行单个节点
-    - ControlFlowHandler: 处理控制流（goto）
 
     每个任务在运行时都会创建一个独立的ExecutionEngine实例。
     """
@@ -103,8 +100,6 @@ class ExecutionEngine:
         self.VALID_DEPENDENCY_STATUSES = {'success', 'failed', 'running', 'skipped'}
 
         # ===== goto + label 机制 =====
-        self.label_to_node: Dict[str, str] = {}  # label -> node_id 映射
-        self.node_goto_jumps: Dict[str, int] = {}  # 跟踪每个goto的跳转次数
 
         # ===== 节点元数据 =====
         self.node_metadata: Dict[str, Dict[str, Any]] = {}  # node_id -> metadata
@@ -112,14 +107,11 @@ class ExecutionEngine:
         # ===== 安全机制配置 =====
         self.total_node_executions = 0
         self.max_total_steps = int(get_config_value("execution.max_total_steps", 1000))
-        self.max_goto_per_pair = int(get_config_value("execution.max_goto_per_pair", 100))
-        self.goto_warning_threshold = int(get_config_value("execution.goto_warning_threshold", 10))
 
         # ===== 创建子组件（组合模式） =====
         self.graph_builder = GraphBuilder(self)
         self.dag_scheduler = DAGScheduler(self)
         self.node_executor = NodeExecutor(self)
-        self.control_flow = ControlFlowHandler(self)
 
     # ========================================
     # 公共API - 主执行方法

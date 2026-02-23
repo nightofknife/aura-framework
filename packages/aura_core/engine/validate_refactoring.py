@@ -30,8 +30,6 @@ def test_imports():
         from packages.aura_core.engine.node_executor import NodeExecutor
         print("   ✅ NodeExecutor 导入成功")
 
-        from packages.aura_core.engine.control_flow import ControlFlowHandler
-        print("   ✅ ControlFlowHandler 导入成功")
 
         from packages.aura_core.engine.execution_engine import ExecutionEngine as EE
         print("   ✅ ExecutionEngine (直接导入) 成功")
@@ -109,15 +107,11 @@ def test_component_creation():
         assert engine.node_executor is not None
         print("   ✅ NodeExecutor 组件已创建")
 
-        assert hasattr(engine, 'control_flow')
-        assert engine.control_flow is not None
-        print("   ✅ ControlFlowHandler 组件已创建")
 
         # 检查子组件的engine引用
         assert engine.graph_builder.engine is engine
         assert engine.dag_scheduler.engine is engine
         assert engine.node_executor.engine is engine
-        assert engine.control_flow.engine is engine
         print("   ✅ 所有子组件正确引用父引擎")
 
         return True
@@ -157,10 +151,6 @@ def test_api_compatibility():
         assert hasattr(engine, 'running_tasks')
         print("   ✅ 所有核心状态属性存在")
 
-        # 检查goto/label相关属性
-        assert hasattr(engine, 'label_to_node')
-        assert hasattr(engine, 'node_goto_jumps')
-        print("   ✅ goto/label 机制属性存在")
 
         # 检查节点元数据属性
         assert hasattr(engine, 'node_metadata')

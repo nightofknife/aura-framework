@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -92,47 +91,80 @@ class PlanRegistry:
     def load_all_tasks_definitions(self):
         logger.info("--- Loading all task definitions ---")
         self._scheduler.all_tasks_definitions.clear()
-        plans_dir = self._scheduler.base_path / "plans"
-        if not plans_dir.is_dir():
+        plans = self._scheduler.plan_manager.plans
+        if not plans:
+            logger.info("No loaded plans, skip task definition indexing")
             return
-        for plan_path in plans_dir.iterdir():
-            if not plan_path.is_dir():
+
+        for plan_name, orchestrator in plans.items():
+            try:
+                task_definitions = orchestrator.task_loader.get_all_task_definitions()
+            except Exception as exc:
+                logger.error(f"Failed to load task definitions for plan '{plan_name}': {exc}")
                 continue
-            plan_name = plan_path.name
-            tasks_dir = plan_path / "tasks"
-            if not tasks_dir.is_dir():
+
+            if not isinstance(task_definitions, dict):
                 continue
-            for task_file_path in tasks_dir.rglob("*.yaml"):
-                try:
-                    with open(task_file_path, "r", encoding="utf-8") as f:
-                        data = yaml.safe_load(f)
-                    if not isinstance(data, dict):
-                        continue
 
-                    def process_task_definitions(task_data, base_id):
-                        for task_key, task_definition in task_data.items():
-                            if isinstance(task_definition, dict) and "meta" in task_definition:
-                                task_definition.setdefault("execution_mode", "sync")
-                                full_task_id = f"{plan_name}/{base_id}/{task_key}".replace("//", "/")
-                                self._scheduler.all_tasks_definitions[full_task_id] = task_definition
-                                # ✅ 移除别名机制，避免任务列表中出现重复
-                                # 旧的别名逻辑已被注释掉：
-                                # if task_key == Path(base_id).name:
-                                #     alias_id = f"{plan_name}/{base_id}".replace("//", "/")
-                                #     self._scheduler.all_tasks_definitions.setdefault(alias_id, task_definition)
+            self._warn_task_export_mismatch(
+                plan_name=plan_name,
+                manifest=getattr(orchestrator, "loaded_package", None),
+                task_definitions=task_definitions,
+            )
 
-                    if "steps" in data:
-                        task_name_from_file = task_file_path.relative_to(tasks_dir).with_suffix("").as_posix()
-                        data.setdefault("execution_mode", "sync")
-                        full_task_id = f"{plan_name}/{task_name_from_file}"
-                        self._scheduler.all_tasks_definitions[full_task_id] = data
-                    else:
-                        relative_path_str = task_file_path.relative_to(tasks_dir).with_suffix("").as_posix()
-                        process_task_definitions(data, relative_path_str)
+            for task_name_in_plan, task_definition in task_definitions.items():
+                if not isinstance(task_definition, dict):
+                    continue
+                task_definition.setdefault("execution_mode", "sync")
+                full_task_id = f"{plan_name}/{task_name_in_plan}".replace("//", "/")
+                self._scheduler.all_tasks_definitions[full_task_id] = task_definition
 
-                except Exception as exc:
-                    logger.error(f"Failed to load task file '{task_file_path}': {exc}")
         logger.info(f"Task definitions loaded: {len(self._scheduler.all_tasks_definitions)}")
+
+    def _warn_task_export_mismatch(self, plan_name: str, manifest: Any, task_definitions: Dict[str, Any]):
+        """Warn when manifest exports.tasks diverges from runtime task loader index."""
+        if not manifest or not hasattr(manifest, "exports"):
+            return
+
+        exported_tasks = getattr(manifest.exports, "tasks", None)
+        if not isinstance(exported_tasks, list):
+            return
+
+        exported_ids = {
+            task.id for task in exported_tasks
+            if hasattr(task, "id") and isinstance(task.id, str) and task.id
+        }
+        runtime_ids = {
+            task_name for task_name, task_def in task_definitions.items()
+            if isinstance(task_name, str) and task_name and isinstance(task_def, dict)
+        }
+
+        if not exported_ids and runtime_ids:
+            logger.warning(
+                "Plan '%s': manifest exports.tasks is empty, runtime discovered %s task(s).",
+                plan_name,
+                len(runtime_ids),
+            )
+            return
+
+        missing_in_manifest = sorted(runtime_ids - exported_ids)
+        stale_in_manifest = sorted(exported_ids - runtime_ids)
+        if not missing_in_manifest and not stale_in_manifest:
+            return
+
+        logger.warning(
+            "Plan '%s': manifest exports.tasks mismatches runtime index "
+            "(runtime=%s, exported=%s, missing=%s, stale=%s).",
+            plan_name,
+            len(runtime_ids),
+            len(exported_ids),
+            len(missing_in_manifest),
+            len(stale_in_manifest),
+        )
+        if missing_in_manifest:
+            logger.warning("  Missing in manifest (sample): %s", missing_in_manifest[:5])
+        if stale_in_manifest:
+            logger.warning("  Stale in manifest (sample): %s", stale_in_manifest[:5])
 
     def load_schedule_file(self, plan_dir: Path, plan_name: str):
         schedule_path = plan_dir / "schedule.yaml"

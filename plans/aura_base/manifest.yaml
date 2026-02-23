@@ -31,6 +31,8 @@ pypi-dependencies:
   pillow: '*'
   opencv-python: '*'
   numpy: '*'
+  ultralytics: '*'
+  torch: '*'
   pyautogui: '*'
   pygetwindow: '*'
   pyyaml: '*'
@@ -68,6 +70,14 @@ exports:
       source: src/services/vision_service:VisionService
       description: Vision service for image matching
       visibility: public
+    - name: navigation
+      source: src/services/navigation_service:NavigationService
+      description: Navigation service
+      visibility: public
+    - name: yolo
+      source: src/services/yolo_service:YoloService
+      description: Ultralytics YOLO detection service
+      visibility: public
   actions:
     - name: register_template_library
       source: src/actions/atomic_actions:register_template_library
@@ -93,6 +103,70 @@ exports:
       source: src/actions/atomic_actions:screen_selfcheck
       description: Perform screen capture self-check
       visibility: public
+    - name: yolo_preload_model
+      source: src/actions/yolo_actions:yolo_preload_model
+      description: Preload a YOLO model by name or path
+      visibility: public
+    - name: yolo_set_active_model
+      source: src/actions/yolo_actions:yolo_set_active_model
+      description: Set current active YOLO model by name or path
+      visibility: public
+    - name: yolo_unload_model
+      source: src/actions/yolo_actions:yolo_unload_model
+      description: Unload a YOLO model from memory
+      visibility: public
+    - name: yolo_list_loaded_models
+      source: src/actions/yolo_actions:yolo_list_loaded_models
+      description: List currently loaded YOLO model keys
+      visibility: public
+    - name: yolo_get_active_model
+      source: src/actions/yolo_actions:yolo_get_active_model
+      description: Get current active YOLO model key
+      visibility: public
+    - name: yolo_get_class_names
+      source: src/actions/yolo_actions:yolo_get_class_names
+      description: Get class id to label mapping from YOLO model
+      visibility: public
+    - name: yolo_resolve_class_ids
+      source: src/actions/yolo_actions:yolo_resolve_class_ids
+      description: Resolve label names to class ids
+      visibility: public
+    - name: yolo_detect_on_screen
+      source: src/actions/yolo_actions:yolo_detect_on_screen
+      description: Run YOLO detection on current screen or ROI
+      visibility: public
+    - name: yolo_detect_image
+      source: src/actions/yolo_actions:yolo_detect_image
+      description: Run YOLO detection on a local image path
+      visibility: public
+    - name: yolo_count_targets
+      source: src/actions/yolo_actions:yolo_count_targets
+      description: Count targets with label and confidence filters
+      visibility: public
+    - name: yolo_find_target
+      source: src/actions/yolo_actions:yolo_find_target
+      description: Find one target by filter and sort strategy
+      visibility: public
+    - name: yolo_wait_for_target
+      source: src/actions/yolo_actions:yolo_wait_for_target
+      description: Wait until target appears then return detection
+      visibility: public
+    - name: yolo_wait_for_target_disappear
+      source: src/actions/yolo_actions:yolo_wait_for_target_disappear
+      description: Wait until target disappears from screen
+      visibility: public
+    - name: yolo_find_and_click_target
+      source: src/actions/yolo_actions:yolo_find_and_click_target
+      description: Find a target and click it by global coordinates
+      visibility: public
+    - name: yolo_click_all_targets
+      source: src/actions/yolo_actions:yolo_click_all_targets
+      description: Detect once and click all matched targets
+      visibility: public
+    - name: yolo_find_target_and_press_key
+      source: src/actions/yolo_actions:yolo_find_target_and_press_key
+      description: Find target then press key if found
+      visibility: public
     - name: find_image
       source: src/actions/atomic_actions:find_image
       description: Find an image on screen
@@ -100,6 +174,10 @@ exports:
     - name: find_all_images
       source: src/actions/atomic_actions:find_all_images
       description: Find all occurrences of an image
+      visibility: public
+    - name: find_best_image
+      source: src/actions/atomic_actions:find_best_image
+      description: Find the best matching template on the screen
       visibility: public
     - name: find_templates_in_set
       source: src/actions/atomic_actions:find_templates_in_set

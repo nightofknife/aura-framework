@@ -48,7 +48,7 @@
                 <div class="package-meta">
                   <span class="package-version">v{{ pkg.version }}</span>
                   <span v-if="pkg.task_count !== undefined" class="package-tasks">
-                    {{ pkg.task_count }} 任务
+                    {{ pkg.task_count }} 任务 (task_paths)
                   </span>
                 </div>
               </div>
@@ -67,9 +67,6 @@
             <strong>{{ selectedPackage.name }}</strong>
             <span class="version-badge">v{{ selectedPackage.version }}</span>
           </div>
-          <button class="btn btn-secondary btn-mini" @click="exportPackage">
-            导出 ZIP
-          </button>
         </div>
 
         <div class="tabs-container">
@@ -95,6 +92,9 @@
         <div v-if="detailTab === 'manifest'" class="manifest-editor">
           <div class="editor-header">
             <span class="editor-title">manifest.yaml</span>
+            <span class="manifest-hint">
+              提示：运行时任务来自 `task_paths` 扫描，`exports.tasks` 仅作元数据展示。
+            </span>
             <div class="editor-actions">
               <button
                 class="btn btn-primary btn-mini"
@@ -211,38 +211,21 @@ async function saveManifest() {
   try {
     const manifestObj = yaml.parse(manifestContent.value);
     const encodedName = encodeURIComponent(selectedPackage.value.name);
-    await api.put(`/packages/${encodedName}/manifest`, manifestObj);
+    const { data } = await api.put(`/packages/${encodedName}/manifest`, manifestObj);
+
+    // 后端会对只读段（如 exports.tasks）做保留，成功后回读以保持编辑器与磁盘一致
+    const refreshed = await api.get(`/packages/${encodedName}/manifest`);
+    manifestContent.value = yaml.stringify(refreshed.data, { indent: 2 });
 
     originalManifest.value = manifestContent.value;
     manifestChanged.value = false;
 
-    alert('Manifest 保存成功');
+    const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+    const warningSuffix = warnings.length ? `\n\n注意:\n- ${warnings.join('\n- ')}` : '';
+    alert(`Manifest 保存成功${warningSuffix}`);
   } catch (err) {
     console.error('Failed to save manifest:', err);
     alert(`保存失败: ${err.message}`);
-  }
-}
-
-async function exportPackage() {
-  if (!selectedPackage.value) return;
-
-  try {
-    const encodedName = encodeURIComponent(selectedPackage.value.name);
-    const response = await api.get(`/packages/${encodedName}/export`, {
-      responseType: 'blob'
-    });
-
-    const url = window.URL.createObjectURL(new Blob([response.data]));
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `${selectedPackage.value.name}.zip`);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(url);
-  } catch (err) {
-    console.error('Failed to export package:', err);
-    alert(`导出失败: ${err.message}`);
   }
 }
 
@@ -408,6 +391,13 @@ watch(() => detailTab.value, async (newTab) => {
   font-family: 'Consolas', monospace;
   color: var(--text-2);
   font-size: 13px;
+}
+
+.manifest-hint {
+  margin-left: 12px;
+  color: var(--text-3);
+  font-size: 12px;
+  flex: 1;
 }
 
 .editor-actions {

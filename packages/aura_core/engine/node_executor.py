@@ -50,7 +50,6 @@ class NodeExecutor:
         - 处理超时
         - 处理输出映射
         - 触发事件回调
-        - 执行goto逻辑
         - 异常处理
 
         Args:
@@ -210,10 +209,6 @@ class NodeExecutor:
                     'output': node_result
                 })
 
-            # ===== 执行 goto 逻辑 =====
-            await self.engine.control_flow.handle_goto(
-                node_id, node_data, node_context, action_result
-            )
 
         # 统一异常处理
         except (JumpSignal, StopTaskException) as e:
@@ -309,7 +304,14 @@ class NodeExecutor:
             ValueError: 当节点缺少action字段时
         """
         renderer = TemplateRenderer(node_context, self.engine.state_store)
-        injector = ActionInjector(node_context, self.engine, renderer, self.engine.services)
+        current_package = getattr(self.engine.orchestrator, "loaded_package", None)
+        injector = ActionInjector(
+            node_context,
+            self.engine,
+            renderer,
+            self.engine.services,
+            current_package=current_package,
+        )
 
         action_name = node_data.get('action')
         if not action_name:

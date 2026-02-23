@@ -45,16 +45,6 @@ class GraphBuilder:
         self.engine.nodes = steps_dict
         all_node_ids = set(self.engine.nodes.keys())
 
-        # ===== 收集标签 =====
-        for node_id, node_data in self.engine.nodes.items():
-            label = node_data.get('label')
-            if label:
-                if label in self.engine.label_to_node:
-                    raise ValueError(
-                        f"标签 '{label}' 重复定义：节点 '{node_id}' 和 '{self.engine.label_to_node[label]}'"
-                    )
-                self.engine.label_to_node[label] = node_id
-
         # 构建依赖图
         for node_id, node_data in self.engine.nodes.items():
             self.engine.step_states[node_id] = self.engine.StepState.PENDING

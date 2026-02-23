@@ -19,7 +19,8 @@ class ManifestGenerator:
     def __init__(self, package_path: Path):
         self.package_path = package_path
         self.src_path = package_path / "src"
-        self.tasks_path = package_path / "tasks"
+        self.task_paths = [package_path / "tasks"]
+        self.tasks_path = self.task_paths[0]
 
     def generate(self, preserve_manual_edits: bool = True) -> Dict[str, Any]:
         """
@@ -33,6 +34,8 @@ class ManifestGenerator:
         """
         # 1. 读取现有 manifest（如果存在）
         existing_manifest = self._load_existing_manifest()
+        self.task_paths = self._resolve_task_paths(existing_manifest)
+        self.tasks_path = self.task_paths[0] if self.task_paths else (self.package_path / "tasks")
 
         # 2. 扫描装饰器
         services = self._scan_services()
@@ -80,12 +83,39 @@ class ManifestGenerator:
             },
             "dependencies": {},
             "pypi-dependencies": {},
+            "task_paths": ["tasks"],
             "exports": {
                 "services": [],
                 "actions": [],
                 "tasks": []
             }
         }
+
+    def _resolve_task_paths(self, existing_manifest: Dict[str, Any]) -> List[Path]:
+        """Resolve task scan directories from manifest `task_paths`."""
+        configured = existing_manifest.get("task_paths", ["tasks"])
+        if not isinstance(configured, list) or not configured:
+            configured = ["tasks"]
+
+        resolved_paths: List[Path] = []
+        for item in configured:
+            if not isinstance(item, str):
+                continue
+            task_path = (self.package_path / item).resolve()
+            try:
+                task_path.relative_to(self.package_path.resolve())
+            except Exception:
+                logger.warning(f"Ignore unsafe task path in manifest: {item}")
+                continue
+            if task_path.is_dir():
+                resolved_paths.append(task_path)
+
+        if not resolved_paths:
+            fallback = self.package_path / "tasks"
+            if fallback.is_dir():
+                resolved_paths.append(fallback.resolve())
+
+        return resolved_paths
 
     def _scan_services(self) -> List[Dict[str, Any]]:
         """扫描 src/ 目录下的所有 @register_service"""
@@ -155,27 +185,31 @@ class ManifestGenerator:
         return actions
 
     def _scan_tasks(self) -> List[Dict[str, Any]]:
-        """扫描 tasks/ 目录下的所有 .yaml 文件"""
+        """扫描 `task_paths` 目录下的所有 .yaml 文件"""
         tasks = []
 
-        if not self.tasks_path.exists():
-            return tasks
+        for task_dir in self.task_paths:
+            if not task_dir.exists():
+                continue
 
-        for yaml_file in self.tasks_path.glob("*.yaml"):
-            try:
-                with open(yaml_file, 'r', encoding='utf-8') as f:
-                    task_data = yaml.safe_load(f)
+            for yaml_file in task_dir.rglob("*.yaml"):
+                try:
+                    with open(yaml_file, 'r', encoding='utf-8') as f:
+                        task_data = yaml.safe_load(f)
 
-                rel_path = yaml_file.relative_to(self.package_path)
+                    rel_path = yaml_file.relative_to(self.package_path)
+                    task_id = yaml_file.relative_to(task_dir).with_suffix("").as_posix()
+                    if isinstance(task_data, dict):
+                        task_id = task_data.get("name", task_id)
 
-                tasks.append({
-                    "id": task_data.get("name", yaml_file.stem),
-                    "title": task_data.get("description", ""),
-                    "source": str(rel_path).replace('\\', '/'),
-                    "description": task_data.get("description", "")
-                })
-            except Exception as e:
-                logger.warning(f"扫描任务文件 {yaml_file} 失败: {e}")
+                    tasks.append({
+                        "id": task_id,
+                        "title": (task_data or {}).get("description", "") if isinstance(task_data, dict) else "",
+                        "source": str(rel_path).replace('\\', '/'),
+                        "description": (task_data or {}).get("description", "") if isinstance(task_data, dict) else ""
+                    })
+                except Exception as e:
+                    logger.warning(f"扫描任务文件 {yaml_file} 失败: {e}")
 
         return tasks
 

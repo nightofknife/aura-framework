@@ -185,6 +185,48 @@ def find_all_images(app: AppProviderService, vision: VisionService, engine: Exec
 
     return multi_match_result
 
+    # NOTE: debug-friendly single best match
+@register_action(name="find_best_image", read_only=True, public=True)
+@requires_services(vision='vision', app='app')
+def find_best_image(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+                   region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
+                   use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
+                   preprocess: str = "none") -> MatchResult:
+    capture = app.capture(rect=region)
+    if not capture.success:
+        logger.error("?? 'find_best_image' ????????")
+        return MatchResult(found=False)
+
+    template_path = _resolve_template_path(engine, vision, template)
+    match_result = vision.find_template(
+        source_image=capture.image,
+        template_image=template_path,
+        threshold=threshold,
+        use_grayscale=use_grayscale,
+        match_method=match_method,
+        preprocess=preprocess,
+    )
+
+    region_x_offset = region[0] if region else 0
+    region_y_offset = region[1] if region else 0
+    if match_result.found:
+        match_result.top_left = (
+            match_result.top_left[0] + region_x_offset,
+            match_result.top_left[1] + region_y_offset,
+        )
+        match_result.center_point = (
+            match_result.center_point[0] + region_x_offset,
+            match_result.center_point[1] + region_y_offset,
+        )
+        match_result.rect = (
+            match_result.rect[0] + region_x_offset,
+            match_result.rect[1] + region_y_offset,
+            match_result.rect[2],
+            match_result.rect[3],
+        )
+    print(match_result)
+    return match_result
+
 
 @register_action(name="find_templates_in_set", read_only=True, public=True)
 @requires_services(vision='vision', app='app')
@@ -590,7 +632,6 @@ def get_text_in_region(app: AppProviderService, ocr: OcrService, region: tuple[i
     result = join_with.join(filtered_texts)
     logger.info(f"识别并处理后的文本: '{result}'")
     return result
-
 
 # --- Check Actions (检查状态，返回布尔值) ---
 @register_action(name="check_text_exists", read_only=True, public=True)

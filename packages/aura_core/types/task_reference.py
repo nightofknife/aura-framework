@@ -153,6 +153,16 @@ class TaskReference:
             if len(parts) == 3:
                 # 格式: author/package/task_path
                 author, package, task_path = parts
+                if (':' not in task_path) or ('/' in task_path) or ('\\' in task_path):
+                    raise ValueError(
+                        f"Invalid task reference (use colon format): {ref}\n"
+                        f"Expected format: 'author/package/tasks:test:example' or 'tasks:test:example'"
+                    )
+                if (':' not in task_path) or ('/' in task_path) or ('\\' in task_path):
+                    raise ValueError(
+                        f"Invalid task reference (use colon format): {ref}\n"
+                        f"Expected format: 'author/package/tasks:test:example' or 'tasks:test:example'"
+                    )
             elif len(parts) == 2:
                 # 格式: package/task_path
                 # ❌ 拒绝旧格式斜杠（无冒号的路径）
@@ -450,9 +460,9 @@ class TaskReference:
             >>> ref = TaskReference.from_string("tasks:test:draw_star", default_package="MyTestPlan")
             >>> ref.directory
             'tasks/test'
-            >>> ref2 = TaskReference.from_string("simple_task", default_package="MyTestPlan")
+            >>> ref2 = TaskReference.from_string("custom:task", default_package="MyTestPlan")
             >>> ref2.directory
-            ''
+            'custom'
         """
         parts = self.path_parts[:-1]
         return '/'.join(parts) if parts else ''

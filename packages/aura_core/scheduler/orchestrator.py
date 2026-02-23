@@ -68,8 +68,8 @@ class Orchestrator:
         self.current_plan_path = Path(base_dir) / 'plans' / plan_name
         self.pause_event = pause_event
 
-        # ✅ 从 loaded_package 中获取 manifest（如果有）
-        manifest = loaded_package.manifest if loaded_package and hasattr(loaded_package, 'manifest') else None
+        # ✅ 兼容两种传入：LoadedPackage 或 PluginManifest
+        manifest = loaded_package.manifest if loaded_package and hasattr(loaded_package, 'manifest') else loaded_package
         self.task_loader = TaskLoader(self.plan_name, self.current_plan_path, manifest)
 
         self.state_planner = state_planner
@@ -487,7 +487,13 @@ class Orchestrator:
         try:
             temp_context = ExecutionContext()
             renderer = TemplateRenderer(temp_context, self.state_store)
-            injector = ActionInjector(temp_context, self, renderer, self.services)
+            injector = ActionInjector(
+                temp_context,
+                self,
+                renderer,
+                self.services,
+                current_package=self.loaded_package,
+            )
 
             params = condition_data.get('params', {})
             rendered_params = await renderer.render(params)

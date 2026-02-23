@@ -1,358 +1,419 @@
 # -*- coding: utf-8 -*-
-"""
-包管理器（基于 manifest.yaml）
+"""Package manager based on `manifest.yaml`."""
 
-替代 PluginManager，从 manifest.yaml 加载包
-"""
+from __future__ import annotations
 
-from pathlib import Path
-from typing import Dict, List
-from graphlib import TopologicalSorter
 import logging
+from graphlib import TopologicalSorter
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional
 
-from ..manifest import ManifestParser, PluginManifest
-from ...api import service_registry, ACTION_REGISTRY, ActionDefinition, ServiceDefinition
+from ...api import ACTION_REGISTRY, ActionDefinition, ServiceDefinition, service_registry
+from ...config.loader import get_config_value
+from ..manifest import ManifestGenerator, ManifestParser, PluginManifest
 
 logger = logging.getLogger(__name__)
 
 
 class PackageManager:
-    """
-    新版包管理器（基于 manifest.yaml）
-
-    职责：
-    1. 从 packages/ 和 plans/ 目录加载所有包
-    2. 解析依赖关系并按拓扑排序
-    3. 注册 Services、Actions、Tasks 到运行时注册表
-    4. 验证 FQID 调用的合法性
-    """
+    """Discover, validate, resolve and load manifest-based packages."""
 
     def __init__(self, packages_dir: Path, plans_dir: Path):
         self.packages_dir = packages_dir
         self.plans_dir = plans_dir
+        self.base_path = packages_dir.parent
+
+        manifest_mode = str(
+            get_config_value("package.manifest_mode", "", base_path=str(self.base_path)) or ""
+        ).strip().lower()
+        if not manifest_mode:
+            use_manifest_system = bool(
+                get_config_value("package.use_manifest_system", True, base_path=str(self.base_path))
+            )
+            manifest_mode = "strict" if use_manifest_system else "off"
+
+        if manifest_mode not in {"strict", "hybrid", "off"}:
+            logger.warning("Unknown package.manifest_mode '%s', fallback to strict", manifest_mode)
+            manifest_mode = "strict"
+
+        self.manifest_mode = manifest_mode
+        self.auto_sync_manifest = bool(
+            get_config_value(
+                "package.auto_sync_manifest_on_startup",
+                self.manifest_mode in {"hybrid", "off"},
+                base_path=str(self.base_path),
+            )
+        )
+
         self.loaded_packages: Dict[str, PluginManifest] = {}
 
+    @property
+    def _is_hybrid_mode(self) -> bool:
+        return self.manifest_mode in {"hybrid", "off"}
+
+    def _iter_package_dirs(self) -> Iterable[Path]:
+        candidates = [(self.packages_dir, False), (self.plans_dir, True)]
+        for base_dir, include_all in candidates:
+            if not base_dir.exists() or not base_dir.is_dir():
+                continue
+
+            for item in base_dir.iterdir():
+                if not item.is_dir():
+                    continue
+                if item.name.startswith(".") or item.name.startswith("__"):
+                    continue
+
+                if include_all:
+                    yield item
+                    continue
+
+                manifest_path = item / "manifest.yaml"
+                has_runtime_layout = (item / "src").is_dir() or (item / "tasks").is_dir()
+                if manifest_path.is_file() or has_runtime_layout:
+                    yield item
+
+    def _auto_sync_manifests(self):
+        if not self.auto_sync_manifest:
+            return
+
+        synced_count = 0
+        for package_dir in self._iter_package_dirs():
+            try:
+                generator = ManifestGenerator(package_dir)
+                try:
+                    manifest_data = generator.generate(preserve_manual_edits=True)
+                except Exception as e:
+                    if not self._is_hybrid_mode:
+                        raise
+                    logger.warning(
+                        "Manifest merge failed for '%s', fallback to generated-only manifest: %s",
+                        package_dir,
+                        e,
+                    )
+                    manifest_data = generator.generate(preserve_manual_edits=False)
+
+                generator.save(manifest_data)
+                synced_count += 1
+            except Exception as e:
+                if self._is_hybrid_mode:
+                    logger.warning("Manifest auto-sync skipped for '%s': %s", package_dir, e)
+                    continue
+                raise
+
+        if synced_count:
+            logger.info("Manifest auto-sync completed: %s package(s)", synced_count)
+
+    def _build_fallback_manifest(self, package_dir: Path, reason: str) -> Optional[PluginManifest]:
+        try:
+            generator = ManifestGenerator(package_dir)
+            manifest_data = generator.generate(preserve_manual_edits=False)
+            generator.save(manifest_data)
+            manifest = ManifestParser.parse(package_dir / "manifest.yaml")
+            logger.warning("Using generated fallback manifest for '%s' (%s)", package_dir, reason)
+            return manifest
+        except Exception as e:
+            logger.error("Fallback manifest generation failed for '%s': %s", package_dir, e)
+            return None
+
     def load_all_packages(self):
-        """加载所有包"""
-        logger.info("======= PackageManager: 开始加载所有包 =======")
+        logger.info("======= PackageManager: start loading all packages =======")
 
-        # 1. 发现所有包
+        self.loaded_packages.clear()
+
+        if self.auto_sync_manifest:
+            self._auto_sync_manifests()
+
         manifests = self._discover_packages()
-
-        # 2. 验证清单
         self._validate_manifests(manifests)
-
-        # 3. 解析依赖并排序
         load_order = self._resolve_dependencies(manifests)
-
-        # 4. 按顺序加载
         self._load_in_order(load_order, manifests)
 
-        # ✅ 5. 验证服务循环依赖
-        from ...api import service_registry
         try:
             service_registry.validate_no_circular_dependencies()
         except ValueError as e:
-            logger.error(f"服务依赖验证失败: {e}")
+            logger.error("Service dependency validation failed: %s", e)
             raise
 
-        logger.info(f"======= 已加载 {len(self.loaded_packages)} 个包 =======")
+        logger.info("======= loaded %s packages =======", len(self.loaded_packages))
 
     def _discover_packages(self) -> Dict[str, PluginManifest]:
-        """发现所有包"""
-        manifests = {}
+        manifests: Dict[str, PluginManifest] = {}
+        discovered_dirs: set[Path] = set()
 
-        # 扫描 packages/ 和 plans/
         for base_dir in [self.packages_dir, self.plans_dir]:
             if not base_dir.exists():
                 continue
 
             for manifest_path in base_dir.rglob("manifest.yaml"):
+                discovered_dirs.add(manifest_path.parent.resolve())
                 try:
                     manifest = ManifestParser.parse(manifest_path)
-                    manifests[manifest.package.canonical_id] = manifest
-                    logger.info(f"发现包: {manifest.package.canonical_id} v{manifest.package.version}")
+                    package_id = manifest.package.canonical_id
+                    if package_id in manifests:
+                        logger.warning(
+                            "Duplicate package canonical_id '%s', last one wins: %s",
+                            package_id,
+                            manifest_path,
+                        )
+                    manifests[package_id] = manifest
+                    logger.info("Discovered package %s v%s", manifest.package.canonical_id, manifest.package.version)
                 except Exception as e:
-                    logger.error(f"解析 {manifest_path} 失败: {e}")
+                    if self._is_hybrid_mode:
+                        logger.warning("Manifest parse failed for '%s': %s", manifest_path, e)
+                        fallback = self._build_fallback_manifest(
+                            manifest_path.parent,
+                            reason=f"parse failed: {e}",
+                        )
+                        if fallback:
+                            manifests[fallback.package.canonical_id] = fallback
+                    else:
+                        raise ValueError(f"Failed to parse manifest '{manifest_path}': {e}")
+
+        if self._is_hybrid_mode:
+            for package_dir in self._iter_package_dirs():
+                resolved_dir = package_dir.resolve()
+                if resolved_dir in discovered_dirs:
+                    continue
+
+                fallback = self._build_fallback_manifest(package_dir, reason="manifest missing")
+                if fallback:
+                    manifests[fallback.package.canonical_id] = fallback
 
         return manifests
 
     def _validate_manifests(self, manifests: Dict[str, PluginManifest]):
-        """验证所有清单"""
         for package_id, manifest in manifests.items():
             errors = ManifestParser.validate(manifest)
             if errors:
-                logger.error(f"包 {package_id} 验证失败:")
+                if self._is_hybrid_mode:
+                    logger.warning("Package %s has invalid manifest, continue in hybrid mode:", package_id)
+                    for error in errors:
+                        logger.warning("  - %s", error)
+                    continue
+
+                logger.error("Package %s manifest validation failed:", package_id)
                 for error in errors:
-                    logger.error(f"  - {error}")
+                    logger.error("  - %s", error)
                 raise ValueError(f"Package {package_id} has invalid manifest")
 
     def _resolve_dependencies(self, manifests: Dict[str, PluginManifest]) -> List[str]:
-        """解析依赖并返回加载顺序。
-
-        ✅ 修复：
-        1. 验证必需依赖是否存在
-        2. 可选依赖也加入加载顺序（如果存在）
-        3. 提供清晰的错误信息
-
-        Args:
-            manifests: 所有已发现的包清单
-
-        Returns:
-            按依赖关系排序后的包ID列表
-
-        Raises:
-            ValueError: 如果存在缺失的必需依赖或循环依赖
-        """
-        graph = {}
-        missing_deps = {}  # 记录缺失的依赖
+        graph: Dict[str, List[str]] = {}
+        missing_deps: Dict[str, list] = {}
 
         for package_id, manifest in manifests.items():
-            deps = []
-
+            deps: List[str] = []
             for dep_spec in manifest.dependencies.values():
                 dep_id = dep_spec.name.lstrip("@")
 
-                # ✅ 验证必需依赖是否存在
                 if not dep_spec.optional and dep_id not in manifests:
-                    if package_id not in missing_deps:
-                        missing_deps[package_id] = []
-                    missing_deps[package_id].append((dep_id, dep_spec))
-                    continue  # 继续收集其他缺失的依赖
+                    missing_deps.setdefault(package_id, []).append((dep_id, dep_spec))
+                    continue
 
-                # ✅ 可选依赖也加入图（如果存在）
                 if dep_id in manifests:
                     deps.append(dep_id)
-                    logger.debug(
-                        f"包 '{package_id}' 依赖 '{dep_id}' "
-                        f"({'必需' if not dep_spec.optional else '可选'})"
-                    )
 
             graph[package_id] = deps
 
-        # ✅ 如果有缺失的必需依赖，抛出详细错误
         if missing_deps:
-            error_lines = ["检测到缺失的包依赖:"]
+            error_lines = ["Missing package dependencies detected:"]
             for pkg_id, deps in missing_deps.items():
-                error_lines.append(f"\n包 '{pkg_id}' 缺失以下必需依赖:")
-                for dep_id, dep_spec in deps:
+                error_lines.append(f"\nPackage '{pkg_id}' missing required dependencies:")
+                for _, dep_spec in deps:
                     error_lines.append(
-                        f"  - {dep_spec.name} (版本: {dep_spec.version}, 来源: {dep_spec.source})"
+                        f"  - {dep_spec.name} (version: {dep_spec.version}, source: {dep_spec.source})"
                     )
 
-            error_lines.append("\n请确保:")
-            error_lines.append("1. 依赖包已放置在正确的目录 (packages/ 或 plans/)")
-            error_lines.append("2. 依赖包的 manifest.yaml 格式正确")
-            error_lines.append("3. 依赖包的 canonical_id 与依赖声明匹配")
+            if self._is_hybrid_mode:
+                logger.warning("\n".join(error_lines))
+            else:
+                raise ValueError("\n".join(error_lines))
 
-            raise ValueError("\n".join(error_lines))
-
-        # ✅ 拓扑排序
         sorter = TopologicalSorter(graph)
         try:
             load_order = list(sorter.static_order())
-            logger.info(f"依赖解析完成，加载顺序: {' -> '.join(load_order)}")
+            logger.info("Dependency resolved, load order: %s", " -> ".join(load_order))
             return load_order
         except Exception as e:
-            logger.error(f"依赖解析失败（可能存在循环依赖）: {e}")
-            # ✅ 提供更详细的循环依赖信息
-            logger.error("依赖关系图:")
+            logger.error("Dependency resolution failed (possible cycle): %s", e)
             for pkg_id, deps in graph.items():
-                logger.error(f"  {pkg_id} -> {deps}")
-            raise ValueError(f"包依赖存在循环引用，无法加载。详情: {e}")
+                logger.error("  %s -> %s", pkg_id, deps)
+            if self._is_hybrid_mode:
+                logger.warning("Dependency graph has cycle, fallback to discovery order in hybrid mode")
+                return list(manifests.keys())
+            raise ValueError(f"Cyclic package dependency detected, cannot load. detail: {e}")
 
     def _load_in_order(self, load_order: List[str], manifests: Dict[str, PluginManifest]):
-        """按顺序加载包"""
         for package_id in load_order:
             if package_id not in manifests:
                 continue
 
             manifest = manifests[package_id]
-            logger.info(f"正在加载包: {package_id}")
+            logger.info("Loading package: %s", package_id)
 
             try:
-                # 调用 on_load 钩子
                 if manifest.lifecycle.on_load:
                     self._call_hook(manifest, manifest.lifecycle.on_load)
 
-                # 注册 Services、Actions、Tasks
                 self._register_services(manifest)
                 self._register_actions(manifest)
                 self._register_tasks(manifest)
 
                 self.loaded_packages[package_id] = manifest
-                logger.info(f"✓ 包 {package_id} 加载成功")
-
+                logger.info("Package %s loaded", package_id)
             except Exception as e:
-                logger.error(f"✗ 包 {package_id} 加载失败: {e}")
+                logger.error("Package %s load failed: %s", package_id, e)
                 raise
 
     def _call_hook(self, manifest: PluginManifest, hook: str):
-        """调用生命周期钩子"""
         try:
-            module_path, func_name = hook.split(':')
+            module_path, func_name = hook.split(":")
+            module = self._import_plugin_module(manifest, module_path)
+            func = getattr(module, func_name)
 
-            # 动态导入
-            import importlib
-            import sys
-
-            plugin_src_path = str(manifest.path / "src")
-            if plugin_src_path not in sys.path:
-                sys.path.insert(0, plugin_src_path)
-
-            try:
-                module = importlib.import_module(module_path.replace('/', '.'))
-                func = getattr(module, func_name)
-
-                logger.info(f"调用钩子: {hook}")
-                func()
-
-            finally:
-                if plugin_src_path in sys.path:
-                    sys.path.remove(plugin_src_path)
-
+            logger.info("Calling hook: %s", hook)
+            func()
         except Exception as e:
-            logger.warning(f"调用钩子 {hook} 失败: {e}")
+            logger.warning("Hook call failed %s: %s", hook, e)
 
-    def _register_services(self, manifest: PluginManifest):
-        """注册服务
+    def _normalize_module_parts(self, module_path: str) -> List[str]:
+        normalized = module_path.replace("\\", "/")
+        if normalized.endswith(".py"):
+            normalized = normalized[:-3]
+        if "/" in normalized:
+            parts = normalized.split("/")
+        else:
+            parts = normalized.split(".")
+        return [part for part in parts if part]
 
-        ✅ 修复：确保sys.path在异常时也能正确清理
-        """
-        import importlib
+    def _ensure_package(self, name: str, path: Path):
+        import importlib.machinery
+        import sys
+        import types
+
+        if name in sys.modules:
+            return
+        module = types.ModuleType(name)
+        module.__path__ = [str(path)]
+        module.__package__ = name
+        module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
+        module.__spec__.submodule_search_locations = [str(path)]
+        sys.modules[name] = module
+
+    def _import_plugin_module(self, manifest: PluginManifest, module_path: str):
+        import importlib.util
+        import re
         import sys
 
-        # 添加包路径（不是src路径）到sys.path
-        plugin_path = str(manifest.path)
-        path_added = False  # ✅ 标记是否添加了路径
+        parts = self._normalize_module_parts(module_path)
+        if not parts:
+            raise ImportError(f"Invalid module path: {module_path!r}")
 
+        canonical_id = manifest.package.canonical_id.lstrip("@")
+        safe_id = re.sub(r"[^a-zA-Z0-9_]", "_", canonical_id)
+        base_pkg = f"aura_pkg_{safe_id}"
+
+        self._ensure_package(base_pkg, manifest.path)
+        for idx in range(1, len(parts)):
+            pkg_name = base_pkg + "." + ".".join(parts[:idx])
+            pkg_path = manifest.path / Path(*parts[:idx])
+            self._ensure_package(pkg_name, pkg_path)
+
+        rel_path = Path(*parts)
+        module_file = manifest.path / rel_path
+        is_package = False
+        if module_file.is_dir():
+            module_file = module_file / "__init__.py"
+            is_package = True
+        if module_file.suffix != ".py":
+            module_file = module_file.with_suffix(".py")
+
+        if not module_file.exists():
+            raise ImportError(f"Module file not found: {module_file}")
+
+        full_module_name = base_pkg + "." + ".".join(parts)
+        if full_module_name in sys.modules:
+            return sys.modules[full_module_name]
+
+        spec = importlib.util.spec_from_file_location(
+            full_module_name,
+            str(module_file),
+            submodule_search_locations=[str(module_file.parent)] if is_package else None,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to load module spec: {module_file}")
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[full_module_name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    def _register_services(self, manifest: PluginManifest):
         try:
-            if plugin_path not in sys.path:
-                sys.path.insert(0, plugin_path)
-                path_added = True  # ✅ 记录我们添加了路径
-                logger.debug(f"已添加到 sys.path: {plugin_path}")
-
             for service in manifest.exports.services:
-                module_path, class_name = service.source.split(':')
-
-                # 导入模块（source格式: src/services/config_service）
-                # 转换为完整的导入路径
-                full_module_path = module_path.replace('/', '.')
-
-                logger.debug(f"尝试导入服务模块: {full_module_path} (from {plugin_path})")
-                logger.debug(f"当前 sys.path: {sys.path[:3]}")  # 只显示前3个
-
-                module = importlib.import_module(full_module_path)
+                module_path, class_name = service.source.split(":")
+                module = self._import_plugin_module(manifest, module_path)
                 service_class = getattr(module, class_name)
 
-                # 构建 FQID
                 service_fqid = f"{manifest.package.canonical_id}/{service.name}"
 
-                # 注册到运行时注册表
                 definition = ServiceDefinition(
                     alias=service.name,
                     fqid=service_fqid,
                     service_class=service_class,
                     plugin=manifest,
-                    public=service.visibility == "public"
+                    public=service.visibility == "public",
                 )
                 service_registry.register(definition)
 
-                logger.info(f"  [OK] 注册服务: {service_fqid}")
-
+                logger.info("  [OK] Register service: %s", service_fqid)
         except Exception as e:
-            logger.error(f"注册服务失败 (包: {manifest.package.canonical_id}): {e}")
-            raise  # ✅ 重新抛出异常，让调用者处理
-
-        finally:
-            # ✅ 确保清理：只移除我们添加的路径
-            if path_added and plugin_path in sys.path:
-                try:
-                    sys.path.remove(plugin_path)
-                    logger.debug(f"已从 sys.path 移除: {plugin_path}")
-                except ValueError:
-                    # 已被其他代码移除，忽略
-                    pass
+            logger.error("Register service failed (package: %s): %s", manifest.package.canonical_id, e)
+            raise
 
     def _register_actions(self, manifest: PluginManifest):
-        """注册动作
-
-        ✅ 修复：确保sys.path在异常时也能正确清理
-        """
-        import importlib
-        import sys
         import inspect
 
-        # 添加包路径到sys.path
-        plugin_path = str(manifest.path)
-        path_added = False  # ✅ 标记是否添加了路径
-
         try:
-            if plugin_path not in sys.path:
-                sys.path.insert(0, plugin_path)
-                path_added = True  # ✅ 记录我们添加了路径
-
             for action in manifest.exports.actions:
-                module_path, func_name = action.source.split(':')
-
-                # 导入模块（source格式: src/actions/atomic_actions）
-                full_module_path = module_path.replace('/', '.')
-
-                module = importlib.import_module(full_module_path)
+                module_path, func_name = action.source.split(":")
+                module = self._import_plugin_module(manifest, module_path)
                 action_func = getattr(module, func_name)
 
-                # ✅ 构建三段式 FQID: author/package/action
-                # 将 canonical_id (@Aura-Project/base) 拆分为 author/package
-                canonical_id = manifest.package.canonical_id.lstrip('@')
-                parts = canonical_id.split('/')
+                canonical_id = manifest.package.canonical_id.lstrip("@")
+                parts = canonical_id.split("/")
                 if len(parts) != 2:
-                    logger.warning(
-                        f"包 '{canonical_id}' 的 canonical_id 格式不标准，"
-                        f"应为 '@author/package'，action FQID可能不正确"
-                    )
-                    # 兼容处理：如果不是两段，直接使用
+                    logger.warning("Package canonical_id format is invalid; expected @author/package.")
                     action_fqid = f"{canonical_id}/{action.name}"
                 else:
                     author, package_name = parts
-                    action_fqid = f"{author}/{package_name}/{action.name}"  # 三段式
+                    action_fqid = f"{author}/{package_name}/{action.name}"
 
-                # 提取服务依赖（从装饰器元数据）
-                service_deps = getattr(action_func, '_service_dependencies', {})
+                service_deps = getattr(action_func, "_service_dependencies", {})
 
-                # 注册到运行时注册表
                 definition = ActionDefinition(
                     func=action_func,
                     name=action.name,
-                    read_only=False,  # 可从 action 扩展字段获取
+                    read_only=False,
                     public=action.visibility == "public",
                     service_deps=service_deps,
                     plugin=manifest,
-                    is_async=inspect.iscoroutinefunction(action_func)
+                    is_async=inspect.iscoroutinefunction(action_func),
                 )
                 ACTION_REGISTRY.register(definition)
 
-                logger.info(f"  [OK] 注册动作: {action_fqid}")
-
+                logger.info("  [OK] Register action: %s", action_fqid)
         except Exception as e:
-            logger.error(f"注册动作失败 (包: {manifest.package.canonical_id}): {e}")
-            raise  # ✅ 重新抛出异常
-
-        finally:
-            # ✅ 确保清理：只移除我们添加的路径
-            if path_added and plugin_path in sys.path:
-                try:
-                    sys.path.remove(plugin_path)
-                    logger.debug(f"已从 sys.path 移除: {plugin_path}")
-                except ValueError:
-                    pass
+            logger.error("Register action failed (package: %s): %s", manifest.package.canonical_id, e)
+            raise
 
     def _register_tasks(self, manifest: PluginManifest):
-        """注册任务"""
+        if manifest.exports.tasks:
+            logger.info(
+                "Manifest exports.tasks for %s are metadata only; runtime task index comes from TaskLoader/task_paths.",
+                manifest.package.canonical_id,
+            )
         for task in manifest.exports.tasks:
-            # 任务不需要注册到注册表
-            # Orchestrator 会直接从文件系统加载
-            logger.info(f"  ✓ 发现任务: {manifest.package.canonical_id}/{task.id}")
+            logger.info("  [OK] Discover task: %s/%s", manifest.package.canonical_id, task.id)
 
-    def get_package(self, package_id: str) -> PluginManifest:
-        """获取已加载的包"""
+    def get_package(self, package_id: str) -> Optional[PluginManifest]:
         return self.loaded_packages.get(package_id)
