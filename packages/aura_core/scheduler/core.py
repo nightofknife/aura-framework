@@ -37,6 +37,7 @@ from packages.aura_core.runtime.profiles import resolve_runtime_profile, Runtime
 from packages.aura_core.observability.service import ObservabilityService
 from packages.aura_core.packaging.core.plan_registry import PlanRegistry
 from packages.aura_core.packaging.core.workspace_service import PlanWorkspaceService
+from packages.aura_core.services import YoloService
 from packages.aura_core.scheduler.execution.dispatcher import DispatchService
 from packages.aura_core.scheduler.execution.service import ExecutionService
 from packages.aura_core.utils.hot_reload import HotReloadPolicy
@@ -133,6 +134,7 @@ class Scheduler:
 
         from packages.aura_core.utils.file_watcher import FileWatcherService
         self.file_watcher_service = FileWatcherService(self.event_bus)
+        self.yolo_service = YoloService(self.config_service)
 
         # --- service wrappers ---
         self.plan_registry = PlanRegistry(self)
@@ -254,6 +256,7 @@ class Scheduler:
                                            fqid='core/interrupt_service')
         service_registry.register_instance('file_watcher_service', self.file_watcher_service, public=False,
                                            fqid='core/file_watcher_service')
+        service_registry.register_instance('core_yolo', self.yolo_service, public=True, fqid='core/yolo')
 
         # 手动注入 EventBus 到 StateStore
         self.state_store.set_event_bus(self.event_bus)
@@ -780,4 +783,3 @@ class Scheduler:
             provided_inputs=provided_inputs,
             enforce_package=enforce_package,
         )
-
