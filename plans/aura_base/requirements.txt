@@ -1,0 +1,9 @@
+opencv-python
+numpy
+paddleocr
+screeninfo
+psutil
+pywin32
+pydantic
+PyYAML
+python-dotenv

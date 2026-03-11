@@ -1,0 +1,646 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aura-automation.org/schemas/task.schema.json",
+  "title": "Aura Task Definition",
+  "description": "Aura 自动化框架的任务定义文件 Schema。定义了任务的元数据、步骤（节点）、依赖关系、循环和重试等核心概念。",
+  "type": "object",
+  "patternProperties": {
+    "^[a-zA-Z_][a-zA-Z0-9_]*$": {
+      "$ref": "#/$defs/TaskDefinition"
+    }
+  },
+  "additionalProperties": false,
+  "minProperties": 1,
+  "$defs": {
+    "TaskDefinition": {
+      "type": "object",
+      "description": "单个任务的完整定义，包含元数据和执行步骤。",
+      "required": [
+        "meta",
+        "steps"
+      ],
+      "properties": {
+        "meta": {
+          "$ref": "#/$defs/TaskMetadata"
+        },
+        "steps": {
+          "$ref": "#/$defs/StepsMap"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskMetadata": {
+      "type": "object",
+      "description": "任务的元数据，包括标题、描述、入口点标记和输入参数定义。",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "任务的显示标题，用于日志和 UI 展示。",
+          "examples": [
+            "画一个五角星",
+            "登录并发送消息"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "description": "任务的详细描述，解释其功能和用途。"
+        },
+        "entry_point": {
+          "type": "boolean",
+          "description": "标记此任务是否为方案（Plan）的入口点。每个方案应有且仅有一个入口任务。",
+          "default": false
+        },
+        "inputs": {
+          "type": "array",
+          "description": "任务的输入参数定义列表。这些参数在任务内部通过 {{ inputs.<name> }} 访问。",
+          "items": {
+            "$ref": "#/$defs/InputParameter"
+          }
+        },
+        "concurrency": {
+          "$ref": "#/$defs/ConcurrencyConfig",
+          "description": "任务的并发控制配置。可以是简写字符串（'exclusive', 'concurrent', 'shared'）或完整配置对象。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "InputParameter": {
+      "type": "object",
+      "description": "单个输入参数的定义。",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "参数的名称（必须是有效的 Python 标识符）。",
+          "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+        },
+        "label": {
+          "type": "string",
+          "description": "参数的显示标签，用于 UI 和文档。"
+        },
+        "description": {
+          "type": "string",
+          "description": "参数说明。"
+        },
+        "type": {
+          "type": "string",
+          "description": "参数的数据类型提示（仅用于文档和 UI，不强制验证）。",
+          "enum": [
+            "string",
+            "number",
+            "boolean",
+            "list",
+            "dict"
+          ]
+        },
+        "required": {
+          "type": "boolean",
+          "description": "是否必填。"
+        },
+        "default": {
+          "description": "参数的默认值。类型应与 'type' 字段匹配。"
+        },
+        "enum": {
+          "type": "array",
+          "description": "可选值列表。",
+          "items": {}
+        },
+        "options": {
+          "type": "array",
+          "description": "enum 的别名。",
+          "items": {}
+        },
+        "count": {
+          "description": "数量约束简写（如 3, \"<=5\", \">=2\", \"1-3\", [1,3]）。",
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          ]
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "min_items": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_items": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "item": {
+          "$ref": "#/$defs/InputParameter"
+        },
+        "items": {
+          "$ref": "#/$defs/InputParameter"
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/InputParameter"
+          }
+        },
+        "ui": {
+          "type": "object",
+          "description": "UI 扩展配置。",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "StepsMap": {
+      "type": "object",
+      "description": "步骤（节点）字典。键是节点的唯一 ID，值是节点定义。",
+      "patternProperties": {
+        "^[a-zA-Z_][a-zA-Z0-9_]*$": {
+          "$ref": "#/$defs/StepDefinition"
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "StepDefinition": {
+      "type": "object",
+      "description": "单个步骤（节点）的完整定义，包括要执行的 Action、参数、依赖关系、循环和重试配置等。",
+      "required": [
+        "action"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "要执行的 Action 的名称（FQID 或别名）。",
+          "examples": [
+            "click",
+            "find_text",
+            "aura.run_task",
+            "log"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "description": "传递给 Action 的参数。具体的键和值取决于 Action 的定义。所有值都支持 Jinja2 模板。",
+          "additionalProperties": true
+        },
+        "step_note": {
+          "type": "string",
+          "description": "步骤级日志说明。节点开始执行前输出，模板作用域仅包含 inputs、loop、params。"
+        },
+        "depends_on": {
+          "$ref": "#/$defs/DependencySpec",
+          "description": "定义此步骤依赖的其他步骤。可以是简单字符串、数组或复杂的逻辑表达式。"
+        },
+        "when": {
+          "type": "string",
+          "description": "Step-level execution gate. Evaluated after dependencies are satisfied; false means step is skipped."
+        },
+        "outputs": {
+          "type": "object",
+          "description": "定义此步骤的输出变量。键是变量名，值是 Jinja2 表达式（可访问 'result' 变量）。",
+          "patternProperties": {
+            "^[a-zA-Z_][a-zA-Z0-9_]*$": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "loop": {
+          "$ref": "#/$defs/LoopConfig",
+          "description": "循环配置。定义如何重复执行此步骤。"
+        },
+        "retry": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "description": "简写形式：重试次数（不包括首次尝试）。"
+            },
+            {
+              "$ref": "#/$defs/RetryConfig",
+              "description": "完整的重试配置对象。"
+            }
+          ]
+        },
+        "retry_delay": {
+          "type": "number",
+          "minimum": 0,
+          "description": "简写形式：每次重试前等待的秒数。与 'retry' 字段配合使用。",
+          "examples": [
+            1.0,
+            2.5
+          ]
+        },
+        "retry_on": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "单个异常类型的名称（如 'TimeoutError'）。"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "要重试的异常类型列表。"
+            }
+          ],
+          "description": "简写形式：指定哪些异常类型应触发重试。"
+        },
+        "retry_condition": {
+          "type": "string",
+          "description": "简写形式：基于 Action 结果的重试条件（Jinja2 表达式）。作用域中有 'result' 和 'attempt' 变量。",
+          "examples": [
+            "{{ result.status_code >= 500 }}",
+            "{{ result.found == false }}"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "properties": {
+              "action": {
+                "const": "run_task"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "aura.run_task"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "then": {
+            "required": [
+              "params"
+            ],
+            "properties": {
+              "params": {
+                "type": "object",
+                "required": [
+                  "task_ref"
+                ],
+                "properties": {
+                  "task_ref": {
+                    "type": "string"
+                  }
+                },
+                "not": {
+                  "required": [
+                    "task_name"
+                  ]
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    "DependencySpec": {
+      "oneOf": [
+        {
+          "type": "string",
+          "description": "Simple dependency: single node id.",
+          "examples": [
+            "node_a"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DependencySpec"
+          },
+          "description": "Multiple dependencies (implicit all)."
+        },
+        {
+          "type": "object",
+          "description": "Complex dependency expression with logical operators or status query.",
+          "oneOf": [
+            {
+              "properties": {
+                "all": {
+                  "$ref": "#/$defs/DependencySpec"
+                }
+              },
+              "required": [
+                "all"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "properties": {
+                "any": {
+                  "$ref": "#/$defs/DependencySpec"
+                }
+              },
+              "required": [
+                "any"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "properties": {
+                "none": {
+                  "$ref": "#/$defs/DependencySpec"
+                }
+              },
+              "required": [
+                "none"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "description": "Status query: key is node id, value is expected statuses joined by |.",
+              "patternProperties": {
+                "^[a-zA-Z_][a-zA-Z0-9_]*$": {
+                  "type": "string",
+                  "pattern": "^(success|failed|running|skipped)(\\s*\\|\\s*(success|failed|running|skipped))*$"
+                }
+              },
+              "additionalProperties": false,
+              "minProperties": 1,
+              "maxProperties": 1
+            }
+          ]
+        }
+      ]
+    },
+    "LoopConfig": {
+      "type": "object",
+      "description": "循环配置。定义三种循环模式之一：for_each（遍历）、times（固定次数）或 while（条件循环）。",
+      "oneOf": [
+        {
+          "description": "for_each 循环：遍历列表或字典。",
+          "required": [
+            "for_each"
+          ],
+          "properties": {
+            "for_each": {
+              "type": "string",
+              "description": "Jinja2 表达式，结果必须是列表或字典。循环中可用 {{ loop.item }} 和 {{ loop.index }}。",
+              "examples": [
+                "{{ nodes.prepare_data.items }}",
+                "{{ inputs.user_list }}"
+              ]
+            },
+            "parallelism": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "并发度：同时执行的迭代数量。默认为列表长度（全部并发）。"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "times 循环：执行固定次数。",
+          "required": [
+            "times"
+          ],
+          "properties": {
+            "times": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "string",
+                  "description": "Jinja2 表达式，结果必须是整数。"
+                }
+              ],
+              "description": "循环次数。循环中可用 {{ loop.index }}（从 0 到 times-1）。",
+              "examples": [
+                5,
+                "{{ inputs.repeat_count }}"
+              ]
+            },
+            "parallelism": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "并发度。"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "while 循环：当条件为真时持续执行。",
+          "required": [
+            "while"
+          ],
+          "properties": {
+            "while": {
+              "type": "string",
+              "description": "Jinja2 布尔表达式。为 true 时继续循环。循环中可用 {{ loop.index }}。",
+              "examples": [
+                "{{ nodes.check_status.output != 'done' }}"
+              ]
+            },
+            "max_iterations": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1000,
+              "description": "最大迭代次数，防止死循环。"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RetryConfig": {
+      "type": "object",
+      "description": "完整的重试配置对象。",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "重试次数（不包括首次尝试）。",
+          "default": 0
+        },
+        "delay": {
+          "type": "number",
+          "minimum": 0,
+          "description": "每次重试前等待的秒数。与 'interval' 字段互为别名。",
+          "examples": [
+            1.0,
+            2.5
+          ]
+        },
+        "interval": {
+          "type": "number",
+          "minimum": 0,
+          "description": "每次重试前等待的秒数。与 'delay' 字段互为别名。"
+        },
+        "on_exception": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "要重试的异常类型列表。null 表示对所有异常都重试。与 'retry_on' 字段互为别名。",
+          "examples": [
+            [
+              "TimeoutError",
+              "requests.exceptions.ConnectionError"
+            ],
+            null
+          ]
+        },
+        "retry_on": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "要重试的异常类型列表。与 'on_exception' 字段互为别名。"
+        },
+        "condition": {
+          "type": "string",
+          "description": "基于 Action 结果的重试条件（Jinja2 表达式）。作用域中有 'result' 和 'attempt' 变量。与 'retry_condition' 字段互为别名。",
+          "examples": [
+            "{{ result.status_code >= 500 }}"
+          ]
+        },
+        "retry_condition": {
+          "type": "string",
+          "description": "基于 Action 结果的重试条件。与 'condition' 字段互为别名。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConcurrencyConfig": {
+      "description": "任务并发控制配置",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "exclusive",
+            "concurrent",
+            "shared"
+          ],
+          "description": "简写形式：直接指定并发模式。'exclusive' 表示独占执行，'concurrent' 表示完全并发，'shared' 表示共享资源模式。",
+          "examples": [
+            "exclusive",
+            "concurrent",
+            "shared"
+          ]
+        },
+        {
+          "type": "object",
+          "description": "完整并发配置对象",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "exclusive",
+                "concurrent",
+                "shared"
+              ],
+              "description": "并发模式：'exclusive' 独占执行（同时只能运行一个实例），'concurrent' 完全并发（无限制），'shared' 共享资源模式（基于资源标签控制）。",
+              "default": "exclusive"
+            },
+            "resources": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(:[0-9]+|:<[^>]+>)?$",
+                "examples": [
+                  "mouse",
+                  "keyboard",
+                  "screen:3",
+                  "file:data.json",
+                  "api:google:10"
+                ]
+              },
+              "description": "资源标签列表，格式为 'resource_name' 或 'resource_name:limit' 或 'resource_name:<path>'。预定义资源：mouse（鼠标）、keyboard（键盘）、clipboard（剪贴板）、screen（屏幕）、gpu（GPU）、audio（音频）。",
+              "examples": [
+                [
+                  "mouse",
+                  "keyboard"
+                ],
+                [
+                  "screen:3",
+                  "api:openai:5"
+                ],
+                [
+                  "file:data.json:1"
+                ]
+              ]
+            },
+            "mutex_group": {
+              "type": "string",
+              "description": "互斥组名称。同一互斥组内的任务不能同时执行。用于确保一组任务之间的互斥性。",
+              "examples": [
+                "ui_automation",
+                "database_operations"
+              ]
+            },
+            "max_instances": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "此任务允许的最大并发实例数。即使资源可用，也不会超过此限制。",
+              "examples": [
+                1,
+                5,
+                10
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

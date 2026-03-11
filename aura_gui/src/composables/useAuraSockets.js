@@ -1,0 +1,206 @@
+// === src/composables/useAuraSockets.js ===
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
+import { getGuiConfig } from '../config.js';
+
+// --- 内部状态与逻辑 ---
+function createManagedSocket(url, name) {
+    const socket = ref(null);
+    const isConnected = ref(false);
+    const lastMessage = ref(null);
+    const error = ref(null);
+    const status = ref('idle');
+    const retries = ref(0);
+    const nextRetryAt = ref(null);
+
+    let reconnectTimer = null;
+    let heartbeatTimer = null;
+    let manualClose = false;
+
+    const cfg = getGuiConfig();
+    const BASE_DELAY = cfg?.ws?.reconnect?.base_ms ?? 5000;
+    const MULTIPLIER = cfg?.ws?.reconnect?.multiplier ?? 2;
+    const MAX_DELAY = cfg?.ws?.reconnect?.max_ms ?? 30000;
+    const JITTER = cfg?.ws?.reconnect?.jitter ?? 0.2;
+    let currentDelay = BASE_DELAY;
+
+    function parseMessage(data) {
+        try {
+            return JSON.parse(data);
+        } catch {
+            return { type: 'unknown', payload: String(data) };
+        }
+    }
+
+    function clearReconnectTimer() {
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    }
+
+    function startHeartbeat() {
+        stopHeartbeat();
+        const heartbeatMs = cfg?.ws?.heartbeat_ms ?? 25000;
+        heartbeatTimer = setInterval(() => {
+            if (socket.value && socket.value.readyState === WebSocket.OPEN) {
+                try { socket.value.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch {}
+            }
+        }, heartbeatMs);
+    }
+
+    function stopHeartbeat() {
+        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+    }
+
+    function scheduleReconnect() {
+        if (manualClose) return;
+        currentDelay = (retries.value === 0) ? BASE_DELAY : Math.min(MAX_DELAY, currentDelay * MULTIPLIER);
+        const jitter = 1 + (Math.random() * 2 - 1) * JITTER;
+        const delay = Math.floor(currentDelay * jitter);
+        status.value = 'reconnecting';
+        nextRetryAt.value = Date.now() + delay;
+        clearReconnectTimer();
+        reconnectTimer = setTimeout(() => ensureConnected(), delay);
+    }
+
+    function bindSocket(ws) {
+        ws.onopen = () => {
+            isConnected.value = true;
+            status.value = 'open';
+            error.value = null;
+            retries.value = 0;
+            currentDelay = BASE_DELAY;
+            nextRetryAt.value = null;
+            startHeartbeat();
+        };
+        ws.onmessage = (e) => { lastMessage.value = parseMessage(e.data); };
+        ws.onerror = (e) => {
+            error.value = `WebSocket (${name}) connection failed.`;
+            status.value = 'error';
+        };
+        ws.onclose = () => {
+            isConnected.value = false;
+            stopHeartbeat();
+            socket.value = null;
+            if (manualClose) {
+                status.value = 'closed';
+                manualClose = false;
+                return;
+            }
+            retries.value += 1;
+            scheduleReconnect();
+        };
+    }
+
+    function ensureConnected() {
+        if (socket.value && (socket.value.readyState === WebSocket.OPEN || socket.value.readyState === WebSocket.CONNECTING)) {
+            return;
+        }
+        manualClose = false;
+        clearReconnectTimer();
+        try {
+            status.value = (retries.value > 0) ? 'reconnecting' : 'connecting';
+            const ws = new WebSocket(url);
+            socket.value = ws;
+            bindSocket(ws);
+        } catch (e) {
+            error.value = `WebSocket (${name}) init failed: ${e?.message}`;
+            status.value = 'error';
+            scheduleReconnect();
+        }
+    }
+
+    function disconnect() {
+        manualClose = true;
+        clearReconnectTimer();
+        stopHeartbeat();
+        if (socket.value) {
+            try { socket.value.close(); } catch {}
+            socket.value = null;
+        }
+        status.value = 'closed';
+    }
+
+    function send(data) {
+        if (!socket.value || socket.value.readyState !== WebSocket.OPEN) return false;
+        try {
+            socket.value.send(typeof data === 'string' ? data : JSON.stringify(data));
+            return true;
+        } catch { return false; }
+    }
+
+    return {
+        isConnected, lastMessage, error, status, retries, nextRetryAt,
+        connect: ensureConnected, disconnect, send,
+    };
+}
+
+// --- 创建并导出日志 Socket 实例（移除控制通道） ---
+const cfg = getGuiConfig();
+const VITE_BASE_URL = cfg?.ws?.base_url || (import.meta?.env?.VITE_WS_URL) || 'ws://127.0.0.1:18098';
+
+const EVENTS_PATH = cfg?.ws?.events_path || '/ws/v1/events';
+const LOGS_PATH = cfg?.ws?.logs_path || '/ws/logs';
+const LOGS_ENABLED = cfg?.ws?.logs_enabled ?? false;
+
+let logSocketManager = {
+    isConnected: ref(false),
+    lastMessage: ref(null),
+    error: ref(null),
+    status: ref('disabled'),
+    retries: ref(0),
+    nextRetryAt: ref(null),
+    connect: () => {},
+    disconnect: () => {},
+    send: () => false,
+};
+if (LOGS_ENABLED) {
+    logSocketManager = createManagedSocket(`${VITE_BASE_URL}${LOGS_PATH}`, 'Logs');
+}
+
+const eventSocketManager = createManagedSocket(`${VITE_BASE_URL}${EVENTS_PATH}`, 'Events');
+
+// --- 系统状态管理（监听 WebSocket 推送）---
+const systemStatus = ref({ is_running: false });
+
+// 监听 events WebSocket 消息，提取系统状态更新
+watch(() => eventSocketManager.lastMessage.value, (msg) => {
+    if (!msg) return;
+
+    // 处理 master_status_update 事件
+    if (msg.type === 'master_status_update') {
+        const payload = msg.payload || msg.data || {};
+        if (typeof payload.is_running === 'boolean') {
+            systemStatus.value = { ...systemStatus.value, ...payload };
+        }
+    }
+
+    // 处理 full_status_update 事件（新客户端连接时的完整状态）
+    if (msg.type === 'full_status_update') {
+        const payload = msg.payload || msg.data || {};
+        if (payload.schedule && typeof payload.schedule.is_running === 'boolean') {
+            systemStatus.value = { is_running: payload.schedule.is_running };
+        }
+    }
+}, { immediate: false });
+
+export function useAuraSockets() {
+    onMounted(() => {
+        if (LOGS_ENABLED) {
+            logSocketManager.connect();
+        }
+        eventSocketManager.connect();
+    });
+
+    onUnmounted(() => {
+        if (LOGS_ENABLED) {
+            logSocketManager.disconnect();
+        }
+        eventSocketManager.disconnect();
+    });
+
+    return {
+        logs: logSocketManager,
+        events: eventSocketManager,
+        // 导出系统状态（响应式）
+        systemStatus: computed(() => systemStatus.value),
+        isSystemRunning: computed(() => systemStatus.value?.is_running ?? false),
+    };
+}

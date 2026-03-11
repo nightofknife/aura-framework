@@ -1,0 +1,35 @@
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cog &amp; Compass Seal">
+    <defs>
+        <linearGradient id="cog_g" x1="36" y1="220" x2="220" y2="36">
+            <stop stop-color="#08D9D6"/><stop offset="1" stop-color="#6A75FF"/>
+        </linearGradient>
+    </defs>
+
+    <!-- 齿轮外圈（12 个外齿的抽象形） -->
+    <circle cx="128" cy="128" r="104" fill="#F3F6FB" stroke="url(#cog_g)" stroke-width="10"/>
+    <g fill="url(#cog_g)" opacity=".85">
+        <rect x="124" y="12"  width="8" height="22" rx="3"/>
+        <rect x="124" y="222" width="8" height="22" rx="3"/>
+        <rect x="12"  y="124" width="22" height="8" rx="3"/>
+        <rect x="222" y="124" width="22" height="8" rx="3"/>
+        <rect x="38"  y="38"  width="18" height="8" rx="3" transform="rotate(-45 47 42)"/>
+        <rect x="200" y="210" width="18" height="8" rx="3" transform="rotate(-45 209 214)"/>
+        <rect x="200" y="38"  width="18" height="8" rx="3" transform="rotate(45 209 42)"/>
+        <rect x="38"  y="210" width="18" height="8" rx="3" transform="rotate(45 47 214)"/>
+    </g>
+
+    <!-- 雷达圈 -->
+    <circle cx="128" cy="128" r="72" fill="none" stroke="url(#cog_g)" stroke-width="6" opacity=".45"/>
+    <circle cx="128" cy="128" r="52" fill="none" stroke="url(#cog_g)" stroke-width="4" opacity=".35"/>
+
+    <!-- 罗盘十字 -->
+    <g fill="url(#cog_g)">
+        <path d="M128 74 L136 110 L128 118 L120 110 Z"/>
+        <path d="M182 128 L146 136 L138 128 L146 120 Z"/>
+        <path d="M128 182 L120 146 L128 138 L136 146 Z"/>
+        <path d="M74 128 L110 120 L118 128 L110 136 Z"/>
+    </g>
+
+    <!-- 中心点 -->
+    <circle cx="128" cy="128" r="8" fill="url(#cog_g)"/>
+</svg>
