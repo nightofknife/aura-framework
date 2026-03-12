@@ -65,13 +65,6 @@ exports:
     singleton: true
     replace: null
     description: 【异步升级版】一个无状态的视觉服务。
-  - name: yolo
-    module: plans.aura_base.src.services.yolo_service
-    class: YoloService
-    public: true
-    singleton: true
-    replace: null
-    description: Ultralytics YOLO detection service.
   actions:
   - name: register_template_library
     module: plans.aura_base.src.actions.atomic_actions
@@ -2120,4 +2113,4 @@ exports:
   tasks: []
 metadata:
   generated_by: ManifestGenerator
-  generated_at: '2026-03-11T19:38:15Z'
+  generated_at: '2026-03-12T01:12:12Z'

@@ -4,8 +4,9 @@ import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from packages.aura_core.api import action_info, requires_services
+from packages.aura_core.services import YoloService
+from ..services.app_provider_service import AppProviderService
 from ..services.controller_service import ControllerService
-from ..services.yolo_service import YoloService
 
 
 def _normalize_roi(roi: Optional[Sequence[int]]) -> Optional[Tuple[int, int, int, int]]:
@@ -99,6 +100,7 @@ def _sort_detections(
 
 def _find_target_detection(
     yolo: YoloService,
+    app: AppProviderService,
     target_labels: Optional[Sequence[str]] = None,
     roi: Optional[Tuple[int, int, int, int]] = None,
     model_name: Optional[str] = None,
@@ -108,9 +110,10 @@ def _find_target_detection(
     anchor_point: Optional[Tuple[int, int]] = None,
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     result = yolo.detect_on_screen(
+        app=app,
         roi=roi,
         model_name=model_name,
-        **(options or {}),
+        options=options,
     )
     if not result.get("ok"):
         return result, None
@@ -124,7 +127,7 @@ def _find_target_detection(
 
 
 @action_info(name="yolo_preload_model", public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo")
 def yolo_preload_model(
     yolo: YoloService,
     model_name: str,
@@ -134,7 +137,7 @@ def yolo_preload_model(
 
 
 @action_info(name="yolo_set_active_model", public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo")
 def yolo_set_active_model(
     yolo: YoloService,
     model_name: str,
@@ -144,7 +147,7 @@ def yolo_set_active_model(
 
 
 @action_info(name="yolo_unload_model", public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo")
 def yolo_unload_model(
     yolo: YoloService,
     model_name: str,
@@ -154,7 +157,7 @@ def yolo_unload_model(
 
 
 @action_info(name="yolo_list_loaded_models", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo")
 def yolo_list_loaded_models(
     yolo: YoloService,
 ) -> List[str]:
@@ -163,7 +166,7 @@ def yolo_list_loaded_models(
 
 
 @action_info(name="yolo_get_active_model", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo")
 def yolo_get_active_model(
     yolo: YoloService,
 ) -> Optional[str]:
@@ -172,7 +175,7 @@ def yolo_get_active_model(
 
 
 @action_info(name="yolo_get_class_names", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo")
 def yolo_get_class_names(
     yolo: YoloService,
     model_name: Optional[str] = None,
@@ -182,7 +185,7 @@ def yolo_get_class_names(
 
 
 @action_info(name="yolo_resolve_class_ids", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo")
 def yolo_resolve_class_ids(
     yolo: YoloService,
     labels: List[str],
@@ -193,23 +196,25 @@ def yolo_resolve_class_ids(
 
 
 @action_info(name="yolo_detect_on_screen", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo", app="app")
 def yolo_detect_on_screen(
     yolo: YoloService,
+    app: AppProviderService,
     roi: Optional[Sequence[int]] = None,
     model_name: Optional[str] = None,
     options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run YOLO detection on current screen (or ROI)."""
     return yolo.detect_on_screen(
+        app=app,
         roi=_normalize_roi(roi),
         model_name=model_name,
-        **(options or {}),
+        options=options,
     )
 
 
 @action_info(name="yolo_detect_image", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo")
 def yolo_detect_image(
     yolo: YoloService,
     image_path: str,
@@ -220,14 +225,15 @@ def yolo_detect_image(
     return yolo.detect_image(
         image=image_path,
         model_name=model_name,
-        **(options or {}),
+        options=options,
     )
 
 
 @action_info(name="yolo_count_targets", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo", app="app")
 def yolo_count_targets(
     yolo: YoloService,
+    app: AppProviderService,
     target_labels: Optional[List[str]] = None,
     roi: Optional[Sequence[int]] = None,
     model_name: Optional[str] = None,
@@ -236,9 +242,10 @@ def yolo_count_targets(
 ) -> int:
     """Count targets on screen, optionally filtered by labels and confidence."""
     result = yolo.detect_on_screen(
+        app=app,
         roi=_normalize_roi(roi),
         model_name=model_name,
-        **(options or {}),
+        options=options,
     )
     if not result.get("ok"):
         return 0
@@ -248,9 +255,10 @@ def yolo_count_targets(
 
 
 @action_info(name="yolo_find_target", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo", app="app")
 def yolo_find_target(
     yolo: YoloService,
+    app: AppProviderService,
     target_labels: Optional[List[str]] = None,
     roi: Optional[Sequence[int]] = None,
     model_name: Optional[str] = None,
@@ -263,6 +271,7 @@ def yolo_find_target(
     anchor = _normalize_point(anchor_point)
     result, selected = _find_target_detection(
         yolo=yolo,
+        app=app,
         target_labels=target_labels,
         roi=_normalize_roi(roi),
         model_name=model_name,
@@ -291,9 +300,10 @@ def yolo_find_target(
 
 
 @action_info(name="yolo_wait_for_target", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo", app="app")
 def yolo_wait_for_target(
     yolo: YoloService,
+    app: AppProviderService,
     target_labels: Optional[List[str]] = None,
     timeout_sec: float = 10.0,
     poll_interval_sec: float = 0.3,
@@ -312,6 +322,7 @@ def yolo_wait_for_target(
     while time.time() <= deadline:
         found = yolo_find_target(
             yolo=yolo,
+            app=app,
             target_labels=target_labels,
             roi=roi,
             model_name=model_name,
@@ -334,9 +345,10 @@ def yolo_wait_for_target(
 
 
 @action_info(name="yolo_wait_for_target_disappear", read_only=True, public=True)
-@requires_services(yolo="yolo")
+@requires_services(yolo="core/yolo", app="app")
 def yolo_wait_for_target_disappear(
     yolo: YoloService,
+    app: AppProviderService,
     target_labels: Optional[List[str]] = None,
     timeout_sec: float = 10.0,
     poll_interval_sec: float = 0.3,
@@ -353,6 +365,7 @@ def yolo_wait_for_target_disappear(
     while time.time() <= deadline:
         count = yolo_count_targets(
             yolo=yolo,
+            app=app,
             target_labels=target_labels,
             roi=roi,
             model_name=model_name,
@@ -375,9 +388,10 @@ def yolo_wait_for_target_disappear(
 
 
 @action_info(name="yolo_find_and_click_target", public=True)
-@requires_services(yolo="yolo", controller="controller")
+@requires_services(yolo="core/yolo", app="app", controller="controller")
 def yolo_find_and_click_target(
     yolo: YoloService,
+    app: AppProviderService,
     controller: ControllerService,
     target_labels: Optional[List[str]] = None,
     roi: Optional[Sequence[int]] = None,
@@ -395,6 +409,7 @@ def yolo_find_and_click_target(
     """Find a target and click it using global screen coordinates."""
     found = yolo_find_target(
         yolo=yolo,
+        app=app,
         target_labels=target_labels,
         roi=roi,
         model_name=model_name,
@@ -439,9 +454,10 @@ def yolo_find_and_click_target(
 
 
 @action_info(name="yolo_click_all_targets", public=True)
-@requires_services(yolo="yolo", controller="controller")
+@requires_services(yolo="core/yolo", app="app", controller="controller")
 def yolo_click_all_targets(
     yolo: YoloService,
+    app: AppProviderService,
     controller: ControllerService,
     target_labels: Optional[List[str]] = None,
     roi: Optional[Sequence[int]] = None,
@@ -459,9 +475,10 @@ def yolo_click_all_targets(
 ) -> Dict[str, Any]:
     """Detect once and click all matched targets in sorted order."""
     result = yolo.detect_on_screen(
+        app=app,
         roi=_normalize_roi(roi),
         model_name=model_name,
-        **(options or {}),
+        options=options,
     )
     if not result.get("ok"):
         return {"clicked": 0, "matched": 0, "reason": "detect_failed"}
@@ -500,9 +517,10 @@ def yolo_click_all_targets(
 
 
 @action_info(name="yolo_find_target_and_press_key", public=True)
-@requires_services(yolo="yolo", controller="controller")
+@requires_services(yolo="core/yolo", app="app", controller="controller")
 def yolo_find_target_and_press_key(
     yolo: YoloService,
+    app: AppProviderService,
     controller: ControllerService,
     key: str,
     target_labels: Optional[List[str]] = None,
@@ -518,6 +536,7 @@ def yolo_find_target_and_press_key(
     """Find target first, then press key if found."""
     found = yolo_find_target(
         yolo=yolo,
+        app=app,
         target_labels=target_labels,
         roi=roi,
         model_name=model_name,

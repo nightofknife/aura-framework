@@ -256,7 +256,7 @@ class Scheduler:
                                            fqid='core/interrupt_service')
         service_registry.register_instance('file_watcher_service', self.file_watcher_service, public=False,
                                            fqid='core/file_watcher_service')
-        service_registry.register_instance('core_yolo', self.yolo_service, public=True, fqid='core/yolo')
+        service_registry.register_instance('yolo', self.yolo_service, public=True, fqid='core/yolo')
 
         # 手动注入 EventBus 到 StateStore
         self.state_store.set_event_bus(self.event_bus)

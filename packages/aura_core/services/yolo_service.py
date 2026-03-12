@@ -23,7 +23,7 @@ class YoloModelReference:
 
 
 @service_info(
-    alias="core_yolo",
+    alias="yolo",
     public=True,
     description="Core Ultralytics YOLO service with model-family support for YOLO 8/10/11/26.",
 )
@@ -186,7 +186,11 @@ class YoloService:
             self._release_model_resources(removed)
         return {"ok": True, "model": cache_key, "unloaded": removed is not None}
 
-    def list_loaded_models(self) -> List[Dict[str, Any]]:
+    def list_loaded_models(self) -> List[str]:
+        with self._lock:
+            return sorted(self._models)
+
+    def list_loaded_model_infos(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [self.get_model_info(key) for key in sorted(self._models)]
 
@@ -234,12 +238,13 @@ class YoloService:
         model, cache_key = self._get_loaded_model(model_name)
         infer_settings = self._build_infer_settings(options or {})
         predictions = model.predict(source=source, **infer_settings)
-        detections = self._parse_detections(predictions, cache_key)
+        detections, image_size = self._parse_detections(predictions, cache_key)
         return {
             "ok": True,
             "model": cache_key,
             "detections": detections,
             "family": self._model_refs.get(cache_key).family if cache_key in self._model_refs else None,
+            "image_size": image_size,
         }
 
     def detect_image(
@@ -249,7 +254,55 @@ class YoloService:
         model_name: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return self.detect(image, model_name=model_name, options=options)
+        result = self.detect(image, model_name=model_name, options=options)
+        for det in result.get("detections", []):
+            bbox_xywh = det.get("bbox_xywh")
+            if isinstance(bbox_xywh, list) and len(bbox_xywh) == 4:
+                det["bbox_global"] = [int(round(value)) for value in bbox_xywh]
+        return result
+
+    def detect_on_screen(
+        self,
+        *,
+        app: Any,
+        roi: Optional[Tuple[int, int, int, int]] = None,
+        model_name: Optional[str] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if app is None:
+            raise ValueError("app service is required for detect_on_screen.")
+
+        capture = app.capture(rect=roi)
+        if not getattr(capture, "success", False) or getattr(capture, "image", None) is None:
+            return {
+                "ok": False,
+                "error": getattr(capture, "error_message", None) or "capture failed",
+                "detections": [],
+            }
+
+        result = self.detect(capture.image, model_name=model_name, options=options)
+        offset_x, offset_y = self._resolve_capture_origin(app, capture)
+        relative_rect = getattr(capture, "relative_rect", None) or (
+            0,
+            0,
+            int(capture.image.shape[1]),
+            int(capture.image.shape[0]),
+        )
+        offset_x += int(relative_rect[0])
+        offset_y += int(relative_rect[1])
+
+        for det in result.get("detections", []):
+            bbox_xywh = det.get("bbox_xywh")
+            if isinstance(bbox_xywh, list) and len(bbox_xywh) == 4:
+                x, y, w, h = [float(value) for value in bbox_xywh]
+                det["bbox_global"] = [
+                    int(round(x + offset_x)),
+                    int(round(y + offset_y)),
+                    int(round(w)),
+                    int(round(h)),
+                ]
+
+        return result
 
     def _get_loaded_model(self, model_name: Optional[str]) -> Tuple[Any, str]:
         with self._lock:
@@ -294,14 +347,19 @@ class YoloService:
             "verbose": bool(pick("verbose", False)),
         }
 
-    def _parse_detections(self, predictions: Any, cache_key: str) -> List[Dict[str, Any]]:
+    def _parse_detections(self, predictions: Any, cache_key: str) -> Tuple[List[Dict[str, Any]], Optional[List[int]]]:
         if not predictions:
-            return []
+            return [], None
 
         class_names = self._class_names.get(cache_key, {})
         detections: List[Dict[str, Any]] = []
+        image_size: Optional[List[int]] = None
 
         for image_index, prediction in enumerate(predictions):
+            if image_size is None:
+                prediction_size = self._extract_prediction_size(prediction)
+                if prediction_size is not None:
+                    image_size = prediction_size
             boxes = getattr(prediction, "boxes", None)
             if boxes is None:
                 continue
@@ -326,7 +384,7 @@ class YoloService:
                         "bbox_xywh": [x1, y1, x2 - x1, y2 - y1],
                     }
                 )
-        return detections
+        return detections, image_size
 
     def _load_yolo_class(self):
         try:
@@ -424,3 +482,24 @@ class YoloService:
     @staticmethod
     def _repo_root() -> Path:
         return Path(__file__).resolve().parents[3]
+
+    @staticmethod
+    def _extract_prediction_size(prediction: Any) -> Optional[List[int]]:
+        orig_shape = getattr(prediction, "orig_shape", None)
+        if isinstance(orig_shape, (list, tuple)) and len(orig_shape) >= 2:
+            height = int(orig_shape[0])
+            width = int(orig_shape[1])
+            return [width, height]
+        return None
+
+    @staticmethod
+    def _resolve_capture_origin(app: Any, capture: Any) -> Tuple[int, int]:
+        screen = getattr(app, "screen", None)
+        if screen is not None and hasattr(screen, "get_client_rect"):
+            client_rect = screen.get_client_rect()
+            if client_rect:
+                return int(client_rect[0]), int(client_rect[1])
+        window_rect = getattr(capture, "window_rect", None)
+        if isinstance(window_rect, (list, tuple)) and len(window_rect) >= 2:
+            return int(window_rect[0]), int(window_rect[1])
+        return 0, 0

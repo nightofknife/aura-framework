@@ -162,12 +162,9 @@ class ExportScanner:
         self._validated = True
 
     def _module_path_for_file(self, py_file: Path) -> str:
-        module_parts = [py_file.with_suffix("").name]
-        cursor = py_file.parent
-        while (cursor / "__init__.py").exists():
-            module_parts.append(cursor.name)
-            cursor = cursor.parent
-        return ".".join(reversed(module_parts))
+        relative_parts = py_file.relative_to(self.package_path).with_suffix("").parts
+        module_parts = [self.package_path.parent.name, self.package_path.name, *relative_parts]
+        return ".".join(module_parts)
 
     def _extract_service_meta(self, node: ast.ClassDef, source: str) -> Optional[Dict[str, Any]]:
         decorator = self._find_decorator(node, self.SERVICE_DECORATORS)

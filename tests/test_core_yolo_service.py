@@ -37,6 +37,32 @@ class _FakeBoxes:
 class _FakePrediction:
     def __init__(self):
         self.boxes = _FakeBoxes()
+        self.orig_shape = (240, 120)
+
+
+class _FakeCapture:
+    def __init__(self):
+        self.success = True
+        self.image = "captured-image"
+        self.window_rect = (100, 200, 640, 480)
+        self.relative_rect = (5, 6, 120, 240)
+        self.error_message = ""
+
+
+class _FakeScreen:
+    @staticmethod
+    def get_client_rect():
+        return (10, 20, 640, 480)
+
+
+class _FakeApp:
+    def __init__(self):
+        self.screen = _FakeScreen()
+        self.capture_calls = []
+
+    def capture(self, rect=None):
+        self.capture_calls.append(rect)
+        return _FakeCapture()
 
 
 class _FakeModel:
@@ -109,10 +135,24 @@ class TestCoreYoloService(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["model"], "yolo11n")
+        self.assertEqual(result["image_size"], [120, 240])
         self.assertEqual(len(result["detections"]), 1)
         self.assertEqual(result["detections"][0]["label"], "vehicle")
         self.assertEqual(result["detections"][0]["bbox_xywh"], [10.0, 20.0, 100.0, 200.0])
+        self.assertEqual(result["detections"][0]["bbox_global"], [10, 20, 100, 200])
+        self.assertEqual(self.service.list_loaded_models(), ["yolo11n"])
         self.assertEqual(fake_factory.created[0].predict_calls[0]["source"], "dummy-image")
+
+    def test_detect_on_screen_maps_global_bbox(self):
+        fake_factory = _FakeYoloFactory()
+        fake_app = _FakeApp()
+        with patch.object(self.service, "_load_yolo_class", return_value=fake_factory):
+            self.service.preload_model("yolo8")
+            result = self.service.detect_on_screen(app=fake_app, roi=(1, 2, 3, 4), model_name="yolo8")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(fake_app.capture_calls, [(1, 2, 3, 4)])
+        self.assertEqual(result["detections"][0]["bbox_global"], [25, 46, 100, 200])
 
 
 if __name__ == "__main__":
