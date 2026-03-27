@@ -1,29 +1,29 @@
 <template>
   <Teleport to="body">
     <Transition name="overlay-fade">
-      <div v-if="openLocal" class="aether-overlay" @click="requestClose" />
+      <div v-if="openLocal" class="brief-overlay" @click="requestClose" />
     </Transition>
 
     <Transition name="drawer-slide" @after-leave="$emit('closed')">
       <aside
-          v-if="openLocal"
-          class="aether-drawer glass glass-thick glass-refract glass-shimmer"
-          :style="{ width }"
-          role="dialog"
-          aria-modal="true"
-          :aria-label="title || '面板'"
-          @keydown.esc.stop.prevent="requestClose"
+        v-if="openLocal"
+        class="brief-drawer"
+        :style="{ width }"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="title || 'Task Brief'"
+        @keydown.esc.stop.prevent="requestClose"
       >
-        <header class="drawer-head">
-          <div class="title">
-            <span class="badge">详情</span>
-            <strong>{{ title }}</strong>
+        <header class="brief-drawer__head">
+          <div>
+            <span class="brief-drawer__kicker">Task Brief</span>
+            <strong class="brief-drawer__title">{{ title }}</strong>
           </div>
-          <button class="btn-icon" aria-label="关闭" @click="requestClose">×</button>
+          <button class="brief-drawer__close" aria-label="Close" @click="requestClose">X</button>
         </header>
 
-        <div class="drawer-body">
-          <slot/>
+        <div class="brief-drawer__body">
+          <slot />
         </div>
       </aside>
     </Transition>
@@ -31,79 +31,123 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
   title: { type: String, default: '' },
   width: { type: String, default: '560px' },
-});
-const emit = defineEmits(['close', 'update:open', 'closed']);
+})
 
-const openLocal = ref(!!props.open);
-watch(() => props.open, v => openLocal.value = v);
+const emit = defineEmits(['close', 'update:open', 'closed'])
+const openLocal = ref(!!props.open)
+
+watch(() => props.open, (value) => {
+  openLocal.value = value
+})
+
+watch(openLocal, (value) => {
+  document.documentElement.style.overflow = value ? 'hidden' : ''
+})
 
 function requestClose() {
-  openLocal.value = false;
-  emit('update:open', false);
-  emit('close');
+  openLocal.value = false
+  emit('update:open', false)
+  emit('close')
 }
 
-function lockScroll(lock) {
-  document.documentElement.style.overflow = lock ? 'hidden' : '';
-}
-watch(openLocal, v => lockScroll(v));
-onMounted(() => lockScroll(openLocal.value));
-onUnmounted(() => lockScroll(false));
+onMounted(() => {
+  document.documentElement.style.overflow = openLocal.value ? 'hidden' : ''
+})
+
+onUnmounted(() => {
+  document.documentElement.style.overflow = ''
+})
 </script>
 
 <style scoped>
-/* Overlay */
-.aether-overlay {
-  position: fixed; inset: 0;
-  background: rgba(11, 18, 32, 0.45);
+.brief-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.38);
   backdrop-filter: blur(2px);
-  z-index: 1000;
 }
 
-/* Drawer 只保留定位与圆角，玻璃质感由 .glass 类提供 */
-.aether-drawer {
-  position: fixed; top: 0; right: 0; height: 100vh;
-  display: flex; flex-direction: column;
-  z-index: 1001;
-  border-top-left-radius: 16px; border-bottom-left-radius: 16px;
+.brief-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 91;
+  display: flex;
+  height: 100vh;
+  max-width: 92vw;
+  flex-direction: column;
+  border-left: 1px solid rgba(224, 214, 186, 0.1);
+  background: linear-gradient(180deg, rgba(74, 82, 86, 0.98), rgba(46, 55, 58, 0.98));
+  box-shadow: var(--shadow-soft), var(--shadow-inset);
 }
 
-/* Header */
-.drawer-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border-frosted);
-}
-.title { display: flex; align-items: center; gap: 10px; }
-.badge {
-  font-size: 11px; font-weight: 700; letter-spacing: .08em;
-  padding: 3px 8px; border-radius: 999px;
-  color: var(--primary-accent);
-  background: rgba(88,101,242,0.12); border: 1px solid rgba(88,101,242,0.28);
+.brief-drawer__head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid rgba(224, 214, 186, 0.08);
 }
 
-/* Body */
-.drawer-body {
-  padding: 16px;
+.brief-drawer__kicker {
+  display: block;
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.brief-drawer__title {
+  color: var(--paper-2);
+  font-family: var(--font-display);
+  font-size: 34px;
+  letter-spacing: 0.08em;
+  line-height: 0.9;
+  text-transform: uppercase;
+}
+
+.brief-drawer__close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(224, 214, 186, 0.1);
+  background: rgba(31, 38, 41, 0.56);
+  color: var(--text-main);
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.brief-drawer__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
   overflow: auto;
-  display: grid; gap: 12px;
+  padding: 20px 22px 28px;
 }
-.btn-icon {
-  border: none; background: transparent; cursor: pointer;
-  width: 32px; height: 32px; border-radius: 10px; font-size: 16px;
-  color: var(--text-secondary);
-}
-.btn-icon:hover { background: rgba(128,128,128,0.12); }
 
-/* Animations */
-.overlay-fade-enter-active, .overlay-fade-leave-active { transition: opacity var(--dur) var(--ease); }
-.overlay-fade-enter-from, .overlay-fade-leave-to { opacity: 0; }
-.drawer-slide-enter-active, .drawer-slide-leave-active { transition: transform var(--dur) var(--ease); }
-.drawer-slide-enter-from, .drawer-slide-leave-to { transform: translateX(100%); }
+.overlay-fade-enter-active,
+.overlay-fade-leave-active,
+.drawer-slide-enter-active,
+.drawer-slide-leave-active {
+  transition: all var(--dur-med) var(--ease);
+}
+
+.overlay-fade-enter-from,
+.overlay-fade-leave-to {
+  opacity: 0;
+}
+
+.drawer-slide-enter-from,
+.drawer-slide-leave-to {
+  transform: translateX(100%);
+}
 </style>

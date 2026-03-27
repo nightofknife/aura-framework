@@ -7,17 +7,20 @@
         :value="option"
         :checked="modelValue === option"
         :disabled="disabled"
-        @change="$emit('update:modelValue', option)" />
-      <span class="radio-label">{{ option }}</span>
+        @change="$emit('update:modelValue', option)"
+      />
+      <span>{{ option }}</span>
     </label>
+
     <label v-if="!required" class="radio-item">
       <input
         type="radio"
         :name="name"
         :checked="modelValue === null"
         :disabled="disabled"
-        @change="$emit('update:modelValue', null)" />
-      <span class="radio-label">不选择</span>
+        @change="$emit('update:modelValue', null)"
+      />
+      <span>None</span>
     </label>
   </div>
 </template>
@@ -26,19 +29,19 @@
 defineProps({
   options: { type: Array, required: true },
   modelValue: { type: [String, Number, Boolean, null], default: null },
-  name: { type: String, default: () => `radio_${Math.random().toString(36).substr(2, 9)}` },
-  layout: { type: String, default: 'vertical' }, // 'vertical' | 'horizontal'
+  name: { type: String, default: () => `radio_${Math.random().toString(36).slice(2, 9)}` },
+  layout: { type: String, default: 'vertical' },
   required: { type: Boolean, default: false },
-  disabled: { type: Boolean, default: false }
-});
-defineEmits(['update:modelValue']);
+  disabled: { type: Boolean, default: false },
+})
+
+defineEmits(['update:modelValue'])
 </script>
 
 <style scoped>
-/* 保持与现有样式一致 */
 .radio-group {
   display: flex;
-  gap: 8px;
+  gap: 10px;
 }
 
 .radio-group.vertical {
@@ -46,36 +49,22 @@ defineEmits(['update:modelValue']);
 }
 
 .radio-group.horizontal {
-  flex-direction: row;
   flex-wrap: wrap;
 }
 
 .radio-item {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text-secondary, #555);
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  background: rgba(8, 20, 32, 0.72);
+  color: var(--smoke);
+  clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
 }
 
-.radio-item input[type="radio"] {
-  cursor: pointer;
+.radio-item input {
   margin: 0;
-  width: 16px;
-  height: 16px;
-}
-
-.radio-item input[type="radio"]:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-.radio-label {
-  user-select: none;
-}
-
-.radio-item:hover .radio-label {
-  color: var(--text-primary, #222);
 }
 </style>

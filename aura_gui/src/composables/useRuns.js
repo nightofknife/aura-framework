@@ -1,41 +1,55 @@
-import { ref, computed } from 'vue';
+import { computed, ref } from 'vue';
 
-// 纯粹的数据存储，不再有复杂的 ingest 逻辑
-const allRuns = ref([]); // 单一的、权威的运行列表
+const allRuns = ref([]);
 
-/**
- * 由外部（useStagingRunner）调用的函数，用于完全替换当前的运行数据。
- * @param {Array} newRuns - 从后端获取的新的、完整的运行列表。
- */
+function normalizeRun(run) {
+  const startedAt = run?.started_at ?? run?.startedAt ?? null;
+  const finishedAt = run?.finished_at ?? run?.finishedAt ?? null;
+  const taskName = run?.task_name ?? run?.task_ref ?? run?.task ?? null;
+  const elapsed = run?.duration_ms ?? (
+    startedAt && finishedAt
+      ? ((finishedAt > 1e12 ? finishedAt : finishedAt * 1000) - (startedAt > 1e12 ? startedAt : startedAt * 1000))
+      : null
+  );
+
+  return {
+    ...run,
+    task_name: taskName,
+    task_ref: run?.task_ref ?? taskName,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    startedAt,
+    finishedAt,
+    elapsed,
+  };
+}
+
 function setRuns(newRuns) {
-    // 直接用后端权威数据替换本地数据
-    allRuns.value = newRuns;
+  allRuns.value = Array.isArray(newRuns) ? newRuns.map(normalizeRun) : [];
 }
 
 export function useRuns() {
-    // 派生出 active 和 recent，就像以前一样，但数据源更可靠
-    const activeRuns = computed(() =>
-        allRuns.value
-            .filter(r => r.status === 'running')
-            .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
-    );
+  const activeRuns = computed(() =>
+    allRuns.value
+      .filter((run) => run.status === 'running')
+      .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
+  );
 
-    const recentRuns = computed(() =>
-        allRuns.value
-            .filter(r => r.status !== 'running')
-            .sort((a, b) => (b.finishedAt || b.startedAt || 0) - (a.finishedAt || a.startedAt || 0))
-            .slice(0, 200) // 保持最近200条的限制
-    );
+  const recentRuns = computed(() =>
+    allRuns.value
+      .filter((run) => run.status !== 'running')
+      .sort((a, b) => (b.finishedAt || b.startedAt || 0) - (a.finishedAt || a.startedAt || 0))
+      .slice(0, 200)
+  );
 
-    // runsById 仍然可以提供，方便按ID查找
-    const runsById = computed(() =>
-        Object.fromEntries(allRuns.value.map(r => [r.cid || r.id, r]))
-    );
+  const runsById = computed(() =>
+    Object.fromEntries(allRuns.value.map((run) => [run.cid || run.id, run]))
+  );
 
-    return {
-        activeRuns,
-        recentRuns,
-        runsById,
-        setRuns, // 暴露给 useStagingRunner 使用
-    };
+  return {
+    activeRuns,
+    recentRuns,
+    runsById,
+    setRuns,
+  };
 }

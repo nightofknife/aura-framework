@@ -1,177 +1,198 @@
 <template>
-  <div class="execute-view">
-    <div class="header-bar">
-      <div>
-        <strong class="view-title">执行台</strong>
-        <div class="view-subtitle">选择任务 → 配置输入 → 前端排队 → 推送后端 → 运行/观察</div>
+  <div class="page-shell execute-page">
+    <section class="desk-header">
+      <div class="desk-header__copy">
+        <span class="eyebrow">Industrial Expedition Table</span>
+        <h1 class="page-title">Execute</h1>
+        <p class="page-subtitle">
+          A single task desk for picking mission shards, arranging a dispatch order, and handing work over to the backend rail.
+        </p>
       </div>
-      <div class="toolbar">
-        <span class="pill" :class="engineRunning ? 'pill-blue' : ''">
-          {{ engineRunning ? '运行中' : '未启动' }}
-        </span>
-        <span class="pill pill-green">后端队列</span>
-      </div>
-    </div>
 
-    <div class="content-grid">
-      <SchemePanel v-model:open="open.byPlan" title="按计划" description="按 Plan 浏览可用任务">
-        <div class="controls">
-          <select class="select" v-model="ui.planSelected">
-            <option disabled value="">选择 Plan</option>
-            <option v-for="p in plans" :key="p.name" :value="p.name">{{ p.name }}</option>
+      <div class="desk-header__stats">
+        <div class="desk-stat">
+          <span class="desk-stat__label">catalog</span>
+          <strong class="desk-stat__value">{{ filteredTasks.length }}</strong>
+        </div>
+        <div class="desk-stat">
+          <span class="desk-stat__label">staged</span>
+          <strong class="desk-stat__value">{{ guiItems.length }}</strong>
+        </div>
+        <div class="desk-stat">
+          <span class="desk-stat__label">queue</span>
+          <strong class="desk-stat__value">{{ queueOverview.ready_count || readyQueue.length }}</strong>
+        </div>
+        <div class="desk-stat">
+          <span class="desk-stat__label">live</span>
+          <strong class="desk-stat__value">{{ activeRuns.length }}</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="mission-desk">
+      <div class="mission-desk__plate mission-desk__plate--catalog">
+        <header class="desk-pane__head">
+          <div>
+            <span class="desk-pane__kicker">Task Fragments</span>
+            <strong class="desk-pane__title">Catalog</strong>
+          </div>
+          <span class="pill" :class="engineRunning ? 'pill-running' : 'pill-red'">
+            {{ engineRunning ? 'backend online' : 'backend offline' }}
+          </span>
+        </header>
+
+        <div class="catalog-controls">
+          <select v-model="selectedPlan" class="select">
+            <option v-for="plan in plans" :key="plan.name" :value="plan.name">{{ plan.name }}</option>
           </select>
-          <input class="input" v-model="ui.query" placeholder="搜索任务" />
+          <input v-model="query" class="input" placeholder="Search task title or ref" />
         </div>
-        <TransitionGroup name="fade" tag="div" class="task-grid">
-          <TaskMiniCard
-            v-for="t in filteredTasks" :key="t.__key" v-bind="t"
-            @select="openConfig(t.plan, t.task, t.meta)" @toggle-fav="toggleFav(t.plan, t.task)"
-          />
-          <div v-if="!filteredTasks.length" key="empty" class="empty-state">暂无匹配任务</div>
-        </TransitionGroup>
-      </SchemePanel>
 
-      <SchemePanel v-model:open="open.favs" title="收藏" description="快速访问常用任务">
-        <TransitionGroup name="fade" tag="div" class="task-grid">
+        <div class="catalog-pile">
           <TaskMiniCard
-            v-for="t in favTasksView" :key="t.__key" v-bind="t"
-            @select="openConfig(t.plan, t.task, t.meta)" @toggle-fav="toggleFav(t.plan, t.task)"
+            v-for="task in filteredTasks"
+            :key="task.key"
+            :title="task.title"
+            :description="task.description"
+            :plan="task.plan_name"
+            :tag="task.meta?.entry_point || task.meta?.concurrency"
+            :starred="favSet.has(task.key)"
+            @select="openConfig(task)"
+            @toggle-fav="toggleFav(task.key)"
           />
-          <div v-if="!favTasksView.length" key="emptyfav" class="empty-state">还没有收藏任务</div>
-        </TransitionGroup>
-      </SchemePanel>
-    </div>
+        </div>
 
-    <div class="queue-grid">
-      <div class="panel glass glass-thick">
-        <div class="panel-header">
-          <strong>GUI 队列（本地待推送）</strong>
-          <div class="controls">
-            <button class="btn btn-primary" @click="pushAllGui" :disabled="!guiItems.length">推送前端队列</button>
-            <button class="btn btn-ghost" @click="clearGuiQueue">清空</button>
+        <div v-if="!filteredTasks.length" class="empty-state">No task fragments match the active plan and search input.</div>
+      </div>
+
+      <div class="mission-desk__plate mission-desk__plate--stage">
+        <header class="desk-pane__head">
+          <div>
+            <span class="desk-pane__kicker">Local Arrangement</span>
+            <strong class="desk-pane__title">Desk Route</strong>
+          </div>
+          <div class="toolbar">
+            <button class="btn btn-ghost" @click="clearGuiQueue" :disabled="!guiItems.length">Clear</button>
+            <button class="btn btn-primary" @click="pushAllGui" :disabled="!guiItems.length || !engineRunning">Dispatch All</button>
+          </div>
+        </header>
+
+        <div class="stage-note">
+          <span class="stage-note__tag">manual composition</span>
+          <p>Arrange the route here before it crosses into the scheduler. Each piece should read like a physical mission board placed on the table.</p>
+        </div>
+
+        <div class="stage-route">
+          <article v-for="(item, index) in guiItems" :key="item.id" class="route-board">
+            <div class="route-board__number">{{ String(index + 1).padStart(2, '0') }}</div>
+
+            <div class="route-board__body">
+              <div class="route-board__head">
+                <div>
+                  <strong class="route-board__plan">{{ item.plan }}</strong>
+                  <div class="route-board__task">{{ item.task }}</div>
+                </div>
+                <span class="pill" :class="guiStatusClass(item.status)">{{ guiStatusLabel(item.status) }}</span>
+              </div>
+
+              <div class="route-board__rail"></div>
+
+              <div class="route-board__actions">
+                <button class="btn btn-ghost btn-sm" @click="moveGui(item.id, 'up')" :disabled="index === 0">Raise</button>
+                <button class="btn btn-ghost btn-sm" @click="moveGui(item.id, 'down')" :disabled="index === guiItems.length - 1">Lower</button>
+                <button class="btn btn-ghost btn-sm" @click="pushToBackend(item)" :disabled="!engineRunning">Send</button>
+                <button class="btn btn-danger btn-sm" @click="removeGui(item.id)">Remove</button>
+              </div>
+            </div>
+          </article>
+
+          <div v-if="!guiItems.length" class="stage-empty">
+            <span class="stage-empty__stamp">STAGING EMPTY</span>
+            <p>Select a task shard on the left to place the first board on the desk.</p>
           </div>
         </div>
-        <div class="panel-body table-wrap">
-          <table>
-            <thead>
-            <tr>
-              <th>#</th>
-              <th>方案 / 任务</th>
-              <th>重复</th>
-              <th>状态</th>
-              <th>操作</th>
-            </tr>
-            </thead>
-            <tbody>
-            <tr v-for="(it, idx) in guiItems" :key="it.id">
-              <td>{{ idx + 1 }}</td>
-              <td><strong>{{ it.plan }}</strong> / {{ it.task }}</td>
-              <td>{{ it.repeat || 1 }}</td>
-              <td>
-                <span class="pill" :class="guiStatusClass(it.status)">{{ guiStatusLabel(it.status) }}</span>
-              </td>
-              <td>
-                <button class="btn btn-ghost" @click="pushToBackend(it)" :disabled="it.status==='pushing'">推送</button>
-                <button class="btn btn-ghost" @click="moveGui(it.id, 'up')">↑</button>
-                <button class="btn btn-ghost" @click="moveGui(it.id, 'down')">↓</button>
-                <button class="btn btn-ghost" @click="removeGui(it.id)">Del</button>
-              </td>
-            </tr>
-            <tr v-if="!guiItems.length">
-              <td colspan="5" class="empty-state">前端队列为空</td>
-            </tr>
-            </tbody>
-          </table>
-        </div>
       </div>
 
-      <div class="panel glass glass-thick">
-        <div class="panel-header">
-          <strong>后端队列 ({{ readyQueue.length + activeRuns.length }})</strong>
-          <div class="controls">
-            <button class="btn btn-ghost" @click="refreshQueue">刷新</button>
-            <button class="btn btn-ghost" @click="clearQueue">清空</button>
+      <div class="mission-desk__plate mission-desk__plate--runtime">
+        <section class="runtime-section">
+          <header class="desk-pane__head">
+            <div>
+              <span class="desk-pane__kicker">Backend Rail</span>
+              <strong class="desk-pane__title">Queued</strong>
+            </div>
+            <div class="toolbar">
+              <button class="btn btn-ghost btn-sm" @click="refreshQueue">Refresh</button>
+              <button class="btn btn-ghost btn-sm" @click="clearQueue" :disabled="!readyQueue.length">Clear</button>
+            </div>
+          </header>
+
+          <div class="runtime-summary">
+            <span class="pill pill-queued">ready {{ queueOverview.ready_count || 0 }}</span>
+            <span class="pill pill-running">running {{ queueOverview.running_count || 0 }}</span>
+            <span class="pill pill-gray">delayed {{ queueOverview.delayed_count || 0 }}</span>
           </div>
-        </div>
-        <div class="panel-body table-wrap">
-          <table>
-            <thead>
-            <tr>
-              <th>类型</th>
-              <th>标识/CID</th>
-              <th>方案 / 任务</th>
-              <th>优先级/状态</th>
-              <th>时间</th>
-              <th>操作</th>
-            </tr>
-            </thead>
-            <tbody>
-            <tr v-for="it in readyQueue" :key="it.trace_id || it.cid">
-              <td>排队中</td>
-              <td>
-                <div v-if="it.trace_label" class="trace-label">{{ it.trace_label }}</div>
-                <code>{{ it.trace_id || it.cid }}</code>
-              </td>
-              <td><strong>{{ it.plan_name }}</strong> / {{ it.task_name }}</td>
-              <td>{{ it.priority ?? '-' }}</td>
-              <td>{{ fmtTime(it.enqueued_at) }}</td>
-              <td>
-                <button class="btn btn-ghost" @click="moveFront(it.cid)">置顶</button>
-                <button class="btn btn-ghost" @click="removeQueue(it.cid)">删除</button>
-              </td>
-            </tr>
-            <tr v-for="run in activeRuns" :key="run.trace_id || run.cid || run.task_name">
-              <td>运行中</td>
-              <td>
-                <div v-if="run.trace_label" class="trace-label">{{ run.trace_label }}</div>
-                <code>{{ run.trace_id || run.cid || '-' }}</code>
-              </td>
-              <td><strong>{{ run.plan_name }}</strong> / {{ run.task_name }}</td>
-              <td>{{ run.status || '运行中' }}</td>
-              <td>{{ fmtTimeMs(run.started_at) }}</td>
-              <td>--</td>
-            </tr>
-            <tr v-if="!readyQueue.length && !activeRuns.length">
-              <td colspan="6" class="empty-state">队列为空</td>
-            </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
 
-    <div class="panel glass glass-thick">
-      <div class="panel-header">
-        <strong>历史任务</strong>
-      </div>
-      <div class="panel-body table-wrap">
-        <table>
-          <thead>
-          <tr>
-            <th>方案 / 任务</th>
-            <th>状态</th>
-            <th>时间</th>
-          </tr>
-          </thead>
-          <tbody>
-          <tr v-for="it in historyView" :key="it.id">
-            <td><strong>{{ it.plan }}</strong> / {{ it.task }}</td>
-            <td>{{ it.status }}</td>
-            <td>{{ fmtTimeMs(it.at) }}</td>
-          </tr>
-          <tr v-if="!history.length">
-            <td colspan="3" class="empty-state">暂无历史记录</td>
-          </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+          <div class="runtime-stack">
+            <article v-for="item in readyQueue" :key="item.cid" class="queue-ticket">
+              <div class="queue-ticket__head">
+                <code>{{ item.cid }}</code>
+                <span class="pill pill-queued">{{ item.status || 'queued' }}</span>
+              </div>
+              <strong class="queue-ticket__title">{{ item.trace_label || item.plan_name }}</strong>
+              <div class="queue-ticket__task">{{ item.task_ref }}</div>
+              <div class="queue-ticket__meta">
+                <span>{{ fmtTimeMs(item.queued_at) }}</span>
+                <span>{{ item.source || 'gui' }}</span>
+              </div>
+              <div class="row-actions">
+                <button class="btn btn-ghost btn-sm" @click="moveFront(item.cid)">Front</button>
+                <button class="btn btn-danger btn-sm" @click="removeQueue(item.cid)">Delete</button>
+              </div>
+            </article>
 
-    <ProContextPanel :open="config.open" :title="config.title" @close="config.open = false">
-      <div style="color:var(--text-secondary); font-size:12px;">
-        {{ config.plan }} / {{ config.task }}
+            <div v-if="!readyQueue.length" class="empty-state">No queued items are currently waiting on the backend rail.</div>
+          </div>
+        </section>
+
+        <section class="runtime-section runtime-section--live">
+          <header class="desk-pane__head">
+            <div>
+              <span class="desk-pane__kicker">Live Passage</span>
+              <strong class="desk-pane__title">Running</strong>
+            </div>
+          </header>
+
+          <div class="runtime-stack">
+            <article v-for="run in activeRuns" :key="run.cid || run.trace_id" class="live-ticket">
+              <span class="live-ticket__flag"></span>
+              <div class="live-ticket__body">
+                <div class="live-ticket__head">
+                  <strong>{{ run.plan_name }}</strong>
+                  <span class="pill pill-running">{{ run.status }}</span>
+                </div>
+                <div class="live-ticket__task">{{ run.task_ref || run.task_name }}</div>
+                <div class="live-ticket__meta">
+                  <code>{{ run.cid || run.trace_id || '-' }}</code>
+                  <span>{{ fmtTimeMs(run.started_at || run.startedAt) }}</span>
+                </div>
+              </div>
+            </article>
+
+            <div v-if="!activeRuns.length" class="empty-state">No active runs are visible on the live rail.</div>
+          </div>
+        </section>
       </div>
-      <div v-if="hasInputs" class="form-grid">
+    </section>
+
+    <ProContextPanel v-model:open="config.open" :title="config.title">
+      <div class="drawer-context">
+        <span class="pill">{{ config.plan }}</span>
+        <code>{{ config.task }}</code>
+      </div>
+
+      <div v-if="config.meta?.description" class="hint">{{ config.meta.description }}</div>
+
+      <div v-if="normalizedInputs.length" class="stack">
         <InputFieldRenderer
           v-for="input in normalizedInputs"
           :key="input.name"
@@ -179,468 +200,647 @@
           v-model="inputModel[input.name]"
         />
       </div>
-      <div v-else class="empty-state">This task requires no inputs.</div>
+      <div v-else class="empty-state">This task does not declare any input slots.</div>
+
       <div class="field">
-        <div class="label">Repeat</div>
-        <input class="input" type="number" min="1" max="500" v-model.number="config.repeat" />
+        <label class="label">Repeat</label>
+        <input v-model.number="config.repeat" class="input" type="number" min="1" max="500" />
+        <span class="hint">Lay down multiple copies of the same board in one gesture.</span>
       </div>
-      <div style="display:flex; gap:8px;">
-        <button class="btn btn-primary" @click="addToGuiQueue" :disabled="!canAdd">
-          加入前端队列
-        </button>
-        <button class="btn btn-ghost" @click="config.open = false">取消</button>
+
+      <div class="drawer-actions">
+        <button class="btn btn-ghost" @click="config.open = false">Cancel</button>
+        <button class="btn btn-primary" @click="addToGuiQueue" :disabled="!canAdd">Add To Desk</button>
       </div>
     </ProContextPanel>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
-import axios from 'axios';
-import { useDebounceFn } from '@vueuse/core';
-import SchemePanel from '../components/SchemePanel.vue';
-import TaskMiniCard from '../components/TaskMiniCard.vue';
-import ProContextPanel from '../components/ProContextPanel.vue';
-import InputFieldRenderer from '../components/InputFieldRenderer.vue';
-import { useToasts } from '../composables/useToasts.js';
-import { getGuiConfig } from '../config.js';
-import { useBackendQueue } from '../composables/useBackendQueue.js';
-import { useGuiQueue } from '../composables/useGuiQueue.js';
-import { buildDefaultFromSchema, normalizeInputSchema } from '../utils/inputSchema.js';
-import { parseTaskFile } from '../task_editor/convert/yamlCompiler.js';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import axios from 'axios'
 
-const { push: toast } = useToasts();
-const cfg = getGuiConfig();
+import TaskMiniCard from '../components/TaskMiniCard.vue'
+import ProContextPanel from '../components/ProContextPanel.vue'
+import InputFieldRenderer from '../components/InputFieldRenderer.vue'
+import { useToasts } from '../composables/useToasts.js'
+import { getGuiConfig } from '../config.js'
+import { useGuiQueue } from '../composables/useGuiQueue.js'
+import { buildDefaultFromSchema, normalizeInputSchema } from '../utils/inputSchema.js'
+
+const cfg = getGuiConfig()
 const api = axios.create({
   baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
   timeout: cfg?.api?.timeout_ms || 5000,
-});
+})
 
-const engineRunning = ref(false);
-const plans = ref([]);
-const tasks = ref([]);
-const ui = reactive({ planSelected: '', query: '' });
-const debouncedQuery = ref(''); // 防抖后的查询字符串
-const open = reactive({ byPlan: true, favs: true });
-const favKey = 'exec.favs';
-const favSet = ref(new Set(JSON.parse(localStorage.getItem(favKey) || '[]')));
+const { push: toast } = useToasts()
+const { items: guiItems, add: addGui, update: updateGui, remove: removeGuiItem, clear: clearGuiItems, move: moveGuiItem } = useGuiQueue()
 
-// 防抖更新查询（300ms）
-const updateDebouncedQuery = useDebounceFn((value) => {
-  debouncedQuery.value = value;
-}, 300);
+const plans = ref([])
+const tasks = ref([])
+const selectedPlan = ref('')
+const query = ref('')
+const engineRunning = ref(false)
+const readyQueue = ref([])
+const activeRuns = ref([])
+const queueOverview = reactive({ ready_count: 0, running_count: 0, delayed_count: 0 })
 
-// 监听 ui.query 变化并防抖更新
-watch(() => ui.query, (newValue) => {
-  updateDebouncedQuery(newValue);
-}, { immediate: true });
-
-function toggleFav(plan, task) {
-  const key = `${plan}::${task}`;
-  const next = new Set(favSet.value);
-  if (next.has(key)) {
-    next.delete(key);
-  } else {
-    next.add(key);
-  }
-  favSet.value = next;
-  localStorage.setItem(favKey, JSON.stringify([...next]));
-}
-
-const favTasksView = computed(() => {
-  const map = new Map(tasks.value.map(item => [item.__key, item]));
-  return [...favSet.value.values()]
-    .map(key => map.get(key))
-    .filter(Boolean)
-    .sort((a, b) => a.title.localeCompare(b.title) || a.plan.localeCompare(b.plan) || a.task.localeCompare(b.task))
-    .map(item => ({ ...item, titleHtml: item.title, descHtml: item.desc, starred: true }));
-});
-
-const filteredTasks = computed(() => {
-  const plan = ui.planSelected || plans.value[0]?.name || '';
-  const query = (debouncedQuery.value || '').trim().toLowerCase(); // 使用防抖后的查询
-  const match = (item) => !query || `${item.plan}${item.task}${item.title}${item.desc}`.toLowerCase().includes(query);
-  const inPlan = tasks.value.filter(item => item.plan === plan && match(item));
-  const outPlan = tasks.value.filter(item => item.plan !== plan && match(item));
-  const sorter = (a, b) => {
-    const aFav = favSet.value.has(`${a.plan}::${a.task}`);
-    const bFav = favSet.value.has(`${b.plan}::${b.task}`);
-    if (aFav !== bFav) return aFav ? -1 : 1;
-    const titleCmp = a.title.localeCompare(b.title);
-    if (titleCmp) return titleCmp;
-    const planCmp = a.plan.localeCompare(b.plan);
-    return planCmp || a.task.localeCompare(b.task);
-  };
-  return [...inPlan, ...outPlan]
-    .sort(sorter)
-    .map(item => ({
-      ...item,
-      starred: favSet.value.has(`${item.plan}::${item.task}`),
-      titleHtml: item.title,
-      descHtml: item.desc,
-    }));
-});
-
-async function loadPlans() {
-  try {
-    const { data } = await api.get('/plans');
-    plans.value = data || [];
-  } catch (err) {
-    toast({ type: 'error', title: 'Load plans failed', message: err.message });
-  }
-}
-
-async function loadTasks() {
-  const list = [];
-  for (const plan of plans.value) {
-    try {
-      const { data } = await api.get(`/plans/${plan.name}/tasks`);
-      (data || []).forEach((task) => {
-        const taskRef = task.task_ref || task.task_name_in_plan || task.task_name;  // 优先使用新格式
-        const taskDisplay = taskRef.startsWith('tasks:') ? taskRef.slice(6) : taskRef;  // 去掉 'tasks:' 前缀用于显示
-        list.push({
-          __key: `${plan.name}::${taskRef}`,
-          plan: plan.name,
-          task: taskRef,  // 使用新格式作为任务引用
-          taskDisplay: taskDisplay,  // 用于友好显示
-          title: task.meta?.title || taskDisplay,
-          desc: task.meta?.description || '',
-          meta: task.meta || {},
-        });
-      });
-    } catch {
-      /* ignore per-plan failures */
-    }
-  }
-  tasks.value = list;
-}
+const favKey = 'expedition.execute.favs'
+const favSet = reactive(new Set(JSON.parse(localStorage.getItem(favKey) || '[]')))
 
 const config = reactive({
   open: false,
   plan: '',
   task: '',
-  title: 'Configure Task',
+  title: 'Task Brief',
   meta: null,
   repeat: 1,
-});
-const inputModel = reactive({});
+})
+
+const inputModel = reactive({})
+
 const normalizedInputs = computed(() => {
-  if (!Array.isArray(config.meta?.inputs)) return [];
-  return (config.meta.inputs || [])
+  if (!Array.isArray(config.meta?.inputs)) return []
+  return config.meta.inputs
     .filter((input) => input && typeof input === 'object' && input.name)
-    .map((input) => normalizeInputSchema({
-      ...input,
-      label: input.label || input.name,
-      name: input.name,
-    }));
-});
-const hasInputs = computed(() => normalizedInputs.value.length > 0);
+    .map((input) => normalizeInputSchema({ ...input, label: input.label || input.name }))
+})
 
-function deriveFilePath(taskRef) {
-  // 处理新格式: tasks:test:draw_one_star -> tasks/test/draw_one_star.yaml
-  // 处理旧格式: test/draw_one_star/draw_one_star -> tasks/test/draw_one_star.yaml
-  if (taskRef.startsWith('tasks:')) {
-    // 新格式
-    const path = taskRef.slice(6).replace(/:/g, '/');  // 去掉 'tasks:' 并替换 ':' 为 '/'
-    return `tasks/${path}.yaml`;
-  } else {
-    // 旧格式
-    const parts = taskRef.split('/');
-    if (parts.length === 1) {
-      return `tasks/${parts[0]}.yaml`;
-    }
-    // 如果最后一部分与倒数第二部分相同，去掉重复
-    if (parts.length >= 2 && parts[parts.length - 1] === parts[parts.length - 2]) {
-      const filePath = parts.slice(0, -1).join('/');
-      return `tasks/${filePath}.yaml`;
-    }
-    const filePath = parts.join('/');
-    return `tasks/${filePath}.yaml`;
+const canAdd = computed(() => !!config.plan && !!config.task)
+
+const filteredTasks = computed(() => {
+  const activePlan = selectedPlan.value || plans.value[0]?.name || ''
+  const q = query.value.trim().toLowerCase()
+
+  return tasks.value
+    .filter((task) => task.plan_name === activePlan)
+    .filter((task) => {
+      if (!q) return true
+      return `${task.task_ref} ${task.title} ${task.description}`.toLowerCase().includes(q)
+    })
+    .sort((a, b) => {
+      const aFav = favSet.has(a.key) ? -1 : 0
+      const bFav = favSet.has(b.key) ? -1 : 0
+      return aFav - bFav || a.title.localeCompare(b.title)
+    })
+})
+
+async function loadPlans() {
+  const { data } = await api.get('/plans')
+  plans.value = Array.isArray(data) ? data : []
+  if (!selectedPlan.value && plans.value.length) {
+    selectedPlan.value = plans.value[0].name
   }
 }
 
-async function reloadTaskFile(plan, taskRef) {
-  const filePath = deriveFilePath(taskRef);
-  try {
-    await api.post(`/plans/${plan}/files/reload`, null, { params: { path: filePath } });
-  } catch (err) {
-    console.warn('[ExecuteView] reload task file failed:', err);
-  }
-  return filePath;
+async function loadTasks() {
+  const responses = await Promise.all(
+    plans.value.map((plan) => api.get(`/plans/${plan.name}/tasks`).catch(() => ({ data: [] })))
+  )
+
+  tasks.value = responses.flatMap((response, index) => {
+    const planName = plans.value[index]?.name || ''
+    const list = Array.isArray(response.data) ? response.data : []
+    return list.map((task) => ({
+      key: `${planName}::${task.task_ref}`,
+      plan_name: planName,
+      task_ref: task.task_ref,
+      title: task.meta?.title || task.task_ref,
+      description: task.meta?.description || '',
+      meta: task.meta || {},
+    }))
+  })
 }
 
-async function resolveTaskMeta(plan, taskRef, meta = {}) {
-  if (Array.isArray(meta?.inputs)) return meta;
-  const filePath = await reloadTaskFile(plan, taskRef);
-  try {
-    const { data } = await api.get(`/plans/${plan}/files/content`, { params: { path: filePath } });
-    const taskFile = parseTaskFile(data, filePath);
-    // 从任务引用中提取任务键
-    let taskKey;
-    if (taskRef.startsWith('tasks:')) {
-      // 新格式: tasks:test:draw_one_star -> draw_one_star
-      const parts = taskRef.slice(6).split(':');
-      taskKey = parts[parts.length - 1];
-    } else {
-      // 旧格式: test/draw_one_star/draw_one_star -> draw_one_star
-      const parts = taskRef.split('/');
-      taskKey = parts[parts.length - 1];
-    }
-    const fileMeta = taskFile?.tasks?.[taskKey]?.meta;
-    if (fileMeta && typeof fileMeta === 'object') {
-      return { ...meta, ...fileMeta, inputs: fileMeta.inputs ?? meta.inputs };
-    }
-  } catch (err) {
-    console.warn('[ExecuteView] load task meta failed:', err);
-  }
-  return meta;
+function persistFavs() {
+  localStorage.setItem(favKey, JSON.stringify([...favSet]))
+}
+
+function toggleFav(key) {
+  if (favSet.has(key)) favSet.delete(key)
+  else favSet.add(key)
+  persistFavs()
 }
 
 function resetInputModel() {
-  Object.keys(inputModel).forEach(key => delete inputModel[key]);
+  Object.keys(inputModel).forEach((key) => delete inputModel[key])
 }
 
 function applyInputDefaults() {
-  resetInputModel();
-  const defaults = (config.meta?.defaults && typeof config.meta.defaults === 'object')
-    ? config.meta.defaults
-    : {};
+  resetInputModel()
+  const defaults = typeof config.meta?.defaults === 'object' && config.meta.defaults ? config.meta.defaults : {}
   normalizedInputs.value.forEach((schema) => {
-    const fallback = buildDefaultFromSchema(schema);
-    inputModel[schema.name] = defaults[schema.name] ?? fallback;
-  });
+    inputModel[schema.name] = defaults[schema.name] ?? buildDefaultFromSchema(schema)
+  })
 }
 
-async function openConfig(plan, task, meta) {
-  config.open = true;
-  config.plan = plan;
-  config.task = task;
-  config.meta = await resolveTaskMeta(plan, task, meta || {});
-  config.title = `Configure · ${task}`;
-  config.repeat = 1;
-  applyInputDefaults();
-}
-
-const canAdd = computed(() => !!config.plan && !!config.task);
-
-function parseInputs() {
-  return { ...inputModel };
-}
-
-const {
-  readyQueue,
-  fetchReady,
-  remove: removeReady,
-  moveFront: moveFrontBackend,
-  clear: clearReady,
-  activeRuns,
-  fetchActiveRuns,
-} = useBackendQueue();
-const {
-  items: guiItems,
-  add: addGui,
-  update: updateGui,
-  remove: removeGuiItem,
-  clear: clearGuiItems,
-  move: moveGuiItem,
-} = useGuiQueue();
-
-const history = ref([]);
-let pollTimer = null;
-let activeMap = new Map();
-const historyView = computed(() =>
-  history.value.filter(item => item.plan && item.task && item.status && !String(item.status).toLowerCase().includes('starting'))
-);
-
-async function refreshQueue() {
-  await fetchReady();
-}
-
-async function refreshActiveRuns() {
-  const prev = new Map(activeMap);
-  await fetchActiveRuns();
-  activeMap = new Map();
-  for (const run of activeRuns.value) {
-    const key = run.trace_id || run.cid || `${run.plan_name}/${run.task_name}`;
-    activeMap.set(key, run);
-    prev.delete(key);
-  }
-  prev.forEach((run, key) => {
-    history.value = [{
-      id: `hist_${key}_${Date.now()}`,
-      plan: run.plan_name,
-      task: run.task_name,
-      status: run.status || '完成',
-      at: Date.now(),
-    }, ...history.value].slice(0, 100);
-  });
-}
-
-async function removeQueue(cid) {
-  await removeReady(cid);
-  await fetchReady();
-}
-
-async function moveFrontQueue(cid) {
-  await moveFrontBackend(cid);
-  await fetchReady();
-}
-
-async function clearQueue() {
-  await clearReady();
-  await fetchReady();
+function openConfig(task) {
+  config.open = true
+  config.plan = task.plan_name
+  config.task = task.task_ref
+  config.title = task.title
+  config.meta = task.meta
+  config.repeat = 1
+  applyInputDefaults()
 }
 
 function addToGuiQueue() {
-  const inputs = parseInputs();
-  const repeat = Math.max(1, Math.min(500, config.repeat || 1));
-  for (let i = 0; i < repeat; i += 1) {
-    addGui({ plan: config.plan, task: config.task, inputs, repeat: 1 });
+  const repeat = Math.max(1, Math.min(500, Number(config.repeat) || 1))
+  const payload = { ...inputModel }
+
+  for (let index = 0; index < repeat; index += 1) {
+    addGui({ plan: config.plan, task: config.task, inputs: payload })
   }
-  config.open = false;
-  toast({
-    type: 'success',
-    title: '已加入前端队列',
-    message: `${config.plan} / ${config.task} ×${repeat}`,
-  });
+
+  config.open = false
+  toast({ type: 'success', title: 'Staged', message: `${config.plan} / ${config.task} x${repeat}` })
+}
+
+async function fetchSystemStatus() {
+  try {
+    const { data } = await api.get('/system/status')
+    engineRunning.value = !!data?.is_running
+  } catch {
+    engineRunning.value = false
+  }
+}
+
+async function fetchQueueOverview() {
+  try {
+    const { data } = await api.get('/queue/overview')
+    Object.assign(queueOverview, data || {})
+  } catch {
+    Object.assign(queueOverview, { ready_count: 0, running_count: 0, delayed_count: 0 })
+  }
+}
+
+async function fetchReadyQueue() {
+  try {
+    const { data } = await api.get('/queue/list', { params: { state: 'ready', limit: cfg?.api?.queue_list_limit || 200 } })
+    readyQueue.value = data?.items || []
+  } catch {
+    readyQueue.value = []
+  }
+}
+
+async function fetchActiveRuns() {
+  try {
+    const { data } = await api.get('/runs/active')
+    activeRuns.value = Array.isArray(data) ? data : []
+  } catch {
+    activeRuns.value = []
+  }
+}
+
+async function refreshQueue() {
+  await Promise.all([fetchQueueOverview(), fetchReadyQueue(), fetchActiveRuns(), fetchSystemStatus()])
+}
+
+async function refreshAll() {
+  await loadPlans()
+  await loadTasks()
+  await refreshQueue()
 }
 
 async function pushToBackend(item) {
-  const inputs = item.inputs || {};
-  updateGui(item.id, { status: 'pushing' });
+  updateGui(item.id, { status: 'pushing' })
+
   try {
-    await reloadTaskFile(item.plan, item.task);
-    const repeat = Math.max(1, item.repeat || 1);
-    let cid = null;
-    if (repeat > 1) {
-      const tasksPayload = Array.from({ length: repeat }, () => ({
-        plan_name: item.plan,
-        task_ref: item.task,
-        inputs,
-      }));
-      const { data } = await api.post('/tasks/dispatch/batch', { tasks: tasksPayload });
-      if (Array.isArray(data?.results) && data.results.length) {
-        cid = data.results[0]?.cid || null;
-      }
-    } else {
-      const { data } = await api.post('/tasks/dispatch', {
-        plan_name: item.plan,
-        task_ref: item.task,
-        inputs,
-      });
-      cid = data?.cid || null;
-    }
-    updateGui(item.id, { status: 'queued', lastCid: cid, pushedAt: Date.now() });
-    history.value = [{
-      id: item.id,
-      plan: item.plan,
-      task: item.task,
-      status: '已推送',
-      at: Date.now(),
-    }, ...history.value].slice(0, 50);
-    removeGuiItem(item.id);
-    toast({ type: 'success', title: '已推送', message: `${item.plan} / ${item.task}` });
-    await fetchReady();
-    await refreshActiveRuns();
-  } catch (err) {
-    updateGui(item.id, { status: 'pending' });
-    toast({
-      type: 'error',
-      title: 'Push failed',
-      message: err?.response?.data?.detail || err.message,
-    });
+    const { data } = await api.post('/tasks/dispatch', {
+      plan_name: item.plan,
+      task_ref: item.task,
+      inputs: item.inputs || {},
+    })
+
+    updateGui(item.id, { status: 'queued', lastCid: data?.cid || null, pushedAt: Date.now() })
+    removeGuiItem(item.id)
+    await refreshQueue()
+    toast({ type: 'success', title: 'Queued', message: `${item.plan} / ${item.task}` })
+  } catch (error) {
+    updateGui(item.id, { status: 'pending' })
+    toast({ type: 'error', title: 'Dispatch Failed', message: error?.response?.data?.detail || error.message })
+  }
+}
+
+async function pushAllGui() {
+  for (const item of [...guiItems.value]) {
+    // eslint-disable-next-line no-await-in-loop
+    await pushToBackend(item)
   }
 }
 
 function removeGui(id) {
-  removeGuiItem(id);
+  removeGuiItem(id)
 }
 
 function moveGui(id, direction) {
-  moveGuiItem(id, direction);
+  moveGuiItem(id, direction)
 }
 
 function clearGuiQueue() {
-  clearGuiItems();
+  clearGuiItems()
 }
 
-async function pushAllGui() {
-  const list = [...guiItems.value];
-  for (const item of list) {
-    await pushToBackend(item);
-  }
+async function removeQueue(cid) {
+  await api.delete(`/queue/${cid}`)
+  await refreshQueue()
 }
 
-function fmtTime(ts) {
-  return ts ? new Date(ts * 1000).toLocaleTimeString() : '-';
+async function moveFront(cid) {
+  await api.post(`/queue/${cid}/move-to-front`)
+  await refreshQueue()
 }
 
-function fmtTimeMs(ts) {
-  if (!ts) return '-';
-  const ms = typeof ts === 'number' && ts > 1e12 ? ts : ts * 1000;
-  return new Date(ms).toLocaleString();
+async function clearQueue() {
+  await api.delete('/queue/clear')
+  await refreshQueue()
 }
 
 function guiStatusLabel(status) {
-  if (status === 'pending') return '待推送';
-  if (status === 'pushing') return '推送中';
-  if (status === 'queued') return '已推送';
-  return status;
+  if (status === 'pushing') return 'dispatching'
+  if (status === 'queued') return 'queued'
+  return 'staged'
 }
 
 function guiStatusClass(status) {
-  if (status === 'queued') return 'pill-green';
-  if (status === 'pushing') return 'pill-blue';
-  return '';
+  if (status === 'pushing') return 'pill-running'
+  if (status === 'queued') return 'pill-queued'
+  return 'pill-gray'
 }
 
-function moveFront(cid) {
-  moveFrontQueue(cid);
+function fmtTimeMs(value) {
+  if (!value) return '--'
+  const ms = value > 1e12 ? value : value * 1000
+  return new Date(ms).toLocaleString()
 }
+
+let pollTimer = null
 
 onMounted(async () => {
-  await loadPlans();
-  if (!ui.planSelected && plans.value.length) {
-    ui.planSelected = plans.value[0].name;
-  }
-  await loadTasks();
-  await fetchReady();
-  await refreshActiveRuns();
-  try {
-    const { data } = await api.get('/system/status');
-    engineRunning.value = !!data?.is_running;
-  } catch {
-    engineRunning.value = false;
-  }
-  pollTimer = setInterval(async () => {
-    await fetchReady();
-    await refreshActiveRuns();
-  }, 2000);
-});
+  await refreshAll()
+  pollTimer = window.setInterval(refreshQueue, 2000)
+})
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer);
-});
+  if (pollTimer) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+})
 </script>
 
 <style scoped>
-.execute-view { display: flex; flex-direction: column; gap: 16px; }
-.header-bar { display: flex; justify-content: space-between; align-items: center; }
-.view-title { font-size: 22px; }
-.view-subtitle { color: var(--text-3); font-size: 12px; }
-.toolbar { display: flex; gap: 8px; align-items: center; }
-.pill { padding: 4px 10px; border-radius: 999px; background: #eee; color: #555; font-size: 12px; }
-.pill-blue { background: #e0f2ff; color: #0369a1; }
-.pill-green { background: #e0ffe8; color: #0f9d58; }
-.content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
-.empty-state { color: #999; text-align: center; padding: 16px; }
-.queue-panel table { width: 100%; border-collapse: collapse; }
-.queue-panel th, .queue-panel td { padding: 8px; border-bottom: 1px solid #eee; text-align: left; }
-.queue-panel code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
-.trace-label { font-size: 11px; color: var(--text-3); line-height: 1.2; }
-.json-input .textarea { width: 100%; height: 160px; }
-.form-grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin: 12px 0; }
-.field .label { font-size: 12px; color: var(--text-3); margin-bottom: 4px; }
-.error { color: #c00; font-size: 12px; }
+.execute-page {
+  gap: 22px;
+}
+
+.desk-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) 420px;
+  gap: 18px;
+}
+
+.desk-header__copy,
+.desk-header__stats {
+  padding: 18px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(59, 68, 72, 0.92), rgba(39, 46, 49, 0.92));
+  box-shadow: var(--shadow-plate), var(--shadow-inset);
+}
+
+.desk-header__stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.desk-stat {
+  display: flex;
+  min-height: 88px;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12px 12px 10px;
+  border: 1px solid rgba(224, 214, 186, 0.1);
+  background: rgba(24, 30, 32, 0.42);
+}
+
+.desk-stat__label {
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.desk-stat__value {
+  color: var(--paper-2);
+  font-family: var(--font-display);
+  font-size: 40px;
+  letter-spacing: 0.08em;
+  line-height: 0.9;
+}
+
+.mission-desk {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.2fr) minmax(320px, 0.95fr);
+  gap: 18px;
+  min-height: calc(100vh - 280px);
+  padding: 24px 20px 20px;
+  border: 1px solid rgba(224, 214, 186, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent 12%),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.006), rgba(255, 255, 255, 0.006) 1px, transparent 1px, transparent 5px),
+    linear-gradient(180deg, #31393c, #252d30);
+  box-shadow: var(--shadow-soft), var(--shadow-inset);
+}
+
+.mission-desk::before {
+  content: '';
+  position: absolute;
+  inset: 16px;
+  border: 1px solid rgba(224, 214, 186, 0.06);
+  pointer-events: none;
+}
+
+.mission-desk__plate {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(224, 214, 186, 0.12);
+  background:
+    linear-gradient(180deg, rgba(69, 79, 83, 0.95), rgba(44, 53, 56, 0.95));
+  box-shadow: var(--shadow-plate), var(--shadow-inset);
+}
+
+.mission-desk__plate--catalog {
+  transform: rotate(-1deg);
+}
+
+.mission-desk__plate--stage {
+  transform: rotate(0.45deg);
+  background:
+    linear-gradient(180deg, rgba(83, 74, 55, 0.28), transparent 22%),
+    linear-gradient(180deg, rgba(69, 79, 83, 0.96), rgba(44, 53, 56, 0.96));
+}
+
+.mission-desk__plate--runtime {
+  transform: rotate(1deg);
+}
+
+.desk-pane__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+  flex-wrap: wrap;
+}
+
+.desk-pane__kicker {
+  display: block;
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.desk-pane__title {
+  color: var(--paper-2);
+  font-family: var(--font-display);
+  font-size: 34px;
+  letter-spacing: 0.08em;
+  line-height: 0.9;
+  text-transform: uppercase;
+}
+
+.catalog-controls {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.catalog-pile {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  overflow: auto;
+  padding-right: 8px;
+}
+
+.stage-note {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid rgba(224, 214, 186, 0.1);
+  background: rgba(31, 38, 41, 0.42);
+}
+
+.stage-note__tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  background: rgba(199, 104, 63, 0.14);
+  color: var(--paper-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.stage-note p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.stage-route,
+.runtime-stack {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.route-board {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.route-board__number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(224, 214, 186, 0.14);
+  background: linear-gradient(180deg, rgba(199, 104, 63, 0.86), rgba(146, 77, 49, 0.9));
+  color: #efe2c9;
+  font-family: var(--font-display);
+  font-size: 34px;
+  letter-spacing: 0.08em;
+}
+
+.route-board__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(224, 214, 186, 0.12);
+  background:
+    linear-gradient(180deg, rgba(207, 194, 154, 0.09), transparent 28%),
+    linear-gradient(180deg, rgba(62, 72, 76, 0.95), rgba(43, 52, 55, 0.95));
+}
+
+.route-board__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: start;
+}
+
+.route-board__plan {
+  display: block;
+  color: var(--paper-2);
+  font-family: var(--font-display);
+  font-size: 30px;
+  letter-spacing: 0.08em;
+  line-height: 0.9;
+  text-transform: uppercase;
+}
+
+.route-board__task {
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.route-board__rail {
+  height: 10px;
+  border: 1px solid rgba(224, 214, 186, 0.08);
+  background: linear-gradient(90deg, rgba(201, 157, 84, 0.2), rgba(199, 104, 63, 0.3), rgba(201, 187, 149, 0.12));
+}
+
+.route-board__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stage-empty {
+  display: flex;
+  min-height: 220px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px;
+  border: 1px dashed rgba(224, 214, 186, 0.16);
+  background: rgba(25, 31, 33, 0.36);
+}
+
+.stage-empty__stamp {
+  color: rgba(201, 187, 149, 0.24);
+  font-family: var(--font-display);
+  font-size: 54px;
+  letter-spacing: 0.1em;
+  line-height: 0.9;
+}
+
+.stage-empty p {
+  margin: 0;
+  color: var(--text-soft);
+  max-width: 320px;
+}
+
+.runtime-section {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.runtime-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.queue-ticket,
+.live-ticket {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(224, 214, 186, 0.12);
+  background: linear-gradient(180deg, rgba(56, 64, 68, 0.95), rgba(37, 45, 48, 0.95));
+}
+
+.queue-ticket__head,
+.queue-ticket__meta,
+.live-ticket__head,
+.live-ticket__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.queue-ticket__title,
+.live-ticket__head strong {
+  color: var(--paper-2);
+  font-family: var(--font-display);
+  font-size: 26px;
+  letter-spacing: 0.08em;
+  line-height: 0.9;
+  text-transform: uppercase;
+}
+
+.queue-ticket__task,
+.queue-ticket__meta,
+.live-ticket__task,
+.live-ticket__meta {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.live-ticket {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.live-ticket__flag {
+  background: linear-gradient(180deg, var(--status-running), rgba(139, 162, 110, 0.34));
+}
+
+.live-ticket__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.drawer-context,
+.drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.drawer-actions {
+  justify-content: flex-end;
+}
 </style>
