@@ -191,10 +191,21 @@ class TaskDefinitionValidator:
                         "task_validation_failed",
                         f"Task file '{file_path.name}' has invalid logical dependency object at "
                         f"'{location}'. It must contain exactly one of 'all', 'any', 'none'."
-                    )
+                )
                 op = next(iter(logical_hit))
+                payload = spec[op]
+                if isinstance(payload, list):
+                    for idx, item in enumerate(payload):
+                        self._validate_depends_on_syntax(
+                            item,
+                            file_path=file_path,
+                            task_name=task_name,
+                            step_id=step_id,
+                            field_path=f"{field_path}.{op}[{idx}]",
+                        )
+                    return
                 self._validate_depends_on_syntax(
-                    spec[op],
+                    payload,
                     file_path=file_path,
                     task_name=task_name,
                     step_id=step_id,

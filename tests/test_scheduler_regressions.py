@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 from packages.aura_core.api.definitions import ActionDefinition, ServiceDefinition
@@ -13,6 +14,7 @@ from packages.aura_core.engine import action_injector as action_injector_module
 from packages.aura_core.engine import action_resolver as action_resolver_module
 from packages.aura_core.engine.action_injector import ActionInjector
 from packages.aura_core.engine.action_resolver import ActionResolver
+from packages.aura_core.packaging.core.task_validator import TaskDefinitionValidator, TaskValidationError
 from packages.aura_core.packaging.manifest.schema import PackageInfo, PluginManifest
 from packages.aura_core.scheduler.execution.dispatcher import DispatchService
 from packages.aura_core.scheduler.execution.manager import ExecutionManager
@@ -317,3 +319,44 @@ def test_action_resolver_accepts_declared_dependency_for_explicit_external_actio
     resolver = ActionResolver(current_package=current_package)
 
     assert resolver.resolve("other/pkg/click") == "other/pkg/click"
+
+
+def test_task_validator_accepts_list_payload_under_logical_dep_operator():
+    validator = TaskDefinitionValidator(
+        plan_name="demo",
+        enable_schema_validation=False,
+        strict_validation=True,
+    )
+
+    validator._validate_depends_on_syntax(
+        {
+            "all": [
+                "prepare",
+                {"fetch": "success|skipped"},
+            ]
+        },
+        file_path=Path("demo.yaml"),
+        task_name="demo_task",
+        step_id="finish",
+        field_path="depends_on",
+    )
+
+
+def test_task_validator_rejects_top_level_list_dependency_shorthand():
+    validator = TaskDefinitionValidator(
+        plan_name="demo",
+        enable_schema_validation=False,
+        strict_validation=True,
+    )
+
+    try:
+        validator._validate_depends_on_syntax(
+            ["a", "b"],
+            file_path=Path("demo.yaml"),
+            task_name="demo_task",
+            step_id="finish",
+            field_path="depends_on",
+        )
+        assert False, "expected deprecated list shorthand to fail"
+    except TaskValidationError as exc:
+        assert exc.code == "deprecated_syntax"

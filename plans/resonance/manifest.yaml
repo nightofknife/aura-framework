@@ -748,4 +748,4 @@ exports:
     description: Simulate rolling trade until stop, with full trace output.
 metadata:
   generated_by: ManifestGenerator
-  generated_at: '2026-03-23T17:02:59Z'
+  generated_at: '2026-03-27T17:07:45Z'
