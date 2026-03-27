@@ -1,117 +1,79 @@
 <template>
-  <section class="scheme-panel">
-    <button class="scheme-panel__head" @click="toggle" :aria-expanded="openLocal ? 'true' : 'false'">
-      <div>
-        <span class="scheme-panel__kicker">Section</span>
-        <strong class="scheme-panel__title">{{ title }}</strong>
+  <div class="scheme-panel glass glass-thick glass-refract glass-shimmer glass-clear">
+    <button class="scheme-head" @click="toggle" :aria-expanded="openLocal ? 'true' : 'false'">
+      <div class="title">
+        <span class="chev" :class="{ open: openLocal }" aria-hidden="true">▸</span>
+        <strong>{{ title }}</strong>
       </div>
-      <span class="scheme-panel__toggle">{{ openLocal ? '−' : '+' }}</span>
+      <div class="desc" v-if="description">{{ description }}</div>
+      <div class="actions"><slot name="actions"/></div>
     </button>
 
-    <Transition @enter="onEnter" @after-enter="onAfterEnter" @leave="onLeave">
-      <div v-show="openLocal" class="scheme-panel__body">
-        <p v-if="description" class="scheme-panel__desc">{{ description }}</p>
-        <slot />
+    <Transition
+        @enter="onEnter"
+        @after-enter="onAfterEnter"
+        @leave="onLeave"
+    >
+      <div v-show="openLocal" class="scheme-body">
+        <slot/>
       </div>
     </Transition>
-  </section>
+  </div>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch } from 'vue';
 
 const props = defineProps({
-  title: { type: String, default: '' },
-  description: { type: String, default: '' },
+  title: String,
+  description: String,
   open: { type: Boolean, default: false },
-})
+});
+const emit = defineEmits(['update:open']);
 
-const emit = defineEmits(['update:open'])
-const openLocal = ref(!!props.open)
-
-watch(() => props.open, (value) => {
-  openLocal.value = value
-})
+const openLocal = ref(!!props.open);
+watch(() => props.open, v => openLocal.value = v);
 
 function toggle() {
-  openLocal.value = !openLocal.value
-  emit('update:open', openLocal.value)
+  openLocal.value = !openLocal.value;
+  emit('update:open', openLocal.value);
 }
 
-function onEnter(element) {
-  element.style.height = 'auto'
-  const height = getComputedStyle(element).height
-  element.style.height = '0'
-  requestAnimationFrame(() => {
-    element.style.height = height
-  })
+// 高度过渡动画
+function onEnter(el) {
+  el.style.height = 'auto';
+  const h = getComputedStyle(el).height;
+  el.style.height = '0';
+  requestAnimationFrame(() => { el.style.height = h; });
 }
-
-function onAfterEnter(element) {
-  element.style.height = 'auto'
-}
-
-function onLeave(element) {
-  element.style.height = getComputedStyle(element).height
-  requestAnimationFrame(() => {
-    element.style.height = '0'
-  })
+function onAfterEnter(el) { el.style.height = 'auto'; }
+function onLeave(el) {
+  el.style.height = getComputedStyle(el).height;
+  requestAnimationFrame(() => { el.style.height = '0'; });
 }
 </script>
 
 <style scoped>
-.scheme-panel {
-  border: 1px solid var(--line);
-  background: rgba(12, 30, 46, 0.68);
-  clip-path: polygon(16px 0, 100% 0, calc(100% - 16px) 100%, 0 100%);
-}
+/* 玻璃质感来自全局 .glass 类，这里只保留排版与交互 */
+.scheme-panel { transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease); }
 
-.scheme-panel__head {
+.scheme-head {
   width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
+  display: flex; gap: 12px; align-items: center;
+  padding: 12px 16px;
+  cursor: pointer; background: transparent; border: none; text-align: left;
+  color: var(--text-primary);
 }
+.title { display: flex; gap: 8px; align-items: center; }
+.chev { width: 14px; display: inline-block; color: var(--text-secondary); transition: transform var(--dur) var(--ease); }
+.chev.open { transform: rotate(90deg); }
+.desc { color: var(--text-secondary); font-size: 12px; flex: 1; margin-left: 8px; }
+.actions { display: flex; gap: 6px; }
 
-.scheme-panel__kicker {
-  display: block;
-  color: var(--sand);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.scheme-panel__title {
-  color: var(--sand-bright);
-  font-family: var(--font-display);
-  font-size: 22px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.scheme-panel__toggle {
-  color: var(--smoke-dim);
-  font-size: 20px;
-}
-
-.scheme-panel__body {
-  overflow: hidden;
+.scheme-body {
   padding: 0 16px 16px;
-  border-top: 1px solid var(--line);
-}
-
-.scheme-panel__desc {
-  margin: 14px 0 0;
-  color: var(--smoke-dim);
-  font-size: 13px;
-  line-height: 1.55;
+  border-top: 1px solid var(--border-frosted);
+  overflow: hidden;
+  transition: height var(--dur) var(--ease);
 }
 </style>

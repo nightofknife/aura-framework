@@ -1,152 +1,79 @@
+<!-- === src/components/TaskMiniCard.vue === -->
 <template>
-  <article class="task-ticket" @click="$emit('select')">
-    <span class="task-ticket__serial">{{ mark }}</span>
-    <span class="task-ticket__pin" :class="{ 'is-on': starred }" @click.stop="$emit('toggle-fav')">
-      {{ starred ? 'PIN' : 'TAG' }}
-    </span>
-
-    <div class="task-ticket__paper">
-      <span class="task-ticket__plan">{{ plan }}</span>
-      <h3 class="task-ticket__title">{{ title }}</h3>
-      <p class="task-ticket__desc">{{ description || 'No description available for this task.' }}</p>
+  <div class="task-card" v-tilt :class="{ starred }" @click="$emit('select')">
+    <div class="color-stripe"></div>
+    <div class="hd">
+      <div class="title" v-if="titleHtml" v-html="titleHtml"></div>
+      <div class="title" v-else>{{ title }}</div>
+      <button
+          class="star"
+          :class="{ on: starred }"
+          aria-label="toggle favorite"
+          title="收藏/取消收藏"
+          @click.stop="$emit('toggle-fav')"
+      >
+        {{ starred ? '★' : '☆' }}
+      </button>
     </div>
-
-    <footer class="task-ticket__foot">
-      <span v-if="tag" class="pill">{{ tag }}</span>
-      <span class="task-ticket__hint">open brief</span>
-    </footer>
-  </article>
+    <div class="desc" v-if="descHtml" v-html="descHtml"></div>
+    <div class="desc" v-else-if="description">{{ description }}</div>
+    <div class="meta">
+      <span class="pill">{{ plan }}</span>
+      <span class="pill pill-blue" v-if="tag">{{ tag }}</span>
+    </div>
+  </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
-
-const props = defineProps({
-  title: { type: String, default: '' },
-  description: { type: String, default: '' },
-  plan: { type: String, default: '' },
-  tag: { type: String, default: '' },
-  starred: Boolean,
-})
-
-const mark = computed(() => {
-  const source = props.title || props.plan || 'TSK'
-  return String(source).replace(/[^A-Za-z0-9]/g, '').slice(0, 3).toUpperCase() || 'TSK'
-})
+defineProps({
+  title: String, description: String, plan: String, tag: String,
+  starred: Boolean, titleHtml: String, descHtml: String,
+});
 </script>
 
 <style scoped>
-.task-ticket {
+.task-card {
   position: relative;
-  display: flex;
-  min-height: 210px;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px 14px 14px 52px;
-  border: 1px solid rgba(224, 214, 186, 0.1);
-  background:
-    linear-gradient(180deg, rgba(61, 69, 73, 0.9), rgba(39, 47, 50, 0.92));
-  box-shadow: var(--shadow-plate), var(--shadow-inset);
+  backdrop-filter: blur(12px);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-frosted);
+  border-radius: var(--radius);
+  padding: 12px 12px 12px 24px; /* 左侧留出彩带空间 */
   cursor: pointer;
-  transition:
-    transform var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease);
+  display: flex; flex-direction: column; gap: 6px;
+  transition: all var(--dur) var(--ease);
+  overflow: hidden;
 }
-
-.task-ticket:hover {
-  transform: translateY(-2px) rotate(-0.4deg);
-  border-color: rgba(224, 214, 186, 0.22);
+.task-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--primary-accent);
+  box-shadow: var(--shadow-glow);
 }
-
-.task-ticket__serial {
+.color-stripe {
   position: absolute;
-  left: 14px;
-  top: 14px;
-  bottom: 14px;
-  display: flex;
-  width: 28px;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(180deg, rgba(199, 104, 63, 0.86), rgba(137, 70, 44, 0.92));
-  color: #f0e5d2;
-  font-family: var(--font-display);
-  font-size: 20px;
-  letter-spacing: 0.08em;
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
+  left: 6px; top: 10px; bottom: 10px; width: 4px;
+  border-radius: 4px;
+  background: var(--border-frosted);
+  transition: background var(--dur) var(--ease);
+}
+.task-card.starred .color-stripe {
+  background: var(--primary-accent);
 }
 
-.task-ticket__pin {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  min-height: 22px;
-  padding: 0 8px;
-  border: 1px solid rgba(224, 214, 186, 0.12);
-  background: rgba(31, 38, 41, 0.88);
-  color: var(--text-soft);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  line-height: 22px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
+.hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.title { font-weight: 700; color: var(--text-primary); }
+.desc { color: var(--text-secondary); font-size: 13px; min-height: 38px; overflow: hidden; }
+.meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
-.task-ticket__pin.is-on {
-  background: rgba(199, 104, 63, 0.18);
-  color: var(--paper-2);
-  border-color: rgba(199, 104, 63, 0.22);
-}
+.star { transition: transform .15s var(--ease), color .15s var(--ease); }
+.star:active { transform: scale(0.9); }
+.star.on { color: #F59E0B; text-shadow: 0 0 8px rgba(245,158,11,.35); }
 
-.task-ticket__paper {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 12px 10px;
-  border: 1px solid rgba(224, 214, 186, 0.12);
-  background:
-    linear-gradient(180deg, rgba(207, 194, 154, 0.14), rgba(207, 194, 154, 0.07)),
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.025) 1px, transparent 1px, transparent 7px);
-}
 
-.task-ticket__plan {
-  color: var(--paper);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-
-.task-ticket__title {
-  margin: 0;
-  color: var(--paper-2);
-  font-family: var(--font-display);
-  font-size: 30px;
-  letter-spacing: 0.08em;
-  line-height: 0.9;
-  text-transform: uppercase;
-}
-
-.task-ticket__desc {
-  margin: 0;
-  color: var(--text-main);
-  font-size: 13px;
-  line-height: 1.65;
-}
-
-.task-ticket__foot {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-}
-
-.task-ticket__hint {
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+:deep(mark) {
+  background: color-mix(in oklab, var(--primary-accent) 20%, transparent);
+  padding: 0 2px; border-radius: 3px;
+  color: var(--text-primary);
 }
 </style>
+<!-- === END src/components/TaskMiniCard.vue === -->

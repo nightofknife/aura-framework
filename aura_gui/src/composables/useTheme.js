@@ -1,18 +1,42 @@
-import { computed, onMounted, ref } from 'vue'
+// === src/composables/useTheme.js ===
+import { ref, onMounted, computed } from 'vue';
+import { getGuiConfig } from '../config.js';
 
-const themeName = ref('expedition')
-
-function applyTheme() {
-  document.documentElement.classList.add('theme-expedition')
-  document.documentElement.classList.remove('theme-dark')
-}
+const cfg = getGuiConfig();
+const THEME_KEY = cfg?.theme?.storage_key || 'aura_theme';
+const isDark = ref(false);
 
 export function useTheme() {
-  onMounted(applyTheme)
+    const applyTheme = (dark) => {
+        isDark.value = dark;
+        document.documentElement.classList.toggle('theme-dark', dark);
+        localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light');
+    };
 
-  return {
-    themeName: computed(() => themeName.value),
-    isDark: computed(() => true),
-    toggleTheme: () => applyTheme(),
-  }
+    const toggleTheme = () => {
+        applyTheme(!isDark.value);
+    };
+
+    onMounted(() => {
+        const savedTheme = localStorage.getItem(THEME_KEY);
+        if (savedTheme) {
+            applyTheme(savedTheme === 'dark');
+        } else {
+            const pref = (cfg?.theme?.default || 'system').toLowerCase();
+            if (pref === 'dark') {
+                applyTheme(true);
+            } else if (pref === 'light') {
+                applyTheme(false);
+            } else {
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                applyTheme(prefersDark);
+            }
+        }
+    });
+
+    return {
+        isDark: computed(() => isDark.value),
+        toggleTheme,
+    };
 }
+// === END src/composables/useTheme.js ===

@@ -1,96 +1,118 @@
 <template>
   <div class="tag-input-wrapper">
-    <span v-for="(tag, index) in tags" :key="index" class="tag">
-      {{ tag }}
-      <button type="button" class="tag-remove" title="Remove" @click="removeTag(index)">×</button>
-    </span>
-
-    <input
-      ref="inputRef"
-      v-model="currentInput"
-      class="tag-input"
-      :placeholder="tags.length === 0 ? placeholder : ''"
-      @keydown.enter.prevent="addTag"
-      @keydown.backspace="handleBackspace"
-    />
+    <div class="tags-container">
+      <span v-for="(tag, idx) in tags" :key="idx" class="tag">
+        {{ tag }}
+        <button type="button" @click="removeTag(idx)" class="tag-remove" title="移除">×</button>
+      </span>
+      <input
+        ref="inputRef"
+        v-model="currentInput"
+        @keydown.enter.prevent="addTag"
+        @keydown.backspace="handleBackspace"
+        :placeholder="tags.length === 0 ? placeholder : ''"
+        class="tag-input" />
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { ref, computed } from 'vue';
 
 const props = defineProps({
   modelValue: { type: Array, default: () => [] },
-  placeholder: { type: String, default: 'Press Enter to add a tag' },
-})
+  placeholder: { type: String, default: '输入后按Enter添加' }
+});
 
-const emit = defineEmits(['update:modelValue'])
-const inputRef = ref(null)
-const currentInput = ref('')
-const tags = computed(() => props.modelValue || [])
+const emit = defineEmits(['update:modelValue']);
+
+const currentInput = ref('');
+const inputRef = ref(null);
+
+const tags = computed(() => props.modelValue || []);
 
 function addTag() {
-  const value = currentInput.value.trim()
-  if (!value || tags.value.includes(value)) return
-  emit('update:modelValue', [...tags.value, value])
-  currentInput.value = ''
+  const value = currentInput.value.trim();
+  if (value && !tags.value.includes(value)) {
+    emit('update:modelValue', [...tags.value, value]);
+    currentInput.value = '';
+  }
 }
 
-function removeTag(index) {
-  const next = [...tags.value]
-  next.splice(index, 1)
-  emit('update:modelValue', next)
+function removeTag(idx) {
+  const newTags = [...tags.value];
+  newTags.splice(idx, 1);
+  emit('update:modelValue', newTags);
 }
 
 function handleBackspace() {
-  if (!currentInput.value && tags.value.length) {
-    removeTag(tags.value.length - 1)
+  if (currentInput.value === '' && tags.value.length > 0) {
+    removeTag(tags.value.length - 1);
   }
 }
 </script>
 
 <style scoped>
+/* 保持与现有输入框样式一致 */
 .tag-input-wrapper {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 4px;
+  background: white;
+  min-height: 38px;
+}
+
+.tags-container {
   display: flex;
-  min-height: 44px;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 4px;
   align-items: center;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  background: var(--bg-input);
-  clip-path: polygon(10px 0, 100% 0, calc(100% - 10px) 100%, 0 100%);
 }
 
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 26px;
-  padding: 0 10px;
-  background: rgba(239, 106, 62, 0.18);
-  color: var(--sand-bright);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+  gap: 4px;
+  padding: 2px 8px;
+  background: #0969da;
+  color: white;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .tag-remove {
-  border: 0;
-  background: transparent;
-  color: inherit;
+  background: none;
+  border: none;
+  color: white;
   cursor: pointer;
+  font-size: 16px;
   padding: 0;
+  line-height: 1;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 0.2s;
+}
+
+.tag-remove:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .tag-input {
-  min-width: 140px;
-  flex: 1;
-  border: 0;
-  background: transparent;
-  color: var(--smoke);
+  border: none;
   outline: none;
+  flex: 1;
+  min-width: 120px;
+  padding: 4px;
+  font-size: 13px;
+  color: var(--text-primary, #222);
+}
+
+.tag-input::placeholder {
+  color: var(--text-secondary, #999);
 }
 </style>
