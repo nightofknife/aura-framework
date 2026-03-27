@@ -16,6 +16,7 @@ from packages.aura_core.runtime.bootstrap import start_runtime, stop_runtime
 from packages.aura_core.scheduler import Scheduler
 
 _TERMINAL_STATUSES = {"success", "error", "failed", "timeout", "cancelled"}
+_SKIP_FIELD = object()
 
 
 @dataclass
@@ -273,3 +274,450 @@ def _watch_task_until_terminal(scheduler: Scheduler, cid: str, timeout_sec: int 
         time.sleep(1)
 
     message_dialog(title="状态跟踪结束", text=f"CID: {cid}\n最终状态: {last_status}").run()
+
+# --- Enhanced interactive input collection (overrides previous implementation) ---
+def _collect_inputs(meta: dict[str, Any]) -> dict[str, Any] | None:
+    inputs_meta = meta.get("inputs") or []
+    if not isinstance(inputs_meta, list) or not inputs_meta:
+        raw = input_dialog(
+            title="Task Input",
+            text="Input JSON (empty uses {}):",
+            default="{}",
+        ).run()
+        if raw is None:
+            return None
+        raw = raw.strip()
+        if not raw:
+            return {}
+        try:
+            loaded = json.loads(raw)
+            if not isinstance(loaded, dict):
+                message_dialog(title="Input Error", text="Input must be a JSON object.").run()
+                return None
+            return loaded
+        except Exception as exc:
+            message_dialog(title="Input Error", text=f"JSON parse failed: {exc}").run()
+            return None
+
+    collected: dict[str, Any] = {}
+    for field in inputs_meta:
+        if not isinstance(field, dict):
+            continue
+        name = str(field.get("name") or "").strip()
+        if not name:
+            continue
+        cancelled, value = _prompt_field_value(field=field, field_name=name)
+        if cancelled:
+            return None
+        if value is _SKIP_FIELD:
+            continue
+        collected[name] = value
+
+    return collected
+
+
+def _prompt_field_value(field: dict[str, Any], field_name: str) -> tuple[bool, Any]:
+    required = bool(field.get("required", False))
+    has_default = "default" in field
+    default_value = field.get("default")
+    field_type = str(field.get("type") or "string").strip().lower()
+    field_label = str(field.get("label") or field_name).strip() or field_name
+    field_desc = str(field.get("description") or "").strip()
+    enum_values = _extract_enum_values(field)
+
+    if enum_values:
+        return _prompt_enum_value(
+            field_name=field_name,
+            field_label=field_label,
+            required=required,
+            has_default=has_default,
+            default_value=default_value,
+            enum_values=enum_values,
+            field_desc=field_desc,
+        )
+
+    if field_type in {"list", "array"}:
+        return _prompt_list_value(
+            field=field,
+            field_name=field_name,
+            field_label=field_label,
+            required=required,
+            has_default=has_default,
+            default_value=default_value,
+            field_desc=field_desc,
+        )
+
+    if field_type in {"dict", "object", "map"}:
+        return _prompt_dict_value(
+            field=field,
+            field_name=field_name,
+            field_label=field_label,
+            required=required,
+            has_default=has_default,
+            default_value=default_value,
+            field_desc=field_desc,
+        )
+
+    return _prompt_scalar_value(
+        field_name=field_name,
+        field_label=field_label,
+        field_type=field_type,
+        required=required,
+        has_default=has_default,
+        default_value=default_value,
+        field_desc=field_desc,
+    )
+
+
+def _extract_enum_values(field: dict[str, Any]) -> list[Any]:
+    raw = field.get("enum")
+    if raw is None:
+        raw = field.get("options")
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
+def _prompt_enum_value(
+    *,
+    field_name: str,
+    field_label: str,
+    required: bool,
+    has_default: bool,
+    default_value: Any,
+    enum_values: list[Any],
+    field_desc: str,
+) -> tuple[bool, Any]:
+    if _should_use_cascaded_enum(field_name=field_name, enum_values=enum_values):
+        return _prompt_cascaded_dotted_enum(
+            field_name=field_name,
+            field_label=field_label,
+            required=required,
+            has_default=has_default,
+            enum_values=[str(v) for v in enum_values],
+            field_desc=field_desc,
+        )
+
+    choices: list[tuple[str, str]] = []
+    key_to_value: dict[str, Any] = {}
+    if not required and not has_default:
+        choices.append(("__skip__", "(Skip)"))
+
+    default_key = "__skip__" if (not required and not has_default) else None
+    for idx, item in enumerate(enum_values):
+        key = str(idx)
+        key_to_value[key] = item
+        choices.append((key, _format_enum_label(item)))
+        if default_key is None and has_default and item == default_value:
+            default_key = key
+
+    selected = radiolist_dialog(
+        title=f"Input: {field_label}",
+        text=f"{field_name}\n{field_desc}".strip(),
+        values=choices,
+        default=default_key,
+    ).run()
+    if selected is None:
+        return True, None
+    if selected == "__skip__":
+        return False, _SKIP_FIELD
+    return False, key_to_value[selected]
+
+
+def _should_use_cascaded_enum(*, field_name: str, enum_values: list[Any]) -> bool:
+    if len(enum_values) < 8:
+        return False
+    if "route" not in field_name.lower():
+        return False
+    if not all(isinstance(item, str) for item in enum_values):
+        return False
+    dotted = [item for item in enum_values if "." in item]
+    return len(dotted) == len(enum_values)
+
+
+def _prompt_cascaded_dotted_enum(
+    *,
+    field_name: str,
+    field_label: str,
+    required: bool,
+    has_default: bool,
+    enum_values: list[str],
+    field_desc: str,
+) -> tuple[bool, Any]:
+    routes = sorted({str(item).strip() for item in enum_values if str(item).strip()})
+    if not routes:
+        return True, None
+
+    prefix: list[str] = []
+    while True:
+        matched = [route for route in routes if _route_has_prefix(route, prefix)]
+        if not matched:
+            message_dialog(title="Input Error", text=f"No route found under prefix: {'.'.join(prefix)}").run()
+            if not prefix:
+                return True, None
+            prefix.pop()
+            continue
+
+        exact = [".".join(prefix)] if prefix and ".".join(prefix) in matched else []
+        children = sorted(
+            {
+                route.split(".")[len(prefix)]
+                for route in matched
+                if len(route.split(".")) > len(prefix)
+            }
+        )
+
+        if exact and not children:
+            return False, exact[0]
+
+        choices: list[tuple[str, str]] = []
+        if not required and not has_default and not prefix:
+            choices.append(("__skip__", "(Skip)"))
+        if prefix:
+            choices.append(("__back__", "← Back"))
+        if exact:
+            choices.append(("__select__", f"✓ Select current: {exact[0]}"))
+        for child in children:
+            choices.append((f"seg:{child}", child))
+
+        level_hint = ".".join(prefix) if prefix else "(root)"
+        selected = radiolist_dialog(
+            title=f"Input: {field_label}",
+            text=f"{field_name}\n{field_desc}\nCurrent: {level_hint}",
+            values=choices,
+        ).run()
+        if selected is None:
+            return True, None
+        if selected == "__skip__":
+            return False, _SKIP_FIELD
+        if selected == "__back__":
+            if prefix:
+                prefix.pop()
+            continue
+        if selected == "__select__":
+            return False, ".".join(prefix)
+        if selected.startswith("seg:"):
+            prefix.append(selected[4:])
+            continue
+
+
+def _route_has_prefix(route: str, prefix: list[str]) -> bool:
+    if not prefix:
+        return True
+    parts = route.split(".")
+    if len(parts) < len(prefix):
+        return False
+    return parts[: len(prefix)] == prefix
+
+
+def _prompt_list_value(
+    *,
+    field: dict[str, Any],
+    field_name: str,
+    field_label: str,
+    required: bool,
+    has_default: bool,
+    default_value: Any,
+    field_desc: str,
+) -> tuple[bool, Any]:
+    min_items = field.get("min_items", field.get("minItems", field.get("min")))
+    max_items = field.get("max_items", field.get("maxItems", field.get("max")))
+    min_items = int(min_items) if isinstance(min_items, (int, float)) else 0
+    max_items = int(max_items) if isinstance(max_items, (int, float)) else None
+
+    item_schema = field.get("item") or field.get("items")
+    if not isinstance(item_schema, dict):
+        while True:
+            default_text = ""
+            if has_default:
+                default_text = json.dumps(default_value, ensure_ascii=False)
+            raw = input_dialog(
+                title=f"Input: {field_label}",
+                text=f"{field_name} [list]\nEnter JSON array.\n{field_desc}".strip(),
+                default=default_text,
+            ).run()
+            if raw is None:
+                return True, None
+            raw = raw.strip()
+            if not raw:
+                if has_default:
+                    return False, default_value
+                if required:
+                    message_dialog(title="Input Error", text=f"{field_name} is required.").run()
+                    continue
+                return False, _SKIP_FIELD
+            try:
+                parsed = json.loads(raw)
+                if not isinstance(parsed, list):
+                    raise ValueError("value must be a JSON array")
+                return False, parsed
+            except Exception as exc:
+                message_dialog(title="Input Error", text=f"{field_name} parse failed: {exc}").run()
+
+    items: list[Any] = []
+    while True:
+        if max_items is not None and len(items) >= max_items:
+            break
+        can_stop = len(items) >= min_items
+        if can_stop:
+            add_more = yes_no_dialog(
+                title=f"Input: {field_label}",
+                text=f"{field_name}: {len(items)} item(s) added. Add one more?",
+            ).run()
+            if not add_more:
+                break
+        cancelled, value = _prompt_field_value(
+            field={**item_schema, "required": True},
+            field_name=f"{field_name}[{len(items)}]",
+        )
+        if cancelled:
+            return True, None
+        if value is _SKIP_FIELD:
+            continue
+        items.append(value)
+
+    if len(items) < min_items:
+        message_dialog(
+            title="Input Error",
+            text=f"{field_name} requires at least {min_items} item(s).",
+        ).run()
+        return _prompt_list_value(
+            field=field,
+            field_name=field_name,
+            field_label=field_label,
+            required=required,
+            has_default=has_default,
+            default_value=default_value,
+            field_desc=field_desc,
+        )
+
+    if not items and has_default:
+        return False, default_value
+    if not items and not required:
+        return False, _SKIP_FIELD
+    return False, items
+
+
+def _prompt_dict_value(
+    *,
+    field: dict[str, Any],
+    field_name: str,
+    field_label: str,
+    required: bool,
+    has_default: bool,
+    default_value: Any,
+    field_desc: str,
+) -> tuple[bool, Any]:
+    properties = field.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        while True:
+            default_text = ""
+            if has_default:
+                default_text = json.dumps(default_value, ensure_ascii=False)
+            raw = input_dialog(
+                title=f"Input: {field_label}",
+                text=f"{field_name} [dict]\nEnter JSON object.\n{field_desc}".strip(),
+                default=default_text,
+            ).run()
+            if raw is None:
+                return True, None
+            raw = raw.strip()
+            if not raw:
+                if has_default:
+                    return False, default_value
+                if required:
+                    message_dialog(title="Input Error", text=f"{field_name} is required.").run()
+                    continue
+                return False, _SKIP_FIELD
+            try:
+                parsed = json.loads(raw)
+                if not isinstance(parsed, dict):
+                    raise ValueError("value must be a JSON object")
+                return False, parsed
+            except Exception as exc:
+                message_dialog(title="Input Error", text=f"{field_name} parse failed: {exc}").run()
+
+    result: dict[str, Any] = {}
+    for key, schema in properties.items():
+        if not isinstance(schema, dict):
+            continue
+        sub_field = dict(schema)
+        sub_field.setdefault("name", key)
+        cancelled, value = _prompt_field_value(
+            field=sub_field,
+            field_name=f"{field_name}.{key}",
+        )
+        if cancelled:
+            return True, None
+        if value is _SKIP_FIELD:
+            continue
+        result[key] = value
+
+    if not result and has_default:
+        return False, default_value
+    if not result and not required:
+        return False, _SKIP_FIELD
+    return False, result
+
+
+def _prompt_scalar_value(
+    *,
+    field_name: str,
+    field_label: str,
+    field_type: str,
+    required: bool,
+    has_default: bool,
+    default_value: Any,
+    field_desc: str,
+) -> tuple[bool, Any]:
+    hint_default = "" if not has_default else f" (default: {default_value})"
+    prompt = f"{field_name} [{field_type}]{hint_default}\n{field_desc}".strip()
+    while True:
+        raw = input_dialog(
+            title=f"Input: {field_label}",
+            text=prompt,
+            default="" if not has_default else str(default_value),
+        ).run()
+        if raw is None:
+            return True, None
+        raw = raw.strip()
+        if not raw:
+            if has_default:
+                return False, default_value
+            if required:
+                message_dialog(title="Input Error", text=f"{field_name} is required.").run()
+                continue
+            return False, _SKIP_FIELD
+        try:
+            return False, _convert_input(raw, field_type)
+        except Exception as exc:
+            message_dialog(title="Input Error", text=f"{field_name} parse failed: {exc}").run()
+
+
+def _format_enum_label(item: Any) -> str:
+    if isinstance(item, dict):
+        label = item.get("label")
+        value = item.get("value")
+        if label is not None and value is not None:
+            return f"{label} ({value})"
+        return json.dumps(item, ensure_ascii=False)
+    if isinstance(item, (list, tuple)):
+        return json.dumps(item, ensure_ascii=False)
+    return str(item)
+
+
+def _convert_input(raw: str, field_type: str) -> Any:
+    if field_type in {"int", "integer"}:
+        return int(raw)
+    if field_type in {"float", "number"}:
+        return float(raw)
+    if field_type in {"bool", "boolean"}:
+        lowered = raw.lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+        raise ValueError("boolean only supports true/false/yes/no/1/0")
+    if field_type in {"array", "list", "object", "dict", "map"}:
+        return json.loads(raw)
+    return raw

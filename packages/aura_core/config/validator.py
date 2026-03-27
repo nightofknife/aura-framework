@@ -74,7 +74,8 @@ def validate_task_definition(task_data: Dict[str, Any]) -> Tuple[bool, str]:
         return True, ""
 
     try:
-        validator(task_data)
+        schema_payload = _normalize_task_data_for_schema(task_data)
+        validator(schema_payload)
         logger.debug("任务定义 Schema 验证通过")
         return True, ""
     except fastjsonschema.JsonSchemaException as e:
@@ -88,6 +89,20 @@ def validate_task_definition(task_data: Dict[str, Any]) -> Tuple[bool, str]:
         error_msg = f"Schema 验证过程中发生错误: {str(e)}"
         logger.error(error_msg)
         return False, error_msg
+
+
+def _normalize_task_data_for_schema(task_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize runtime-supported task file shapes before schema validation."""
+    if not isinstance(task_data, dict):
+        return task_data
+
+    # Runtime still accepts root-level single task shape:
+    # {meta: {...}, steps: {...}, ...}
+    # The canonical schema uses task-map shape:
+    # {task_name: {meta: {...}, steps: {...}}, ...}
+    if isinstance(task_data.get("meta"), dict) and isinstance(task_data.get("steps"), dict):
+        return {"__root__": task_data}
+    return task_data
 
 
 def validate_concurrency_config(concurrency: Any) -> Tuple[bool, str]:

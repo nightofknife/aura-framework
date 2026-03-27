@@ -202,6 +202,16 @@ class DispatchService:
         source: str,
         triggering_event: Optional[Event] = None,
     ) -> bool:
+        previous_status: Optional[Dict[str, Any]] = None
+        status_existed = False
+
+        def _rollback_status() -> None:
+            with self._scheduler.fallback_lock:
+                if status_existed:
+                    self._scheduler.run_statuses[item_id] = previous_status or {}
+                else:
+                    self._scheduler.run_statuses.pop(item_id, None)
+
         plan_name = item.get("plan_name")
         task_name = item.get("task")
         item_id = item.get("id")
@@ -212,7 +222,9 @@ class DispatchService:
 
         now = datetime.now()
         with self._scheduler.fallback_lock:
+            status_existed = item_id in self._scheduler.run_statuses
             status = self._scheduler.run_statuses.get(item_id, {})
+            previous_status = dict(status)
             if status.get("status") in ("queued", "running"):
                 return False
             cooldown = item.get("run_options", {}).get("cooldown", 0)
@@ -230,6 +242,7 @@ class DispatchService:
         )
         if not ok:
             logger.error("Schedule '%s' inputs invalid: %s", item_id, resolved_payload)
+            _rollback_status()
             return False
 
         resolved = resolved_payload["resolved"]
@@ -250,8 +263,13 @@ class DispatchService:
             execution_mode=task_def.get("execution_mode", "sync"),
         )
         self._scheduler._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=resolved.task_ref, source=source)
-        await self._scheduler.task_queue.put(tasklet)
-        return True
+        try:
+            await self._scheduler.task_queue.put(tasklet)
+            return True
+        except Exception as exc:
+            logger.error("Schedule '%s' enqueue failed: %s", item_id, exc, exc_info=True)
+            _rollback_status()
+            return False
 
     async def queue_insert_at(
         self,
@@ -310,6 +328,10 @@ class DispatchService:
         success = await self._scheduler.task_queue.remove_by_cid(cid)
 
         if success:
+            try:
+                await self._scheduler.event_bus.publish(Event(name="queue.dropped", payload={"cid": cid}))
+            except Exception:
+                logger.debug("queue.dropped emit failed for %s", cid)
             return {"status": "success", "message": f"Task {cid} removed from queue"}
         return {"status": "error", "message": f"Task {cid} not found in queue"}
 
@@ -331,7 +353,16 @@ class DispatchService:
         return await self._scheduler.task_queue.list_all()
 
     async def queue_clear(self) -> Dict[str, Any]:
+        existing_items = await self._scheduler.task_queue.list_all()
         count = await self._scheduler.task_queue.clear()
+        for item in existing_items:
+            cid = item.get("cid")
+            if not cid:
+                continue
+            try:
+                await self._scheduler.event_bus.publish(Event(name="queue.dropped", payload={"cid": cid}))
+            except Exception:
+                logger.debug("queue.dropped emit failed for %s", cid)
         return {"status": "success", "message": f"Cleared {count} tasks from queue"}
 
     async def queue_reorder(self, cid_order: List[str]) -> Dict[str, Any]:

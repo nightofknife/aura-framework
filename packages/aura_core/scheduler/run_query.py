@@ -23,13 +23,16 @@ class RunQueryService:
                     if not isinstance(task_def, dict):
                         continue
                     plan_name, task_name_in_plan = full_task_id.split("/", 1)
-                    task_ref_new = self.convert_id_to_new_format(task_name_in_plan)
+                    task_ref = task_def.get("__task_ref__")
+                    if not isinstance(task_ref, str) or not task_ref:
+                        logger.warning("Skip task missing canonical task_ref: %s", full_task_id)
+                        continue
                     detailed_tasks.append(
                         {
                             "full_task_id": full_task_id,
                             "plan_name": plan_name,
                             "task_name_in_plan": task_name_in_plan,
-                            "task_ref": task_ref_new,
+                            "task_ref": task_ref,
                             "meta": task_def.get("meta", {}),
                             "definition": task_def,
                         }
@@ -38,19 +41,12 @@ class RunQueryService:
                     logger.warning("Skip malformed task id: %s", full_task_id)
             return detailed_tasks
 
-    @staticmethod
-    def convert_id_to_new_format(task_name_in_plan: str) -> str:
-        parts = task_name_in_plan.split("/")
-        if len(parts) >= 3:
-            file_name = parts[-2]
-            task_key = parts[-1]
-            path_parts = parts[:-1]
-            if task_key == file_name:
-                path_parts[-1] = f"{file_name}.yaml"
-                return "tasks:" + ":".join(path_parts)
-            path_parts[-1] = f"{file_name}.yaml"
-            return "tasks:" + ":".join(path_parts + [task_key])
-        return "tasks:" + ":".join(parts)
+    def get_task_load_errors(self, plan_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._scheduler.fallback_lock:
+            errors = list(self._scheduler.task_load_errors.values())
+        if plan_name:
+            return [item for item in errors if item.get("plan_name") == plan_name]
+        return errors
 
     def get_all_services_status(self) -> List[Dict[str, Any]]:
         with self._scheduler.fallback_lock:
@@ -79,11 +75,24 @@ class RunQueryService:
 
             plugin_info = None
             if service_def.plugin:
+                package_info = getattr(service_def.plugin, "package", None)
                 plugin_info = {
-                    "name": service_def.plugin.name,
-                    "canonical_id": service_def.plugin.canonical_id,
-                    "version": service_def.plugin.version,
-                    "plugin_type": service_def.plugin.plugin_type,
+                    "name": (
+                        getattr(package_info, "name", None)
+                        if package_info is not None
+                        else getattr(service_def.plugin, "name", None)
+                    ),
+                    "canonical_id": (
+                        getattr(package_info, "canonical_id", None)
+                        if package_info is not None
+                        else getattr(service_def.plugin, "canonical_id", None)
+                    ),
+                    "version": (
+                        getattr(package_info, "version", None)
+                        if package_info is not None
+                        else getattr(service_def.plugin, "version", None)
+                    ),
+                    "plugin_type": getattr(service_def.plugin, "plugin_type", None),
                 }
             api_safe_services.append(
                 {
@@ -134,3 +143,20 @@ class RunQueryService:
 
     def get_batch_task_status(self, cids: List[str]) -> List[Dict[str, Any]]:
         return self._scheduler.observability.get_batch_task_status(cids)
+
+    def list_run_history(
+        self,
+        limit: int = 50,
+        plan_name: Optional[str] = None,
+        task_name: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        return self._scheduler.observability.list_run_history(
+            limit=limit,
+            plan_name=plan_name,
+            task_name=task_name,
+            status=status,
+        )
+
+    def get_run_detail(self, cid: str) -> Dict[str, Any]:
+        return self._scheduler.observability.get_run_detail(cid)

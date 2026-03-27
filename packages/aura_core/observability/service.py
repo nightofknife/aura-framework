@@ -77,6 +77,15 @@ class ObservabilityService:
     def get_ui_event_queue(self) -> queue.Queue:
         return self._ui_event_queue
 
+    @staticmethod
+    def _normalize_terminal_status(raw: Any) -> str:
+        value = str(raw or "").strip().lower()
+        if value in {"queued", "running", "success", "cancelled"}:
+            return value
+        if value == "starting":
+            return "running"
+        return "failed"
+
     async def mirror_event_to_ui_queue(self, event: Event):
         if self._ui_event_queue:
             try:
@@ -234,6 +243,10 @@ class ObservabilityService:
                     run["queue_wait_ms"] = p.get("queue_wait_ms")
                 if p.get("duration_ms") is not None:
                     run["duration_ms"] = int(p.get("duration_ms") or 0)
+                if p.get("final_result") is not None:
+                    run["final_result"] = p.get("final_result")
+                    if isinstance(p.get("final_result"), dict):
+                        run["error"] = p["final_result"].get("error")
 
                 # ✅ NEW: 将完成的任务从运行队列移动到已完成队列（选项3）
                 # 添加完成时间戳用于TTL清理
@@ -783,3 +796,43 @@ class ObservabilityService:
         """获取正在运行的任务列表。"""
         with self._lock:
             return list(self._obs_runs.values())
+
+    def list_run_history(
+        self,
+        limit: int = 50,
+        plan_name: Optional[str] = None,
+        task_name: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if self.persist_runs:
+            return self.run_store.list_runs(limit=limit, plan_name=plan_name, task_name=task_name, status=status)
+
+        desired_status = str(status or "").strip().lower() or None
+        with self._lock:
+            rows = list(self._obs_completed.values())
+
+        if plan_name:
+            rows = [row for row in rows if row.get("plan_name") == plan_name]
+        if task_name:
+            rows = [row for row in rows if row.get("task_name") == task_name]
+        if desired_status:
+            rows = [row for row in rows if self._normalize_terminal_status(row.get("status")) == desired_status]
+        rows.sort(key=lambda row: row.get("finished_at") or row.get("started_at") or 0, reverse=True)
+        return rows[: max(1, int(limit))]
+
+    def get_run_detail(self, cid: str) -> Dict[str, Any]:
+        if not cid:
+            return {}
+
+        persisted = self.run_store.get_run(cid)
+        if persisted:
+            return persisted
+
+        with self._lock:
+            active = self._obs_runs.get(cid)
+            if active:
+                return dict(active)
+            completed = self._obs_completed.get(cid)
+            if completed:
+                return dict(completed)
+        return {}

@@ -1,13 +1,11 @@
 <template>
   <div class="input-field">
-    <div v-if="normalized.label || normalized.name" class="label">
+    <label v-if="normalized.label || normalized.name" class="label">
       {{ normalized.label || normalized.name }}
       <span v-if="normalized.required" class="req">*</span>
-    </div>
+    </label>
 
-    <!-- ========== 单选系列 ========== -->
     <template v-if="!isList">
-      <!-- Radio 单选按钮组 (新增) -->
       <RadioGroup
         v-if="widgetConfig.widget === 'radio'"
         v-model="innerValue"
@@ -15,27 +13,27 @@
         :layout="widgetConfig.layout || 'vertical'"
         :required="normalized.required"
         :name="normalized.name"
-        :disabled="normalized.readonly" />
+        :disabled="normalized.readonly"
+      />
 
-      <!-- Select 下拉框 (原有) -->
       <select
         v-else-if="isEnumSelect"
-        class="select"
         v-model="innerValue"
-        :disabled="normalized.readonly">
-        <option v-if="!normalized.required" :value="null">请选择</option>
-        <option v-for="opt in normalized.enum || []" :key="opt" :value="opt">{{ opt }}</option>
+        class="select"
+        :disabled="normalized.readonly"
+      >
+        <option v-if="!normalized.required" :value="null">Not selected</option>
+        <option v-for="option in normalized.enum || []" :key="option" :value="option">{{ option }}</option>
       </select>
 
-      <!-- Boolean checkbox (原有) -->
-      <label v-else-if="normalized.type === 'boolean'" class="chk">
-        <input type="checkbox" :disabled="normalized.readonly" v-model="innerValue" />
-        {{ normalized.label || normalized.name }}
+      <label v-else-if="normalized.type === 'boolean'" class="bool-field">
+        <input v-model="innerValue" type="checkbox" :disabled="normalized.readonly" />
+        <span>{{ normalized.label || normalized.name }}</span>
       </label>
 
-      <!-- Number 输入 (原有) -->
       <input
         v-else-if="normalized.type === 'number'"
+        v-model.number="innerValue"
         class="input"
         type="number"
         :placeholder="normalized.placeholder || ''"
@@ -43,21 +41,19 @@
         :max="normalized.max"
         :step="normalized.step || 'any'"
         :disabled="normalized.readonly"
-        v-model.number="innerValue" />
+      />
 
-      <!-- String 输入 (原有) -->
       <input
-        v-else-if="normalized.type === 'string'"
+        v-else
+        v-model="innerValue"
         class="input"
         type="text"
         :placeholder="normalized.placeholder || ''"
         :disabled="normalized.readonly"
-        v-model="innerValue" />
+      />
     </template>
 
-    <!-- ========== 复选系列 ========== -->
     <template v-else>
-      <!-- Checkbox 多选组 (新增) -->
       <CheckboxGroup
         v-if="widgetConfig.widget === 'checkbox'"
         v-model="innerValue"
@@ -65,286 +61,249 @@
         :min="normalized.min"
         :max="normalized.max"
         :columns="widgetConfig.columns || 1"
-        :show-select-all="normalized.ui?.show_select_all" />
+        :show-select-all="normalized.ui?.show_select_all"
+      />
 
-      <!-- Tag Input 标签输入 (新增) -->
       <TagInput
         v-else-if="widgetConfig.widget === 'tag-input'"
         v-model="innerValue"
-        :placeholder="normalized.placeholder || '输入后按Enter添加'" />
+        :placeholder="normalized.placeholder || 'Press Enter to add a tag'"
+      />
 
-      <!-- Table view for list of simple dicts (原有) -->
       <div v-else-if="isSimpleDictList" class="table-block">
-        <table class="data-table">
+        <table class="simple-table">
           <thead>
             <tr>
-              <th v-for="col in tableColumns" :key="col.key">
-                {{ col.label || col.name || col.key }}
-                <span v-if="col.required" class="req">*</span>
-              </th>
-              <th class="action-col">Action</th>
+              <th v-for="column in tableColumns" :key="column.key">{{ column.label || column.name || column.key }}</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(item, idx) in listValue" :key="idx">
-              <td v-for="col in tableColumns" :key="col.key">
-                 <!-- Enum/Select -->
-                 <select v-if="col.enum && col.enum.length"
-                         :value="item[col.key]"
-                         @change="updateTableItem(idx, col.key, $event.target.value)"
-                         class="table-input"
-                         :disabled="normalized.readonly">
-                    <option v-for="opt in col.enum" :key="opt" :value="opt">{{ opt }}</option>
-                 </select>
+            <tr v-for="(item, index) in listValue" :key="index">
+              <td v-for="column in tableColumns" :key="column.key">
+                <select
+                  v-if="column.enum && column.enum.length"
+                  :value="item[column.key]"
+                  class="select table-input"
+                  :disabled="normalized.readonly"
+                  @change="updateTableItem(index, column.key, $event.target.value)"
+                >
+                  <option v-for="option in column.enum" :key="option" :value="option">{{ option }}</option>
+                </select>
 
-                 <!-- Boolean -->
-                 <input v-else-if="col.type === 'boolean'"
-                        type="checkbox"
-                        :checked="item[col.key]"
-                        @change="updateTableItem(idx, col.key, $event.target.checked)"
-                        :disabled="normalized.readonly" />
+                <input
+                  v-else-if="column.type === 'boolean'"
+                  :checked="item[column.key]"
+                  type="checkbox"
+                  :disabled="normalized.readonly"
+                  @change="updateTableItem(index, column.key, $event.target.checked)"
+                />
 
-                 <!-- Number -->
-                 <input v-else-if="col.type === 'number'"
-                        type="number"
-                        :value="item[col.key]"
-                        @input="updateTableItem(idx, col.key, parseFloat($event.target.value))"
-                        :min="col.min" :max="col.max" :step="col.step || 'any'"
-                        class="table-input"
-                        :disabled="normalized.readonly" />
+                <input
+                  v-else-if="column.type === 'number'"
+                  :value="item[column.key]"
+                  class="input table-input"
+                  type="number"
+                  :min="column.min"
+                  :max="column.max"
+                  :step="column.step || 'any'"
+                  :disabled="normalized.readonly"
+                  @input="updateTableItem(index, column.key, parseFloat($event.target.value))"
+                />
 
-                 <!-- String (Default) -->
-                 <input v-else
-                        type="text"
-                        :value="item[col.key]"
-                        @input="updateTableItem(idx, col.key, $event.target.value)"
-                        :placeholder="col.placeholder || ''"
-                        class="table-input"
-                        :disabled="normalized.readonly" />
+                <input
+                  v-else
+                  :value="item[column.key]"
+                  class="input table-input"
+                  type="text"
+                  :placeholder="column.placeholder || ''"
+                  :disabled="normalized.readonly"
+                  @input="updateTableItem(index, column.key, $event.target.value)"
+                />
               </td>
-              <td class="action-col">
-                <button type="button" class="btn-ghost small remove-btn" @click="removeList(idx)">×</button>
+              <td>
+                <button type="button" class="btn btn-ghost btn-sm" @click="removeList(index)">Remove</button>
               </td>
             </tr>
             <tr v-if="listValue.length === 0">
-               <td :colspan="tableColumns.length + 1" class="empty-state">No items. Click Add to create one.</td>
+              <td :colspan="tableColumns.length + 1" class="empty-state">No items yet.</td>
             </tr>
           </tbody>
         </table>
-        <button type="button" class="btn-secondary small add-btn" @click="addList">+ Add Row</button>
+        <button type="button" class="btn btn-ghost btn-sm" @click="addList">Add Row</button>
       </div>
 
-      <!-- Dynamic list (原有) -->
       <div v-else class="list-block">
-        <div v-for="(item, idx) in listValue" :key="idx" class="list-row">
+        <div v-for="(item, index) in listValue" :key="index" class="list-row">
           <InputFieldRenderer
             :schema="normalized.item || {}"
             :model-value="item"
-            @update:modelValue="updateList(idx, $event)"
+            @update:modelValue="updateList(index, $event)"
           />
-          <button type="button" class="btn-ghost small" @click="removeList(idx)">Del</button>
+          <button type="button" class="btn btn-ghost btn-sm" @click="removeList(index)">Remove</button>
         </div>
-        <button type="button" class="btn-ghost small" @click="addList">+ Add</button>
+        <button type="button" class="btn btn-ghost btn-sm" @click="addList">Add Item</button>
       </div>
     </template>
 
-    <!-- dict (原有) -->
     <div v-if="normalized.type === 'dict'" class="dict-block">
       <InputFieldRenderer
         v-for="(child, key) in normalized.properties || {}"
         :key="key"
         :schema="{ ...child, name: child.name || key, label: child.label || child.title || key }"
         :model-value="(innerValue || {})[key]"
-        @update:modelValue="(val) => updateDict(key, val)"
+        @update:modelValue="(value) => updateDict(key, value)"
       />
     </div>
 
-    <!-- 未知类型 -->
-    <div v-if="!isList && normalized.type !== 'dict' && normalized.type !== 'string' && normalized.type !== 'number' && normalized.type !== 'boolean' && !isEnumSelect" class="unknown">
-      Unsupported type: {{ normalized.type }}
-    </div>
-
-    <div v-if="normalized.description" class="desc">{{ normalized.description }}</div>
+    <div v-if="normalized.description" class="hint">{{ normalized.description }}</div>
   </div>
 </template>
 
 <script setup>
-import {computed, defineProps, defineEmits} from 'vue';
-import {buildDefaultFromSchema, cloneInputs, normalizeInputSchema, cloneDeep} from '../utils/inputSchema.js';
-import {inferWidget} from '../utils/widgetInference.js';
-import RadioGroup from './widgets/RadioGroup.vue';
-import CheckboxGroup from './widgets/CheckboxGroup.vue';
-import TagInput from './widgets/TagInput.vue';
+import { computed } from 'vue'
+import { buildDefaultFromSchema, cloneDeep, cloneInputs, normalizeInputSchema } from '../utils/inputSchema.js'
+import { inferWidget } from '../utils/widgetInference.js'
+import RadioGroup from './widgets/RadioGroup.vue'
+import CheckboxGroup from './widgets/CheckboxGroup.vue'
+import TagInput from './widgets/TagInput.vue'
 
 const props = defineProps({
-  schema: {type: Object, required: true},
-  modelValue: {type: [String, Number, Boolean, Object, Array, null], default: null},
-});
-const emit = defineEmits(['update:modelValue']);
+  schema: { type: Object, required: true },
+  modelValue: { type: [String, Number, Boolean, Object, Array, null], default: null },
+})
 
-const normalized = computed(() => normalizeInputSchema(props.schema || {}));
-
-// 自动推断UI控件
-const widgetConfig = computed(() => inferWidget(normalized.value));
-
-// 判断是否为列表类型（决定单选/复选）
+const emit = defineEmits(['update:modelValue'])
+const normalized = computed(() => normalizeInputSchema(props.schema || {}))
+const widgetConfig = computed(() => inferWidget(normalized.value))
 const isList = computed(() => {
-  const type = normalized.value.type || 'string';
-  return type === 'list' || type.startsWith('list<');
-});
+  const type = normalized.value.type || 'string'
+  return type === 'list' || type.startsWith('list<')
+})
 
-// 旧的逻辑 - 用于向后兼容，但现在通过 widgetConfig 控制
 const isEnumSelect = computed(() => {
-  const s = normalized.value || {};
-  if (!Array.isArray(s.enum) || s.enum.length === 0) return false;
-  const t = s.type || 'string';
-  // 如果是列表类型，不使用旧的select
-  if (isList.value) return false;
-  // 检查是否应该用radio
-  if (widgetConfig.value.widget === 'radio') return false;
-  return ['string', 'number', 'boolean'].includes(t);
-});
+  const schema = normalized.value || {}
+  if (!Array.isArray(schema.enum) || schema.enum.length === 0 || isList.value) {
+    return false
+  }
+  return widgetConfig.value.widget !== 'radio'
+})
 
- const isSimpleDictList = computed(() => {
-   // Check if it's a list
-   if (normalized.value.type !== 'list') return false;
-   const itemSchema = normalized.value.item;
-   // Check if the item is a dict
-   if (!itemSchema || itemSchema.type !== 'dict') return false;
-   // Check if the dict has properties and they are simple types (string, number, boolean, enum)
-   // This prevents recursion hell with nested tables or complex objects
-   const props = itemSchema.properties || {};
-   const keys = Object.keys(props);
-   if (keys.length === 0) return false;
+const isSimpleDictList = computed(() => {
+  if (normalized.value.type !== 'list') return false
+  const itemSchema = normalized.value.item
+  if (!itemSchema || itemSchema.type !== 'dict') return false
+  const properties = itemSchema.properties || {}
+  const keys = Object.keys(properties)
+  if (!keys.length) return false
+  return keys.every((key) => {
+    const prop = properties[key]
+    return ['string', 'number', 'boolean'].includes(prop.type || 'string') || !!prop.enum
+  })
+})
 
-   for (const k of keys) {
-     const p = props[k];
-     const pType = p.type || 'string';
-     if (!['string', 'number', 'boolean'].includes(pType) && !p.enum) {
-        return false;
-     }
-   }
-   return true;
- });
-
- const tableColumns = computed(() => {
-    if (!isSimpleDictList.value) return [];
-    const itemSchema = normalized.value.item || {};
-    const props = itemSchema.properties || {};
-    return Object.keys(props).map(key => ({
-        key,
-        ...normalizeInputSchema(props[key])
-    }));
- });
+const tableColumns = computed(() => {
+  if (!isSimpleDictList.value) return []
+  return Object.keys(normalized.value.item?.properties || {}).map((key) => ({
+    key,
+    ...normalizeInputSchema(normalized.value.item.properties[key]),
+  }))
+})
 
 const innerValue = computed({
   get() {
-    const val = props.modelValue;
-    if (val === undefined) return buildDefaultFromSchema(normalized.value);
-    return val;
+    if (props.modelValue === undefined) {
+      return buildDefaultFromSchema(normalized.value)
+    }
+    return props.modelValue
   },
-  set(v) {
-    emit('update:modelValue', v);
-  }
-});
+  set(value) {
+    emit('update:modelValue', value)
+  },
+})
 
-const listValue = computed(() => Array.isArray(innerValue.value) ? innerValue.value : []);
+const listValue = computed(() => (Array.isArray(innerValue.value) ? innerValue.value : []))
 
 function addList() {
-  const itemDefault = buildDefaultFromSchema(normalized.value.item || {});
-  emit('update:modelValue', [...listValue.value, itemDefault]);
+  emit('update:modelValue', [...listValue.value, buildDefaultFromSchema(normalized.value.item || {})])
 }
 
-function removeList(idx) {
-  const next = listValue.value.slice();
-  next.splice(idx, 1);
-  emit('update:modelValue', next);
+function removeList(index) {
+  const next = listValue.value.slice()
+  next.splice(index, 1)
+  emit('update:modelValue', next)
 }
 
-function updateList(idx, val) {
-  const next = listValue.value.slice();
-  next[idx] = val;
-  emit('update:modelValue', next);
+function updateList(index, value) {
+  const next = listValue.value.slice()
+  next[index] = value
+  emit('update:modelValue', next)
 }
 
-function updateDict(key, val) {
-  const base = props.modelValue && typeof props.modelValue === 'object' ? cloneInputs(props.modelValue) : {};
-  base[key] = val;
-  emit('update:modelValue', base);
+function updateDict(key, value) {
+  const next = props.modelValue && typeof props.modelValue === 'object' ? cloneInputs(props.modelValue) : {}
+  next[key] = value
+  emit('update:modelValue', next)
 }
 
- function updateTableItem(idx, key, val) {
-   const nextList = cloneDeep(listValue.value);
-   if (!nextList[idx]) nextList[idx] = {};
-   nextList[idx][key] = val;
-   emit('update:modelValue', nextList);
- }
+function updateTableItem(index, key, value) {
+  const next = cloneDeep(listValue.value)
+  if (!next[index]) next[index] = {}
+  next[index][key] = value
+  emit('update:modelValue', next)
+}
 </script>
 
 <style scoped>
-.input-field{display:flex;flex-direction:column;gap:6px;padding:6px 0;}
-.label{font-size:13px;font-weight:600;color:var(--text-primary,#222);}
-.req{color:#c00;margin-left:4px;}
-.input,.select{width:100%;padding:8px;border:1px solid #d0d7de;border-radius:6px;}
-.chk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary,#555);}
-.list-block{display:flex;flex-direction:column;gap:8px;}
-.list-row{display:flex;align-items:flex-start;gap:8px;}
-.dict-block{display:flex;flex-direction:column;gap:4px;border-left:2px solid #eef1f5;padding-left:8px;}
-.desc{font-size:12px;color:var(--text-secondary,#666);}
-.btn-ghost.small{border:1px solid #d0d7de;background:transparent;padding:4px 8px;border-radius:4px;cursor:pointer;}
-.unknown{color:#a00;font-size:12px;}
+.input-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 
-/* Table Styles */
-.table-block {
-  overflow-x: auto;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  padding: 8px;
-  background: #f9f9f9;
+.req {
+  color: var(--ember-bright);
 }
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-.data-table th, .data-table td {
-  border-bottom: 1px solid #eee;
-  padding: 6px;
-  text-align: left;
-}
-.data-table th {
-  background: #f1f3f5;
-  font-weight: 600;
-  color: #333;
-}
-.table-input {
-  width: 100%;
-  padding: 4px 6px;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-}
-.action-col {
-  width: 40px;
-  text-align: center;
-}
-.remove-btn {
-  color: #c00;
-  border-color: #fdd;
-  background: #fff0f0;
-  font-weight: bold;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  display: inline-flex;
+
+.bool-field {
+  display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 10px;
+  color: var(--text-main);
 }
-.add-btn {
+
+.bool-field input {
+  width: 16px;
+  height: 16px;
+}
+
+.dict-block,
+.list-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dict-block {
   margin-top: 8px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
 }
-.empty-state {
-  text-align: center;
-  color: #999;
-  padding: 12px;
+
+.list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.table-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.table-input {
+  min-height: 38px;
 }
 </style>

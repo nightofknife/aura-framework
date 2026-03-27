@@ -39,6 +39,11 @@ def get_runtime() -> Scheduler:
     return _runtime
 
 
+def peek_runtime() -> Optional[Scheduler]:
+    with _lock:
+        return _runtime
+
+
 def start_runtime(profile: str = "api_full", startup_timeout_sec: int | None = None) -> Scheduler:
     runtime = create_runtime(profile)
     timeout = _default_startup_timeout_sec() if startup_timeout_sec is None else int(startup_timeout_sec)
@@ -50,7 +55,15 @@ def start_runtime(profile: str = "api_full", startup_timeout_sec: int | None = N
 
 
 def stop_runtime() -> None:
+    global _runtime, _runtime_profile
     with _lock:
         runtime = _runtime
     if runtime is not None:
         runtime.stop_scheduler()
+    with _lock:
+        _runtime = None
+        _runtime_profile = None
+
+
+def reset_runtime() -> None:
+    stop_runtime()

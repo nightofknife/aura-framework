@@ -79,12 +79,11 @@ class DAGScheduler:
             state = self.engine.step_states.get(struct)
             return state == self.engine.StepState.SUCCESS
 
-        # Backward-compatible shorthand: list == all
         if isinstance(struct, list):
-            if not struct:
-                return True
-            results = await asyncio.gather(*[self.evaluate_dep_struct(item) for item in struct])
-            return all(results)
+            raise ValueError(
+                "List dependency shorthand has been removed from 'depends_on'. "
+                "Please use '{ all: [...] }' instead."
+            )
 
         if isinstance(struct, dict):
             if not struct:

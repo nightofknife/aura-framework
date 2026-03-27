@@ -1,0 +1,16 @@
+.venv/
+.runtime/
+.idea/
+.pytest_cache/
+.pytest_tmp/
+__pycache__/
+*.pyc
+logs/
+python-runtime.local.ps1
+*.log
+.venv_py313_freeze_*.txt
+nul
+null
+aura_gui/null
+aura_gui/node_modules/
+aura_gui/dist/

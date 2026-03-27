@@ -286,14 +286,23 @@ class InputValidator:
             if max_items is not None and count > max_items:
                 return False, None, f"Input '{path}' must contain no more than {max_items} items (got {count})."
 
-            item_schema = s.get("item") or s.get("items") or {}
-            validated_list = []
-            for idx, item in enumerate(value):
-                ok, v, err = self.validate_input_value(item_schema, item, f"{path}[{idx}]")
-                if not ok:
-                    return False, None, err
-                validated_list.append(v)
-            val = validated_list
+            # If list item schema is not explicitly declared, keep item types as-is.
+            # This avoids silently coercing objects to strings through the implicit
+            # default schema {"type": "string"}.
+            item_schema = s.get("item") or s.get("items")
+            if item_schema is None:
+                try:
+                    val = json.loads(json.dumps(value))
+                except Exception:
+                    val = list(value)
+            else:
+                validated_list = []
+                for idx, item in enumerate(value):
+                    ok, v, err = self.validate_input_value(item_schema, item, f"{path}[{idx}]")
+                    if not ok:
+                        return False, None, err
+                    validated_list.append(v)
+                val = validated_list
         elif t == "dict":
             if not isinstance(value, dict):
                 return False, None, f"Input '{path}' must be an object."
@@ -392,6 +401,12 @@ class InputValidator:
                     task_def = {}
 
         if not isinstance(task_def, dict) or not task_def:
+            task_error = self._find_task_load_error(plan_name=plan_name, loader_path=resolved.loader_path)
+            if task_error:
+                return False, (
+                    f"Task definition invalid for '{full_task_id}': "
+                    f"{task_error.get('message', 'Task file is invalid.')}"
+                )
             return False, f"Task '{task_ref}' not found in plan '{plan_name}'."
 
         inputs_meta = (task_def.get("meta", {}) or {}).get("inputs", [])
@@ -406,3 +421,23 @@ class InputValidator:
             "inputs_meta": inputs_meta,
             "validated_inputs": validated_or_error,
         }
+
+    def _find_task_load_error(self, *, plan_name: str, loader_path: str) -> Optional[Dict[str, Any]]:
+        scheduler = self.scheduler
+        if scheduler is None:
+            return None
+
+        candidate_files = []
+        parts = [part for part in str(loader_path or "").split("/") if part]
+        if not parts:
+            return None
+        candidate_files.append("/".join(parts) + ".yaml")
+        file_parts = parts[:-1] if len(parts) > 1 else parts
+        candidate_files.append("/".join(file_parts) + ".yaml")
+
+        task_load_errors = getattr(scheduler, "task_load_errors", {}) or {}
+        for candidate_file in candidate_files:
+            record = task_load_errors.get(f"{plan_name}/{candidate_file}")
+            if record:
+                return record
+        return None

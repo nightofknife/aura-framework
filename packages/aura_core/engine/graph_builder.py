@@ -28,7 +28,7 @@ class GraphBuilder:
                 'last_executed_at': None,
             }
 
-            deps_struct = node_data.get('depends_on', [])
+            deps_struct = node_data.get('depends_on')
             self.engine.dependencies[node_id] = deps_struct
 
             all_deps = self.get_all_deps_from_struct(deps_struct)
@@ -54,7 +54,7 @@ class GraphBuilder:
             colors[node] = GRAY
             path.append(node)
 
-            deps = self.get_all_deps_from_struct(self.engine.dependencies.get(node, []))
+            deps = self.get_all_deps_from_struct(self.engine.dependencies.get(node))
             for dep in deps:
                 if colors[dep] == GRAY:
                     cycle_start = path.index(dep)
@@ -93,9 +93,10 @@ class GraphBuilder:
             return deps
 
         if isinstance(struct, list):
-            for item in struct:
-                deps.update(self.get_all_deps_from_struct(item))
-            return deps
+            raise ValueError(
+                "List dependency shorthand has been removed from 'depends_on'. "
+                "Please use '{ all: [...] }' instead."
+            )
 
         if isinstance(struct, dict):
             legacy_operators = {"and", "or", "not"}

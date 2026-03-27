@@ -1,204 +1,109 @@
-<!-- === App.vue (REST API) === -->
 <template>
   <div class="app">
     <DynamicBackground v-if="bgEnabled" />
-    <Titlebar />
 
-    <ProTopbar
-      :is-connected="logsConnected"
-      :is-system-running="isSystemRunning"
-      env="dev"
-      @start="startSystem"
-      @stop="stopSystem"
-    />
+    <div class="app-chrome">
+      <Titlebar />
 
-    <ProSidebar :active="route" @navigate="route=$event" :items="sidebarItems" />
+      <div class="shell-grid">
+        <ProSidebar
+          :active="route"
+          :items="sidebarItems"
+          @navigate="route = $event"
+        />
 
-    <main class="main">
-      <component :is="activeView" />
-    </main>
+        <div class="shell-column">
+          <ProTopbar
+            :route-label="activeRouteLabel"
+            :is-connected="isBackendHealthy"
+            :is-system-running="isSystemRunning"
+          />
+
+          <main class="main">
+            <component :is="activeView" />
+          </main>
+        </div>
+      </div>
+    </div>
 
     <ToastHost />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import axios from 'axios'
 
-// Components
 import Titlebar from './components/Titlebar.vue'
 import DynamicBackground from './components/DynamicBackground.vue'
 import ProTopbar from './components/ProTopbar.vue'
 import ProSidebar from './components/ProSidebar.vue'
 import ToastHost from './components/ToastHost.vue'
-import DashboardView from './pages/DashboardView.vue'
-import PlansView from './pages/PlansView.vue'
-import RunsView from './pages/RunsView.vue'
 import ExecuteView from './pages/ExecuteView.vue'
-import TaskWorkspaceView from './pages/TaskWorkspaceView.vue'
-import AutomationView from './pages/AutomationView.vue'
-import ActionsView from './pages/ActionsView.vue'
-import ServicesView from './pages/ServicesView.vue'
-import PackagesView from './pages/PackagesView.vue'
+import RunsView from './pages/RunsView.vue'
+import PlansView from './pages/PlansView.vue'
 import SettingsView from './pages/SettingsView.vue'
 
-// Composables
-import { useToasts } from './composables/useToasts.js'
-import { useAuraSockets } from './composables/useAuraSockets.js'
-import { useStagingRunner } from './composables/useStagingRunner.js'
 import { useTheme } from './composables/useTheme.js'
 import { getGuiConfig } from './config.js'
 
 useTheme()
-useStagingRunner()
 
-const { push: toast } = useToasts()
 const cfg = getGuiConfig()
 const route = ref(cfg?.navigation?.default_route || 'execute')
+const isSystemRunning = ref(false)
+const isBackendHealthy = ref(false)
+const bgEnabled = computed(() => cfg?.background?.dynamic_enabled !== false)
+
 const activeView = computed(() => {
   const views = {
-    dashboard: DashboardView,
-    runs: RunsView,
     execute: ExecuteView,
+    runs: RunsView,
     plans: PlansView,
-    actions: ActionsView,
-    services: ServicesView,
-    packages: PackagesView,
-    automation: AutomationView,
-    task_editor: TaskWorkspaceView,
     settings: SettingsView,
   }
-  return views[route.value] || PlansView
+  return views[route.value] || ExecuteView
 })
 
 const sidebarItems = cfg?.navigation?.items || [
-  { key: 'dashboard', label: '仪表盘', icon: 'dashboard' },
-  { key: 'execute', label: '执行台', icon: 'execute' },
-  { key: 'runs', label: '运行中', icon: 'runs' },
-  { key: 'plans', label: '方案/任务', icon: 'plans' },
-  { key: 'actions', label: 'Action', icon: 'actions' },
-  { key: 'services', label: 'Service', icon: 'services' },
-  { key: 'packages', label: 'Package', icon: 'packages' },
-  { key: 'automation', label: '自动化', icon: 'automation' },
-  { key: 'task_editor', label: '任务编辑', icon: 'task_editor' },
-  { key: 'settings', label: '设置', icon: 'settings' },
+  { key: 'execute', label: 'Execute', icon: 'execute' },
+  { key: 'runs', label: 'Runs', icon: 'runs' },
+  { key: 'plans', label: 'Plans', icon: 'plans' },
+  { key: 'settings', label: 'Settings', icon: 'settings' },
 ]
 
-// WebSocket 连接和系统状态（来自 WebSocket 推送）
-const { logs, isSystemRunning: wsSystemRunning, events } = useAuraSockets()
-const logsConnected = computed(() => logs.isConnected.value)
-const bgEnabled = computed(() => cfg?.background?.dynamic_enabled !== false)
-
-// 本地系统状态（用于降级策略和手动刷新）
-const isSystemRunning = ref(false)
-
-// 监听 WebSocket 推送的系统状态变化
-let previousSystemRunning = false
-watch(wsSystemRunning, (newStatus) => {
-  const statusChanged = previousSystemRunning !== newStatus
-  isSystemRunning.value = newStatus
-
-  if (statusChanged) {
-    previousSystemRunning = newStatus
-    if (newStatus) {
-      toast({ type: 'success', title: 'Scheduler Started', message: 'System is now running' })
-    } else {
-      toast({ type: 'info', title: 'Scheduler Stopped', message: 'System is idle' })
-    }
-  }
-}, { immediate: true })
+const activeRouteLabel = computed(() =>
+  sidebarItems.find((item) => item.key === route.value)?.label || 'Execute'
+)
 
 const api = axios.create({
   baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
   timeout: cfg?.api?.timeout_ms || 5000,
 })
 
-// 降级策略：WebSocket 未连接时使用 HTTP 轮询
 let statusPollTimer = null
-const STATUS_POLL_INTERVAL = cfg?.api?.status_poll_ms || 5000 // 降级时使用更长的轮询间隔
+const statusPollMs = cfg?.api?.status_poll_ms || 3000
 
 async function fetchSystemStatus() {
   try {
-    const { data } = await api.get('/system/status')
-    isSystemRunning.value = !!data.is_running
-  } catch (err) {
-    console.error('[App] Failed to fetch system status:', err)
+    const { data } = await api.get('/system/health')
+    isSystemRunning.value = !!data?.is_running
+    isBackendHealthy.value = data?.status === 'ok'
+  } catch {
     isSystemRunning.value = false
-  }
-}
-
-function startStatusPolling() {
-  if (statusPollTimer) return
-  console.warn('[App] WebSocket disconnected, falling back to HTTP polling')
-  statusPollTimer = setInterval(fetchSystemStatus, STATUS_POLL_INTERVAL)
-}
-
-function stopStatusPolling() {
-  if (statusPollTimer) {
-    clearInterval(statusPollTimer)
-    statusPollTimer = null
-    console.info('[App] HTTP polling stopped (WebSocket connected)')
-  }
-}
-
-// 监听 WebSocket 连接状态，决定是否启用降级轮询
-watch(() => events.isConnected.value, (connected) => {
-  if (!connected) {
-    startStatusPolling()
-  } else {
-    stopStatusPolling()
-  }
-}, { immediate: false })
-
-async function startSystem() {
-  try {
-    await api.post('/system/start')
-    toast({ type: 'info', title: 'Starting...', message: 'Scheduler is starting up' })
-    // WebSocket 会自动推送状态更新，不需要轮询
-    // 仅在 WebSocket 未连接时手动刷新
-    if (!events.isConnected.value) {
-      setTimeout(fetchSystemStatus, 500)
-    }
-  } catch (e) {
-    toast({ type: 'error', title: 'Failed to start engine', message: e.message })
-  }
-}
-
-async function stopSystem() {
-  try {
-    await api.post('/system/stop')
-    toast({ type: 'info', title: 'Stopping...', message: 'Scheduler is shutting down' })
-    // WebSocket 会自动推送状态更新，不需要轮询
-    // 仅在 WebSocket 未连接时手动刷新
-    if (!events.isConnected.value) {
-      setTimeout(fetchSystemStatus, 500)
-    }
-  } catch (e) {
-    toast({ type: 'error', title: 'Failed to stop engine', message: e.message })
+    isBackendHealthy.value = false
   }
 }
 
 onMounted(() => {
-  // 初始加载时获取一次系统状态（防止 WebSocket 未立即连接）
   fetchSystemStatus()
+  statusPollTimer = window.setInterval(fetchSystemStatus, statusPollMs)
 })
 
 onUnmounted(() => {
-  stopStatusPolling()
+  if (statusPollTimer) {
+    window.clearInterval(statusPollTimer)
+    statusPollTimer = null
+  }
 })
-
-if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
-    stopStatusPolling()
-  })
-}
 </script>
-
-<style scoped>
-.app :deep(header.titlebar) {
-  position: relative;
-  z-index: 1000;
-}
-</style>
-

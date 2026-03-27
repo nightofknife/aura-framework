@@ -532,6 +532,10 @@ class Scheduler:
         return self.state.all_tasks_definitions
 
     @property
+    def task_load_errors(self) -> Dict[str, Dict[str, Any]]:
+        return self.state.task_load_errors
+
+    @property
     def plans(self) -> Dict[str, 'Orchestrator']:
         """获取所有已加载 Plan 的 `Orchestrator` 实例字典。"""
         return self.plan_manager.plans
@@ -575,10 +579,6 @@ class Scheduler:
     def get_all_task_definitions_with_meta(self) -> List[Dict[str, Any]]:
         """Return all task definitions with metadata."""
         return self.query_service.get_all_task_definitions_with_meta()
-
-    def _convert_id_to_new_format(self, task_name_in_plan: str) -> str:
-        """Convert legacy task id to new task reference format."""
-        return self.query_service.convert_id_to_new_format(task_name_in_plan)
 
     def get_all_services_status(self) -> List[Dict[str, Any]]:
         """Return all registered service statuses."""
@@ -632,6 +632,19 @@ class Scheduler:
     def get_batch_task_status(self, cids: List[str]) -> List[Dict[str, Any]]:
         """Batch get task status."""
         return self.query_service.get_batch_task_status(cids)
+
+    def list_run_history(self, limit: int = 50, plan_name: Optional[str] = None,
+                         task_name: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List completed run history."""
+        return self.query_service.list_run_history(limit=limit, plan_name=plan_name, task_name=task_name, status=status)
+
+    def get_run_detail(self, cid: str) -> Dict[str, Any]:
+        """Return one run detail payload."""
+        return self.query_service.get_run_detail(cid)
+
+    def get_task_load_errors(self, plan_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return structured task file load errors."""
+        return self.query_service.get_task_load_errors(plan_name=plan_name)
 
     async def reload_all(self):
         """Perform a full destructive reload."""

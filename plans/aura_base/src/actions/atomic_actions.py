@@ -1223,6 +1223,20 @@ def find_text_and_click(app: AppProviderService, ocr: OcrService, engine: Execut
         logger.info("点击操作完成。")
         return True
     else:
+        all_recognized_results = ocr_result.debug_info.get("all_recognized_results", [])
+        if all_recognized_results:
+            recognized_items = []
+            for idx, result in enumerate(all_recognized_results, start=1):
+                recognized_items.append(
+                    f"{idx}. '{result.text}' (conf={result.confidence:.3f})"
+                )
+            logger.warning(
+                "OCR recognized texts (count=%d): %s",
+                len(all_recognized_results),
+                " | ".join(recognized_items),
+            )
+        else:
+            logger.warning("OCR recognized no text in current capture.")
         logger.warning(f"未能在指定区域找到文本 '{text_to_find}'。")
         return False
 

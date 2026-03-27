@@ -10,6 +10,14 @@ from packages.aura_core.config.validator import validate_task_definition
 from packages.aura_core.types import TaskReference
 
 
+class TaskValidationError(ValueError):
+    """Typed task validation error with a stable error code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
 class TaskDefinitionValidator:
     """Validate runtime task definitions outside TaskLoader caching concerns."""
 
@@ -30,8 +38,10 @@ class TaskDefinitionValidator:
         is_valid, error = validate_task_definition(task_file_data)
         if is_valid:
             return
-        if self.strict_validation:
-            raise ValueError(f"Schema validation failed for '{file_path.name}': {error}")
+        raise TaskValidationError(
+            "schema_validation_failed",
+            f"Schema validation failed for '{file_path.name}': {error}",
+        )
 
     def _iter_task_definitions(self, task_file_data: Dict[str, Any], file_path: Path) -> Iterable[Tuple[str, Dict[str, Any]]]:
         if not isinstance(task_file_data, dict):
@@ -56,18 +66,21 @@ class TaskDefinitionValidator:
                 illegal = sorted(self._REMOVED_STEP_FIELDS.intersection(step_def.keys()))
                 if illegal:
                     fields = ", ".join(illegal)
-                    raise ValueError(
+                    raise TaskValidationError(
+                        "deprecated_syntax",
                         f"Task file '{file_path.name}' uses removed step field(s) [{fields}] "
                         f"at '{task_name}.steps.{step_id}'. "
                         "Please remove 'goto' and replace step-level 'label' with 'step_note'."
                     )
                 if "step_note" in step_def and not isinstance(step_def.get("step_note"), str):
-                    raise ValueError(
+                    raise TaskValidationError(
+                        "task_validation_failed",
                         f"Task file '{file_path.name}' has invalid step_note type at "
                         f"'{task_name}.steps.{step_id}'. step_note must be a string."
                     )
                 if "when" in step_def and not isinstance(step_def.get("when"), str):
-                    raise ValueError(
+                    raise TaskValidationError(
+                        "task_validation_failed",
                         f"Task file '{file_path.name}' has invalid when type at "
                         f"'{task_name}.steps.{step_id}'. when must be a string."
                     )
@@ -81,7 +94,8 @@ class TaskDefinitionValidator:
 
                 action_name = step_def.get("action")
                 if action_name == "run_task":
-                    raise ValueError(
+                    raise TaskValidationError(
+                        "deprecated_syntax",
                         f"Task file '{file_path.name}' uses removed action alias 'run_task' "
                         f"at '{task_name}.steps.{step_id}'. Please use 'aura.run_task'."
                     )
@@ -89,20 +103,23 @@ class TaskDefinitionValidator:
                 if action_name == "aura.run_task":
                     params = step_def.get("params", {})
                     if not isinstance(params, dict):
-                        raise ValueError(
+                        raise TaskValidationError(
+                            "task_validation_failed",
                             f"Task file '{file_path.name}' has invalid params type at "
                             f"'{task_name}.steps.{step_id}'. aura.run_task params must be an object."
                         )
 
                     if "task_name" in params:
-                        raise ValueError(
+                        raise TaskValidationError(
+                            "deprecated_syntax",
                             f"Task file '{file_path.name}' uses removed parameter 'task_name' at "
                             f"'{task_name}.steps.{step_id}'. Please use 'task_ref'."
                         )
 
                     task_ref = params.get("task_ref")
                     if not isinstance(task_ref, str) or not task_ref.strip():
-                        raise ValueError(
+                        raise TaskValidationError(
+                            "task_validation_failed",
                             f"Task file '{file_path.name}' is missing required string parameter "
                             f"'task_ref' at '{task_name}.steps.{step_id}'."
                         )
@@ -113,13 +130,15 @@ class TaskDefinitionValidator:
                             default_package=self.plan_name,
                         )
                     except Exception as exc:
-                        raise ValueError(
+                        raise TaskValidationError(
+                            "task_validation_failed",
                             f"Task file '{file_path.name}' has invalid task_ref at "
                             f"'{task_name}.steps.{step_id}': {exc}"
                         ) from exc
 
                     if not parsed_ref.task_path.startswith("tasks:"):
-                        raise ValueError(
+                        raise TaskValidationError(
+                            "task_validation_failed",
                             f"Task file '{file_path.name}' has invalid task_ref at "
                             f"'{task_name}.steps.{step_id}': task path must start with 'tasks:'."
                         )
@@ -140,28 +159,26 @@ class TaskDefinitionValidator:
 
         if isinstance(spec, str):
             if spec.strip().startswith("when:"):
-                raise ValueError(
+                raise TaskValidationError(
+                    "deprecated_syntax",
                     f"Task file '{file_path.name}' uses removed inline dependency condition "
                     f"at '{location}'. Please move this condition to step-level 'when'."
                 )
             return
 
         if isinstance(spec, list):
-            for idx, item in enumerate(spec):
-                self._validate_depends_on_syntax(
-                    item,
-                    file_path=file_path,
-                    task_name=task_name,
-                    step_id=step_id,
-                    field_path=f"{field_path}[{idx}]",
-                )
-            return
+            raise TaskValidationError(
+                "deprecated_syntax",
+                f"Task file '{file_path.name}' uses removed list dependency shorthand at "
+                f"'{location}'. Please use '{{ all: [...] }}' instead."
+            )
 
         if isinstance(spec, dict):
             legacy_keys = {"and", "or", "not"}
             legacy_hit = sorted(legacy_keys.intersection(spec.keys()))
             if legacy_hit:
-                raise ValueError(
+                raise TaskValidationError(
+                    "deprecated_syntax",
                     f"Task file '{file_path.name}' uses removed dependency operator(s) "
                     f"{legacy_hit} at '{location}'. Please use 'all/any/none'."
                 )
@@ -170,7 +187,8 @@ class TaskDefinitionValidator:
             logical_hit = logical_keys.intersection(spec.keys())
             if logical_hit:
                 if len(logical_hit) != 1 or len(spec) != 1:
-                    raise ValueError(
+                    raise TaskValidationError(
+                        "task_validation_failed",
                         f"Task file '{file_path.name}' has invalid logical dependency object at "
                         f"'{location}'. It must contain exactly one of 'all', 'any', 'none'."
                     )
@@ -185,13 +203,15 @@ class TaskDefinitionValidator:
                 return
 
             if len(spec) != 1:
-                raise ValueError(
+                raise TaskValidationError(
+                    "task_validation_failed",
                     f"Task file '{file_path.name}' has invalid status dependency object at "
                     f"'{location}'. Status-query form must contain exactly one node key."
                 )
             return
 
-        raise ValueError(
+        raise TaskValidationError(
+            "task_validation_failed",
             f"Task file '{file_path.name}' has unsupported depends_on type at '{location}': "
             f"{type(spec).__name__}."
         )

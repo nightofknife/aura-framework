@@ -24,6 +24,7 @@ from ..config.template import TemplateRenderer
 from ..context.execution import ExecutionContext
 from ..types import TaskRefResolver
 from .action_resolver import ActionResolver
+from ..utils.middleware import middleware_manager
 
 if TYPE_CHECKING:
     from .execution_engine import ExecutionEngine
@@ -69,8 +70,20 @@ class ActionInjector:
 
         render_scope = await self.renderer.get_render_scope()
         rendered_params = await self.renderer.render(raw_params, scope=render_scope)
-        call_args = self._prepare_action_arguments(action_def, rendered_params)
+        return await middleware_manager.process(
+            action_def=action_def,
+            context=self.context,
+            params=rendered_params,
+            final_handler=self._invoke_action,
+        )
 
+    async def _invoke_action(
+        self,
+        action_def: ActionDefinition,
+        _context: ExecutionContext,
+        rendered_params: Dict[str, Any],
+    ) -> Any:
+        call_args = self._prepare_action_arguments(action_def, rendered_params)
         if action_def.is_async:
             return await action_def.func(**call_args)
 

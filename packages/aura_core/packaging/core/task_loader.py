@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -22,7 +23,27 @@ except ImportError:
 from packages.aura_core.config.loader import get_config_value
 from packages.aura_core.observability.logging.core_logger import logger
 
-from packages.aura_core.packaging.core.task_validator import TaskDefinitionValidator
+from packages.aura_core.packaging.core.task_validator import TaskDefinitionValidator, TaskValidationError
+
+
+@dataclass(frozen=True, slots=True)
+class TaskLoadErrorRecord:
+    """Structured task file load failure."""
+
+    plan_name: str
+    source_file: str
+    task_refs: tuple[str, ...]
+    error_code: str
+    message: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "plan_name": self.plan_name,
+            "source_file": self.source_file,
+            "task_refs": list(self.task_refs),
+            "error_code": self.error_code,
+            "message": self.message,
+        }
 
 
 class TaskLoader:
@@ -58,6 +79,7 @@ class TaskLoader:
             enable_schema_validation=enable_schema_validation,
             strict_validation=strict_validation,
         )
+        self._task_load_errors: Dict[str, TaskLoadErrorRecord] = {}
 
     @classmethod
     def invalidate_all_caches(cls):
@@ -96,6 +118,7 @@ class TaskLoader:
 
             if not file_path.is_file():
                 self.cache[key] = {}
+                self._clear_file_error(file_path)
                 return {}
 
             try:
@@ -109,10 +132,107 @@ class TaskLoader:
                         task_def.setdefault("execution_mode", "sync")
 
                 self.cache[key] = result
+                self._clear_file_error(file_path)
                 return result
+            except yaml.YAMLError as exc:
+                error = self._make_error_record(
+                    file_path=file_path,
+                    error_code="yaml_parse_failed",
+                    message=f"Failed to parse YAML file '{file_path.name}': {exc}",
+                    raw_data=None,
+                )
+                self._record_file_error(file_path, error)
+                logger.error("Failed to parse task file '%s': %s", file_path, exc)
+                return {}
+            except TaskValidationError as exc:
+                error = self._make_error_record(
+                    file_path=file_path,
+                    error_code=exc.code,
+                    message=str(exc),
+                    raw_data=locals().get("result", None) or locals().get("data", None),
+                )
+                self._record_file_error(file_path, error)
+                logger.error("Task file validation failed '%s': %s", file_path, exc)
+                return {}
             except Exception as exc:
+                error = self._make_error_record(
+                    file_path=file_path,
+                    error_code="task_load_failed",
+                    message=f"Failed to load task file '{file_path.name}': {exc}",
+                    raw_data=locals().get("result", None) or locals().get("data", None),
+                )
+                self._record_file_error(file_path, error)
                 logger.error("Failed to load task file '%s': %s", file_path, exc)
                 return {}
+
+    def _record_file_error(self, file_path: Path, error: TaskLoadErrorRecord) -> None:
+        relative_path = self._to_relative_source_file(file_path)
+        self._task_load_errors[relative_path] = error
+
+    def _clear_file_error(self, file_path: Path) -> None:
+        relative_path = self._to_relative_source_file(file_path)
+        self._task_load_errors.pop(relative_path, None)
+
+    def _to_relative_source_file(self, file_path: Path) -> str:
+        resolved = file_path.resolve()
+        for task_dir in self.task_paths:
+            try:
+                return resolved.relative_to(task_dir.resolve()).as_posix()
+            except Exception:
+                continue
+        return file_path.name
+
+    def _infer_task_refs_from_data(self, file_path: Path, raw_data: Any) -> List[str]:
+        relative_path = self._to_relative_source_file(file_path)
+        base_ref = f"tasks:{relative_path.replace('/', ':')}"
+        refs: List[str] = []
+
+        if isinstance(raw_data, dict):
+            if isinstance(raw_data.get("steps"), dict):
+                refs.append(base_ref)
+            for task_name, task_def in raw_data.items():
+                if isinstance(task_def, dict) and isinstance(task_def.get("steps"), dict):
+                    refs.append(f"{base_ref}:{task_name}")
+                    if task_name == file_path.stem:
+                        refs.append(base_ref)
+        return sorted(set(refs))
+
+    def _make_error_record(
+        self,
+        *,
+        file_path: Path,
+        error_code: str,
+        message: str,
+        raw_data: Any,
+    ) -> TaskLoadErrorRecord:
+        return TaskLoadErrorRecord(
+            plan_name=self.plan_name,
+            source_file=self._to_relative_source_file(file_path),
+            task_refs=tuple(self._infer_task_refs_from_data(file_path, raw_data)),
+            error_code=error_code,
+            message=message,
+        )
+
+    def get_task_load_errors(self) -> List[Dict[str, Any]]:
+        return [record.to_dict() for _, record in sorted(self._task_load_errors.items())]
+
+    def find_task_load_error(self, task_name_in_plan: str) -> Optional[Dict[str, Any]]:
+        parts = [part for part in str(task_name_in_plan or "").split("/") if part]
+        if not parts:
+            return None
+
+        candidate_files = set()
+        direct_file = "/".join(parts) + ".yaml"
+        candidate_files.add(direct_file)
+
+        file_path_parts = parts[:-1] if len(parts) > 1 else parts
+        candidate_files.add("/".join(file_path_parts) + ".yaml")
+
+        for candidate in candidate_files:
+            record = self._task_load_errors.get(candidate)
+            if record is not None:
+                return record.to_dict()
+        return None
 
     def get_task_data(self, task_name_in_plan: str) -> Optional[Dict[str, Any]]:
         parts = task_name_in_plan.split("/")
@@ -231,6 +351,7 @@ class TaskLoader:
 
     def get_all_task_definitions(self) -> Dict[str, Any]:
         all_definitions: Dict[str, Any] = {}
+        self._task_load_errors.clear()
 
         for task_dir in self.task_paths:
             if not task_dir.is_dir():
@@ -239,13 +360,21 @@ class TaskLoader:
             for task_file_path in task_dir.rglob("*.yaml"):
                 all_tasks_in_file = self._load_and_parse_file(task_file_path)
                 relative_path = task_file_path.relative_to(task_dir).with_suffix("").as_posix()
+                canonical_file_ref = f"tasks:{relative_path.replace('/', ':')}.yaml"
 
                 if isinstance(all_tasks_in_file, dict) and isinstance(all_tasks_in_file.get("steps"), (list, dict)):
+                    all_tasks_in_file.setdefault("__task_source_file__", f"{relative_path}.yaml")
+                    all_tasks_in_file.setdefault("__task_ref__", canonical_file_ref)
                     all_definitions[relative_path] = all_tasks_in_file
                     continue
 
                 for task_key, task_definition in all_tasks_in_file.items():
                     if isinstance(task_definition, dict) and "steps" in task_definition:
+                        task_definition.setdefault("__task_source_file__", f"{relative_path}.yaml")
+                        task_definition.setdefault(
+                            "__task_ref__",
+                            canonical_file_ref if task_key == Path(relative_path).name else f"{canonical_file_ref}:{task_key}",
+                        )
                         task_id = f"{relative_path}/{task_key}"
                         all_definitions[task_id] = task_definition
                         if task_key == Path(relative_path).name:

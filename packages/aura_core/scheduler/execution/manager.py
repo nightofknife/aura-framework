@@ -69,9 +69,18 @@ class ExecutionManager:
         """(私有) 根据任务的资源标签获取其需要的所有信号量。"""
         sems = [self._global_sem]
         for tag in tasklet.resource_tags:
-            parts = tag.split(':', 1)
-            key = parts[0]
-            limit = int(parts[1]) if len(parts) > 1 else 1
+            key = tag
+            limit = 1
+            if ":" in tag:
+                key_part, limit_part = tag.rsplit(":", 1)
+                try:
+                    parsed_limit = int(limit_part)
+                    key = key_part
+                    limit = parsed_limit if parsed_limit > 0 else 1
+                    if parsed_limit <= 0:
+                        logger.warning("Resource tag '%s' has non-positive limit %s; fallback to 1.", tag, parsed_limit)
+                except (TypeError, ValueError):
+                    logger.warning("Resource tag '%s' has invalid limit suffix; fallback to limit=1.", tag)
             async with self._resource_sem_lock:
                 if key not in self._resource_sems:
                     self._resource_sems[key] = asyncio.Semaphore(limit)

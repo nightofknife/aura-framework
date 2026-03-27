@@ -32,23 +32,11 @@ class ActionResolver:
                 logger.debug("Resolved local action: %s -> %s", action_name, local_fqid)
                 return local_fqid
 
-            fallback_def = ACTION_REGISTRY.get(action_name)
-            if fallback_def and fallback_def.fqid != local_fqid:
-                external_package_id = fallback_def.plugin.package.canonical_id.lstrip('@')
-                if self.current_package and not self.is_dependency_declared(external_package_id):
-                    raise ValueError(
-                        f"Action '{action_name}' resolved to external package '{external_package_id}', "
-                        "but it is not declared in manifest dependencies."
-                    )
-                logger.debug(
-                    "Resolved dependency action: %s -> %s (fallback from local package '%s')",
-                    action_name,
-                    fallback_def.fqid,
-                    canonical_id,
-                )
-                return fallback_def.fqid
-
-            logger.debug("Resolved local action: %s -> %s", action_name, local_fqid)
+            logger.debug(
+                "Local action '%s' is not exported by package '%s'; no cross-package fallback is allowed.",
+                action_name,
+                canonical_id,
+            )
             return local_fqid
 
         parts = action_name.split('/')

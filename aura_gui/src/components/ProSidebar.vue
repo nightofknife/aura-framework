@@ -1,162 +1,176 @@
-<!-- === src/components/ProSidebar.vue (with Logo) === -->
 <template>
   <aside class="sidebar">
-    <div class="logo-area">
-      <strong class="logo">Aura Orchestrator</strong>
+    <div class="sidebar__brand">
+      <span class="sidebar__tag">Aura Dispatch Desk</span>
+      <div class="sidebar__serial">ORCH-01</div>
+      <strong class="sidebar__logo">EXPEDITION</strong>
+      <p class="sidebar__copy">Industrial task table for brief selection, local arrangement, and scheduler handoff.</p>
     </div>
-    <nav class="nav">
-      <a
-          v-for="i in items"
-          :key="i.key"
-          href="#"
-          class="item"
-          :class="{ active: i.key === active }"
-          @click.prevent="$emit('navigate', i.key)"
+
+    <nav class="sidebar__nav">
+      <button
+        v-for="item in items"
+        :key="item.key"
+        class="sidebar__item"
+        :class="{ 'is-active': item.key === active }"
+        @click="$emit('navigate', item.key)"
       >
-        <span class="icon" aria-hidden="true">
-          <svg v-if="i.icon === 'dashboard'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6">
-            <rect x="3" y="3" width="8" height="8" rx="2" />
-            <rect x="13" y="3" width="8" height="5" rx="2" />
-            <rect x="13" y="10" width="8" height="11" rx="2" />
-            <rect x="3" y="13" width="8" height="8" rx="2" />
-          </svg>
-          <svg v-else-if="i.icon === 'execute'" viewBox="0 0 24 24" class="icon-svg" fill="currentColor">
-            <path d="M8 5l11 7-11 7z" />
-          </svg>
-          <svg v-else-if="i.icon === 'runs'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="8" />
-            <path d="M12 8v4l3 2" />
-          </svg>
-          <svg v-else-if="i.icon === 'plans'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-          </svg>
-          <svg v-else-if="i.icon === 'actions'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z" />
-          </svg>
-          <svg v-else-if="i.icon === 'services'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="7" height="7" rx="1" />
-            <rect x="14" y="3" width="7" height="7" rx="1" />
-            <rect x="14" y="14" width="7" height="7" rx="1" />
-            <rect x="3" y="14" width="7" height="7" rx="1" />
-          </svg>
-          <svg v-else-if="i.icon === 'packages'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-            <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-            <line x1="12" y1="22.08" x2="12" y2="12" />
-          </svg>
-          <svg v-else-if="i.icon === 'automation'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="5" width="18" height="16" rx="2" />
-            <path d="M8 3v4M16 3v4M3 9h18" />
-            <path d="M8.5 14.5l2 2 5-5" />
-          </svg>
-          <svg v-else-if="i.icon === 'task_editor'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="6" cy="6" r="2" />
-            <circle cx="18" cy="6" r="2" />
-            <circle cx="12" cy="18" r="2" />
-            <path d="M8 7.5l4 8M16 7.5l-4 8M8 6h8" />
-          </svg>
-          <svg v-else-if="i.icon === 'settings'" viewBox="0 0 24 24" class="icon-svg" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 6h16" />
-            <path d="M4 12h16" />
-            <path d="M4 18h16" />
-            <circle cx="9" cy="6" r="2" />
-            <circle cx="15" cy="12" r="2" />
-            <circle cx="7" cy="18" r="2" />
-          </svg>
-          <span v-else>{{ i.icon }}</span>
+        <span class="sidebar__index">{{ order[item.key] || '00' }}</span>
+        <span class="sidebar__meta">
+          <span class="sidebar__label">{{ item.label }}</span>
+          <span class="sidebar__hint">{{ hints[item.key] || 'Section' }}</span>
         </span>
-        <span class="label">{{ i.label }}</span>
-        <div class="glow-indicator"></div>
-      </a>
+      </button>
     </nav>
+
+    <div class="sidebar__footer">
+      <span class="section-tag">Desktop Only</span>
+      <p>No mobile layout. This surface is meant to feel like a fixed work table.</p>
+    </div>
   </aside>
 </template>
 
 <script setup>
-// script鍐呭涓嶅彉
 defineProps({
-  active: { type: String, default: 'dashboard' },
-  items: {
-    type: Array,
-    default: () => [
-      { key: 'dashboard', label: '仪表盘', icon: 'dashboard' },
-      { key: 'execute', label: '执行台', icon: 'execute' },
-      { key: 'runs', label: '运行中', icon: 'runs' },
-      { key: 'plans', label: '方案/任务', icon: 'plans' },
-      { key: 'automation', label: '自动化', icon: 'automation' },
-      { key: 'task_editor', label: '任务编辑', icon: 'task_editor' },
-      { key: 'settings', label: '设置', icon: 'settings' },
-    ]
-  }
-});
-defineEmits(['navigate']);
+  active: { type: String, default: 'execute' },
+  items: { type: Array, default: () => [] },
+})
+
+defineEmits(['navigate'])
+
+const order = {
+  execute: '01',
+  runs: '02',
+  plans: '03',
+  settings: '04',
+}
+
+const hints = {
+  execute: 'Dispatch table',
+  runs: 'Route record',
+  plans: 'Task folio',
+  settings: 'Platform envelope',
+}
 </script>
 
 <style scoped>
-.logo-area {
-  height: 60px; /* Match topbar height */
+.sidebar {
   display: flex;
-  align-items: center;
-  padding: 0 14px;
-  border-bottom: 1px solid var(--border-frosted);
-  margin: -12px -12px 12px -12px; /* Absorb parent padding */
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px 18px 22px 22px;
+  border-right: 1px solid rgba(224, 214, 186, 0.08);
+  background: linear-gradient(180deg, rgba(31, 38, 41, 0.88), rgba(23, 29, 31, 0.72));
 }
-.logo { font-size: 16px; color: var(--text-primary); }
-/* 鍏朵粬鏍峰紡涓嶅彉 */
-.nav { display: flex; flex-direction: column; gap: 8px; }
-.item {
+
+.sidebar__brand {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 16px 16px;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(58, 67, 71, 0.94), rgba(40, 48, 51, 0.94));
+  box-shadow: var(--shadow-plate), var(--shadow-inset);
+}
+
+.sidebar__tag,
+.sidebar__serial {
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.sidebar__serial {
+  color: var(--ember-2);
+}
+
+.sidebar__logo {
+  color: var(--paper-2);
+  font-family: var(--font-display);
+  font-size: 52px;
+  letter-spacing: 0.08em;
+  line-height: 0.88;
+  text-transform: uppercase;
+}
+
+.sidebar__copy,
+.sidebar__footer p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.sidebar__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar__item {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
   gap: 12px;
-  padding: 10px 14px;
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  font-weight: 600;
-  text-decoration: none;
-  position: relative;
-  overflow: hidden;
-  transition: all var(--dur) var(--ease);
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(224, 214, 186, 0.09);
+  background: linear-gradient(180deg, rgba(53, 61, 65, 0.92), rgba(35, 43, 46, 0.92));
+  color: var(--text-main);
+  text-align: left;
 }
-.item:hover {
-  background: rgba(128, 128, 128, 0.1);
-  color: var(--text-primary);
+
+.sidebar__item:hover {
+  border-color: rgba(224, 214, 186, 0.18);
 }
-.item.active {
-  color: var(--text-primary);
-  background: rgba(88, 101, 242, 0.1);
+
+.sidebar__item.is-active {
+  border-color: rgba(199, 104, 63, 0.24);
+  background:
+    linear-gradient(90deg, rgba(199, 104, 63, 0.14), transparent 28%),
+    linear-gradient(180deg, rgba(61, 69, 73, 0.96), rgba(39, 47, 50, 0.96));
 }
-.icon {
-  width: 20px;
-  height: 20px;
+
+.sidebar__index {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  min-height: 42px;
+  border: 1px solid rgba(224, 214, 186, 0.12);
+  background: rgba(22, 27, 29, 0.44);
+  color: var(--paper-2);
+  font-family: var(--font-display);
+  font-size: 24px;
+  letter-spacing: 0.08em;
 }
-.icon-svg {
-  width: 18px;
-  height: 18px;
-  display: block;
-}
-.label { line-height: 1; }
 
-/* 杈夊厜娴佸姩鏁堟灉 */
-.glow-indicator {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--primary-accent);
-  box-shadow: 0 0 8px var(--glow-accent), 0 0 16px var(--glow-accent);
-  transform: translateX(-100%);
-  transition: transform var(--dur) var(--ease);
+.sidebar__meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
 }
-.item.active .glow-indicator {
-  transform: translateX(0);
+
+.sidebar__label {
+  color: var(--paper-2);
+  font-family: var(--font-display);
+  font-size: 28px;
+  letter-spacing: 0.08em;
+  line-height: 0.88;
+  text-transform: uppercase;
+}
+
+.sidebar__hint {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.sidebar__footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 </style>
-<!-- === END src/components/ProSidebar.vue (with Logo) === -->
-
-
-

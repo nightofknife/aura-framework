@@ -18,12 +18,14 @@ class SchedulerRuntimeState:
     interrupt_definitions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     user_enabled_globals: Set[str] = field(default_factory=set)
     all_tasks_definitions: Dict[str, Any] = field(default_factory=dict)
+    task_load_errors: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def clear_plan_runtime_data(self) -> None:
         self.schedule_items.clear()
         self.interrupt_definitions.clear()
         self.user_enabled_globals.clear()
         self.all_tasks_definitions.clear()
+        self.task_load_errors.clear()
 
     def clear_active_runs(self) -> None:
         self.running_tasks.clear()

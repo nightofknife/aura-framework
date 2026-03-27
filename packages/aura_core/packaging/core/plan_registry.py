@@ -54,6 +54,7 @@ class PlanRegistry:
     def load_all_tasks_definitions(self):
         logger.info("--- Loading all task definitions ---")
         self._scheduler.state.all_tasks_definitions.clear()
+        self._scheduler.state.task_load_errors.clear()
         plans = self._scheduler.plan_manager.plans
         if not plans:
             logger.info("No loaded plans, skip task definition indexing")
@@ -65,6 +66,13 @@ class PlanRegistry:
             except Exception as exc:
                 logger.error(f"Failed to load task definitions for plan '{plan_name}': {exc}")
                 continue
+
+            for error in orchestrator.task_loader.get_task_load_errors():
+                source_file = error.get("source_file")
+                if not source_file:
+                    continue
+                error_key = f"{plan_name}/{source_file}"
+                self._scheduler.state.task_load_errors[error_key] = error
 
             if not isinstance(task_definitions, dict):
                 continue
@@ -82,7 +90,11 @@ class PlanRegistry:
                 full_task_id = f"{plan_name}/{task_name_in_plan}".replace("//", "/")
                 self._scheduler.state.all_tasks_definitions[full_task_id] = task_definition
 
-        logger.info(f"Task definitions loaded: {len(self._scheduler.state.all_tasks_definitions)}")
+        logger.info(
+            "Task definitions loaded: %s, task load errors: %s",
+            len(self._scheduler.state.all_tasks_definitions),
+            len(self._scheduler.state.task_load_errors),
+        )
 
     def _warn_task_export_mismatch(self, plan_name: str, manifest: Any, task_definitions: Dict[str, Any]):
         """Warn when manifest exports.tasks diverges from runtime task loader index."""
