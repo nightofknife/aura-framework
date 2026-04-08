@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aura Plan Authoring"
+  short_description: "Guide Aura plan task/action/service authoring"
+  default_prompt: "Use $aura-plan-authoring to design or debug Aura plan tasks, actions, services, and manifest exports."

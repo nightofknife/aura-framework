@@ -1,0 +1,22 @@
+html {
+  scrollbar-color: rgba(240, 223, 179, 0.28) rgba(6, 16, 27, 0.2);
+}
+
+body ::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+body ::-webkit-scrollbar-track {
+  background: rgba(6, 16, 27, 0.35);
+}
+
+body ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(213, 187, 134, 0.34), rgba(239, 106, 62, 0.26));
+  border: 2px solid rgba(6, 16, 27, 0.5);
+}
+
+::selection {
+  background: rgba(239, 106, 62, 0.28);
+  color: var(--sand-bright);
+}
