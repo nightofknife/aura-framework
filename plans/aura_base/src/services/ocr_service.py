@@ -31,7 +31,12 @@ class MultiOcrResult:
     results: list[OcrResult] = field(default_factory=list)
 
 
-@service_info(alias="ocr", public=True)
+@service_info(
+    alias="ocr",
+    public=True,
+    capabilities=["desktop.capture.read", "desktop.ocr.read"],
+    side_effect_level="read",
+)
 class OcrService:
     """
     【最终稳定版】一个高性能、资源可控的OCR服务。

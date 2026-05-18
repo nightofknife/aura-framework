@@ -1,8 +1,8 @@
 // 任务队列状态管理 Store
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import axios from 'axios'
 import { getGuiConfig } from '../config.js'
+import { api } from '../api/client.js'
 
 export const useQueueStore = defineStore('queue', () => {
   // ========== State ==========
@@ -30,15 +30,13 @@ export const useQueueStore = defineStore('queue', () => {
 
     try {
       const config = getGuiConfig()
-      const baseUrl = config.api?.base_url || 'http://127.0.0.1:18098/api/v1'
       const limit = config.api?.queue_list_limit || 200
 
-      const response = await axios.get(`${baseUrl}/queue/list`, {
+      const data = await api.get('/queue/list', {
         params: { limit },
-        timeout: config.api?.timeout_ms || 5000
       })
 
-      backendQueue.value = response.data || []
+      backendQueue.value = Array.isArray(data) ? data : data?.items || []
       lastUpdate.value = Date.now()
 
       return backendQueue.value

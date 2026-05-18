@@ -1,8 +1,7 @@
 // 主应用状态管理 Store
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import axios, { type AxiosResponse } from 'axios'
-import { getGuiConfig } from '../config.js'
+import { api } from '../api/client.js'
 import type { SystemStatus } from '../types/api'
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'connecting'
@@ -30,20 +29,13 @@ export const useAppStore = defineStore('app', () => {
    */
   async function fetchSystemStatus(): Promise<SystemStatus> {
     try {
-      const config = getGuiConfig()
-      const baseUrl = config.api?.base_url || 'http://127.0.0.1:18098/api/v1'
-      const response: AxiosResponse<SystemStatus> = await axios.get(
-        `${baseUrl}/system/status`,
-        {
-          timeout: config.api?.timeout_ms || 5000
-        }
-      )
+      const data = await api.get('/system/status') as SystemStatus
 
-      systemRunning.value = response.data?.is_running ?? false
+      systemRunning.value = data?.is_running ?? false
       backendHealthy.value = true
       lastHeartbeat.value = Date.now()
 
-      return response.data
+      return data
     } catch (error) {
       console.error('[AppStore] 获取系统状态失败:', error)
       backendHealthy.value = false
@@ -56,17 +48,13 @@ export const useAppStore = defineStore('app', () => {
    */
   async function startSystem(): Promise<SystemResponse> {
     try {
-      const config = getGuiConfig()
-      const baseUrl = config.api?.base_url || 'http://127.0.0.1:18098/api/v1'
-      const response: AxiosResponse<SystemResponse> = await axios.post(
-        `${baseUrl}/system/start`
-      )
+      const data = await api.post('/system/start') as SystemResponse
 
-      if (response.data?.success) {
+      if (data?.success) {
         systemRunning.value = true
       }
 
-      return response.data
+      return data
     } catch (error) {
       console.error('[AppStore] 启动系统失败:', error)
       throw error
@@ -78,17 +66,13 @@ export const useAppStore = defineStore('app', () => {
    */
   async function stopSystem(): Promise<SystemResponse> {
     try {
-      const config = getGuiConfig()
-      const baseUrl = config.api?.base_url || 'http://127.0.0.1:18098/api/v1'
-      const response: AxiosResponse<SystemResponse> = await axios.post(
-        `${baseUrl}/system/stop`
-      )
+      const data = await api.post('/system/stop') as SystemResponse
 
-      if (response.data?.success) {
+      if (data?.success) {
         systemRunning.value = false
       }
 
-      return response.data
+      return data
     } catch (error) {
       console.error('[AppStore] 停止系统失败:', error)
       throw error

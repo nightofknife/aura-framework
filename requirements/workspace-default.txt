@@ -1,0 +1,6 @@
+-r framework-core.txt
+screeninfo
+pywin32
+opencv-python
+numpy
+paddleocr

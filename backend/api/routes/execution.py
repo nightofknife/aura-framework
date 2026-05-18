@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.dependencies import CoreScheduler
 from backend.api.schemas import BatchTaskStatusResponse, TaskRunResponse, TaskStatusItem
+from packages.aura_core.cli.validator_cli import validate_workspace
 from packages.aura_core.scheduler import Scheduler
 
 router = APIRouter(tags=["execution"])
@@ -27,6 +28,13 @@ class BatchTaskDispatchRequest(BaseModel):
 
 class BatchStatusRequest(BaseModel):
     cids: List[str]
+
+
+class TaskValidateRequest(BaseModel):
+    plan_name: str | None = None
+    task_ref: str | None = None
+    strict: bool = False
+    dry_run: bool = False
 
 
 @router.post("/tasks/dispatch", status_code=202, response_model=TaskRunResponse)
@@ -80,3 +88,39 @@ def get_batch_task_status(req: BatchStatusRequest, scheduler: Scheduler = CoreSc
             )
         )
     return BatchTaskStatusResponse(tasks=rows)
+
+
+@router.post("/tasks/validate")
+def validate_tasks(req: TaskValidateRequest) -> Dict[str, Any]:
+    """Validate task YAML and optional dry-run inputs without executing actions."""
+
+    _exit_code, output = validate_workspace(
+        plan=req.plan_name,
+        output_format="json",
+        strict=req.strict,
+        dry_run=req.dry_run,
+        task_ref=req.task_ref,
+    )
+    import json
+
+    return json.loads(output)
+
+
+@router.post("/tasks/dry-run")
+def dry_run_task(req: TaskValidateRequest) -> Dict[str, Any]:
+    """Dry-run a task definition through static parsing and fake-safe checks."""
+
+    if not req.plan_name or not req.task_ref:
+        raise HTTPException(status_code=400, detail="plan_name and task_ref are required for dry-run.")
+    _exit_code, output = validate_workspace(
+        plan=req.plan_name,
+        output_format="json",
+        strict=req.strict,
+        dry_run=True,
+        task_ref=req.task_ref,
+    )
+    import json
+
+    payload = json.loads(output)
+    payload["dry_run"] = True
+    return payload

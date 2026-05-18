@@ -1,0 +1,24 @@
+fixture_schema_version: 2
+id: vision/template-match
+desktop_profile: fixture
+capture:
+  backend: fake
+  image: capture/basic-screen.png
+expected:
+  actions:
+    - action: plans/aura_base/find_image
+      backend: fake
+      ok: true
+      data:
+        found: true
+  locators:
+    - method: template
+      backend: fake
+      source: fixture://capture/basic-screen.png
+      bbox: [100, 120, 80, 40]
+      center: [140, 140]
+      score: 0.98
+      threshold: 0.8
+      candidates:
+        - bbox: [100, 120, 80, 40]
+          score: 0.98

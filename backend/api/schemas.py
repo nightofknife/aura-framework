@@ -77,6 +77,34 @@ class ActionSummary(BaseModel):
     public: bool
     read_only: bool
     description: str = ""
+    parameters: List[Dict[str, Any]] = Field(default_factory=list)
+    return_schema: Dict[str, Any] = Field(default_factory=dict)
+    supported_backend_domains: List[str] = Field(default_factory=list)
+    capabilities: List[str] = Field(default_factory=list)
+    side_effect_level: str = "read"
+    requires_foreground: bool = False
+    requires_admin: bool = False
+    stability: str = "stable"
+
+
+class CapabilityBackendSummary(BaseModel):
+    backend_id: str
+    domain: str
+    available: bool
+    health_status: str
+    requires_foreground: bool
+    supports_background: bool
+    supports_minimized: bool
+    requires_admin: bool
+    side_effect_level: str
+    capabilities: List[str] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+    last_error: Optional[str] = None
+    stability: str = "stable"
+
+
+class CapabilityListResponse(BaseModel):
+    domains: Dict[str, List[CapabilityBackendSummary]]
 
 
 class GenericMessageResponse(BaseModel):
@@ -148,3 +176,6 @@ class RunDetailResponse(BaseModel):
     user_data: Optional[Any] = None
     framework_data: Optional[Any] = None
     nodes: List[Dict[str, Any]] = Field(default_factory=list)
+    action_results: List[Dict[str, Any]] = Field(default_factory=list)
+    policy_decisions: List[Dict[str, Any]] = Field(default_factory=list)
+    evidence: List[Dict[str, Any]] = Field(default_factory=list)

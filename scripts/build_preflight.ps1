@@ -1,6 +1,6 @@
 param(
     [string]$VenvPython = ".venv\\Scripts\\python.exe",
-    [string]$LockFile = "requirements/runtime.lock"
+    [string]$LockFile = "requirements/workspace-default.lock"
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,6 +19,40 @@ function Normalize-LockLines {
         | Where-Object { $_ -and -not $_.StartsWith("#") } `
         | ForEach-Object { $_.ToLowerInvariant() } `
         | Sort-Object -Unique
+}
+
+function Read-RequirementLines {
+    param([string]$PathValue, [System.Collections.Generic.HashSet[string]]$Seen = $null)
+
+    if ($null -eq $Seen) {
+        $Seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    }
+
+    $resolved = (Resolve-Path $PathValue).Path
+    if (-not $Seen.Add($resolved)) {
+        return @()
+    }
+
+    $lines = @()
+    foreach ($raw in Get-Content $resolved) {
+        $line = $raw.Trim()
+        if (-not $line -or $line.StartsWith("#")) {
+            continue
+        }
+
+        if ($line.StartsWith("-r ") -or $line.StartsWith("--requirement ")) {
+            $parts = $line.Split(" ", 2, [System.StringSplitOptions]::RemoveEmptyEntries)
+            if ($parts.Length -eq 2) {
+                $nested = Join-Path (Split-Path $resolved -Parent) $parts[1]
+                $lines += Read-RequirementLines -PathValue $nested -Seen $Seen
+            }
+            continue
+        }
+
+        $lines += $line
+    }
+
+    return $lines
 }
 
 Assert-PathExists -PathValue $VenvPython -Label "Venv python"
@@ -44,7 +78,7 @@ if ($userSiteEnabled -ne "0") {
 
 Write-Host "Validating lock consistency ..."
 $freezeLines = & $VenvPython -m pip freeze --all
-$lockLines = Get-Content $LockFile
+$lockLines = Read-RequirementLines -PathValue $LockFile
 
 $freezeNorm = Normalize-LockLines -Lines $freezeLines
 $lockNorm = Normalize-LockLines -Lines $lockLines

@@ -74,7 +74,12 @@ class AuraFileEventHandler(FileSystemEventHandler):
         self._handle_event(event, "moved")
 
 
-@service_info(alias="file_watcher", public=False)
+@service_info(
+    alias="file_watcher",
+    public=False,
+    capabilities=["filesystem.read"],
+    side_effect_level="read",
+)
 class FileWatcherService:
     """管理文件系统监听的服务。"""
 

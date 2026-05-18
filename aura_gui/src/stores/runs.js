@@ -1,8 +1,7 @@
 // 运行中任务状态管理 Store
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import axios from 'axios'
-import { getGuiConfig } from '../config.js'
+import { api } from '../api/client.js'
 
 export const useRunsStore = defineStore('runs', () => {
   // ========== State ==========
@@ -48,13 +47,9 @@ export const useRunsStore = defineStore('runs', () => {
     error.value = null
 
     try {
-      const config = getGuiConfig()
-      const baseUrl = config.api?.base_url || 'http://127.0.0.1:18098/api/v1'
-      const response = await axios.get(`${baseUrl}/runs`, {
-        timeout: config.api?.timeout_ms || 5000
-      })
+      const data = await api.get('/runs')
 
-      runs.value = response.data || []
+      runs.value = Array.isArray(data) ? data : data?.items || data?.runs || []
       lastUpdate.value = Date.now()
 
       return runs.value

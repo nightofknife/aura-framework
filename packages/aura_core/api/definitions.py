@@ -25,6 +25,12 @@ class ActionDefinition:
     is_async: bool = False
     timeout: Optional[int] = None
     description: str = ""
+    capabilities: list[str] = field(default_factory=list)
+    capabilities_declared: bool = False
+    side_effect_level: str = "input"
+    requires_foreground: bool = False
+    requires_admin: bool = False
+    stability: str = "stable"
 
     @property
     def signature(self) -> inspect.Signature:
@@ -66,6 +72,12 @@ class ServiceDefinition:
     singleton: bool = True
     service_deps: Dict[str, str] = field(default_factory=dict)
     description: str = ""
+    capabilities: list[str] = field(default_factory=list)
+    capabilities_declared: bool = False
+    side_effect_level: str = "read"
+    requires_foreground: bool = False
+    requires_admin: bool = False
+    stability: str = "stable"
 
 
 @dataclass

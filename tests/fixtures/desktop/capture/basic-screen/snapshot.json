@@ -1,0 +1,44 @@
+{
+  "status": "success",
+  "fixture": {
+    "id": "capture/basic-screen",
+    "desktop_profile": "fixture",
+    "schema_version": 2
+  },
+  "action_results": [
+    {
+      "ok": true,
+      "action": "plans/aura_base/capture_screen",
+      "backend": "fake",
+      "data": {
+        "value": {
+          "capture_ref": "fixture://capture/basic-screen.png"
+        }
+      }
+    }
+  ],
+  "captures": [
+    {
+      "image_ref": "fixture://capture/basic-screen.png",
+      "backend": "fake",
+      "width": 1280,
+      "height": 720,
+      "quality_flags": [
+        "fixture"
+      ]
+    }
+  ],
+  "locators": [],
+  "ocr": [],
+  "yolo": [],
+  "window": {
+    "title": "Fake Window",
+    "rect": [
+      0,
+      0,
+      1280,
+      720
+    ]
+  },
+  "diagnostics": {}
+}

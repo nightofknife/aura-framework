@@ -117,6 +117,34 @@ def list_queue(
     return QueueListResponse(items=items)
 
 
+@router.get("/queue/recovery/status")
+def get_queue_recovery_status():
+    scheduler = peek_core_scheduler()
+    if scheduler is None:
+        return {"status": "success", "recoverable_count": 0, "stale_leased_count": 0, "items": []}
+    return scheduler.queue_recovery_status()
+
+
+@router.post("/queue/recovery/recover", response_model=GenericMessageResponse)
+def recover_queue_items() -> GenericMessageResponse:
+    scheduler = _scheduler_running()
+    result = scheduler.queue_recover()
+    return GenericMessageResponse(
+        status=result.get("status", "success"),
+        message=f"Recovered {len(result.get('recovered', []))} item(s), abandoned {len(result.get('abandoned', []))}.",
+    )
+
+
+@router.post("/queue/recovery/abandon-stale", response_model=GenericMessageResponse)
+def abandon_stale_queue_items() -> GenericMessageResponse:
+    scheduler = _scheduler_running()
+    result = scheduler.queue_abandon_stale()
+    return GenericMessageResponse(
+        status=result.get("status", "success"),
+        message=f"Abandoned {len(result.get('abandoned', []))} stale item(s).",
+    )
+
+
 @router.post("/queue/reorder", response_model=GenericMessageResponse)
 def reorder_queue(req: QueueReorderRequest) -> GenericMessageResponse:
     scheduler = _scheduler_running()

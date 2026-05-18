@@ -126,7 +126,7 @@ def _find_target_detection(
     return result, (detections[0] if detections else None)
 
 
-@action_info(name="yolo_preload_model", public=True)
+@action_info(name="yolo_preload_model", public=True, capabilities=['filesystem.read'])
 @requires_services(yolo="core/yolo")
 def yolo_preload_model(
     yolo: YoloService,
@@ -136,7 +136,7 @@ def yolo_preload_model(
     return yolo.preload_model(model_name)
 
 
-@action_info(name="yolo_set_active_model", public=True)
+@action_info(name="yolo_set_active_model", public=True, capabilities=['filesystem.read'])
 @requires_services(yolo="core/yolo")
 def yolo_set_active_model(
     yolo: YoloService,
@@ -146,7 +146,7 @@ def yolo_set_active_model(
     return yolo.set_active_model(model_name)
 
 
-@action_info(name="yolo_unload_model", public=True)
+@action_info(name="yolo_unload_model", public=True, capabilities=['filesystem.read'])
 @requires_services(yolo="core/yolo")
 def yolo_unload_model(
     yolo: YoloService,
@@ -156,7 +156,7 @@ def yolo_unload_model(
     return yolo.unload_model(model_name)
 
 
-@action_info(name="yolo_list_loaded_models", read_only=True, public=True)
+@action_info(name="yolo_list_loaded_models", read_only=True, public=True, capabilities=['filesystem.read'])
 @requires_services(yolo="core/yolo")
 def yolo_list_loaded_models(
     yolo: YoloService,
@@ -165,7 +165,7 @@ def yolo_list_loaded_models(
     return yolo.list_loaded_models()
 
 
-@action_info(name="yolo_get_active_model", read_only=True, public=True)
+@action_info(name="yolo_get_active_model", read_only=True, public=True, capabilities=['filesystem.read'])
 @requires_services(yolo="core/yolo")
 def yolo_get_active_model(
     yolo: YoloService,
@@ -174,7 +174,7 @@ def yolo_get_active_model(
     return yolo.get_active_model()
 
 
-@action_info(name="yolo_get_class_names", read_only=True, public=True)
+@action_info(name="yolo_get_class_names", read_only=True, public=True, capabilities=['filesystem.read'])
 @requires_services(yolo="core/yolo")
 def yolo_get_class_names(
     yolo: YoloService,
@@ -184,7 +184,7 @@ def yolo_get_class_names(
     return yolo.get_class_names(model_name=model_name)
 
 
-@action_info(name="yolo_resolve_class_ids", read_only=True, public=True)
+@action_info(name="yolo_resolve_class_ids", read_only=True, public=True, capabilities=['filesystem.read'])
 @requires_services(yolo="core/yolo")
 def yolo_resolve_class_ids(
     yolo: YoloService,
@@ -195,7 +195,7 @@ def yolo_resolve_class_ids(
     return yolo.resolve_class_ids(labels=labels, model_name=model_name)
 
 
-@action_info(name="yolo_detect_on_screen", read_only=True, public=True)
+@action_info(name="yolo_detect_on_screen", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(yolo="core/yolo", app="app")
 def yolo_detect_on_screen(
     yolo: YoloService,
@@ -213,7 +213,7 @@ def yolo_detect_on_screen(
     )
 
 
-@action_info(name="yolo_detect_image", read_only=True, public=True)
+@action_info(name="yolo_detect_image", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(yolo="core/yolo")
 def yolo_detect_image(
     yolo: YoloService,
@@ -229,7 +229,7 @@ def yolo_detect_image(
     )
 
 
-@action_info(name="yolo_count_targets", read_only=True, public=True)
+@action_info(name="yolo_count_targets", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(yolo="core/yolo", app="app")
 def yolo_count_targets(
     yolo: YoloService,
@@ -254,7 +254,7 @@ def yolo_count_targets(
     return len(detections)
 
 
-@action_info(name="yolo_find_target", read_only=True, public=True)
+@action_info(name="yolo_find_target", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(yolo="core/yolo", app="app")
 def yolo_find_target(
     yolo: YoloService,
@@ -299,7 +299,7 @@ def yolo_find_target(
     }
 
 
-@action_info(name="yolo_wait_for_target", read_only=True, public=True)
+@action_info(name="yolo_wait_for_target", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(yolo="core/yolo", app="app")
 def yolo_wait_for_target(
     yolo: YoloService,
@@ -344,7 +344,7 @@ def yolo_wait_for_target(
     }
 
 
-@action_info(name="yolo_wait_for_target_disappear", read_only=True, public=True)
+@action_info(name="yolo_wait_for_target_disappear", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(yolo="core/yolo", app="app")
 def yolo_wait_for_target_disappear(
     yolo: YoloService,
@@ -387,7 +387,7 @@ def yolo_wait_for_target_disappear(
     }
 
 
-@action_info(name="yolo_find_and_click_target", public=True)
+@action_info(name="yolo_find_and_click_target", public=True, capabilities=['desktop.capture.read', 'desktop.mouse.input'])
 @requires_services(yolo="core/yolo", app="app", controller="controller")
 def yolo_find_and_click_target(
     yolo: YoloService,
@@ -453,7 +453,7 @@ def yolo_find_and_click_target(
     }
 
 
-@action_info(name="yolo_click_all_targets", public=True)
+@action_info(name="yolo_click_all_targets", public=True, capabilities=['desktop.capture.read', 'desktop.mouse.input'])
 @requires_services(yolo="core/yolo", app="app", controller="controller")
 def yolo_click_all_targets(
     yolo: YoloService,
@@ -516,7 +516,7 @@ def yolo_click_all_targets(
     }
 
 
-@action_info(name="yolo_find_target_and_press_key", public=True)
+@action_info(name="yolo_find_target_and_press_key", public=True, capabilities=['desktop.capture.read', 'desktop.keyboard.input'])
 @requires_services(yolo="core/yolo", app="app", controller="controller")
 def yolo_find_target_and_press_key(
     yolo: YoloService,

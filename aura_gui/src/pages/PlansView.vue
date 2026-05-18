@@ -1,146 +1,230 @@
 <template>
-  <div class="page-shell plans-page">
-    <section class="plans-header">
-      <div class="plans-header__copy">
-        <span class="eyebrow">Read Only Task Folio</span>
-        <h1 class="page-title">Plans</h1>
-        <p class="page-subtitle">Browse plans as indexed folders and tasks as dossier slips. This page should feel archival, not operational.</p>
+  <div class="page-shell tasks-page">
+    <div class="page-heading">
+      <div class="heading-block">
+        <h1 class="page-title">任务库</h1>
       </div>
-    </section>
+      <div class="heading-actions">
+        <button class="btn btn-ghost" @click="refreshAll">
+          <RefreshCw class="icon" />
+          刷新
+        </button>
+      </div>
+    </div>
 
-    <section class="folio-board">
-      <aside class="folio-board__index">
-        <div>
-          <span class="label">Plan Index</span>
-          <input v-model="planQuery" class="input" placeholder="Search plans" />
-        </div>
+    <div v-if="pageError" class="notice notice-danger">{{ pageError }}</div>
 
-        <div class="folio-board__index-list">
-          <button
-            v-for="plan in filteredPlans"
-            :key="plan.name"
-            class="plan-folder"
-            :class="{ 'is-active': selectedPlan === plan.name }"
-            @click="selectPlan(plan.name)"
-          >
-            <strong>{{ plan.name }}</strong>
-            <span>{{ plan.task_count }} tasks</span>
-            <span>{{ plan.task_error_count }} errors</span>
-          </button>
+    <section class="library-grid">
+      <aside class="panel library-index">
+        <header class="panel-header">
+          <div>
+            <span class="panel-kicker">索引</span>
+            <strong>Plans / Tasks</strong>
+          </div>
+        </header>
+
+        <div class="panel-body stack">
+          <input v-model="planQuery" class="input" placeholder="搜索计划" />
+          <div class="plan-list">
+            <button
+              v-for="plan in filteredPlans"
+              :key="plan.name"
+              class="plan-row"
+              :class="{ 'is-active': selectedPlan === plan.name }"
+              @click="selectPlan(plan.name)"
+            >
+              <span>
+                <strong>{{ plan.name }}</strong>
+                <small>{{ plan.taskCount }} 个任务</small>
+              </span>
+              <span v-if="plan.taskErrorCount" class="pill pill-red">{{ plan.taskErrorCount }}</span>
+            </button>
+            <div v-if="!filteredPlans.length" class="empty-state">没有匹配的计划。</div>
+          </div>
+
+          <input v-model="taskQuery" class="input" placeholder="搜索任务" />
+          <div class="task-list">
+            <button
+              v-for="task in filteredTasks"
+              :key="task.key"
+              class="task-row"
+              :class="{ 'is-active': selectedTaskKey === task.key }"
+              @click="selectedTaskKey = task.key"
+            >
+              <strong>{{ task.title }}</strong>
+              <code>{{ task.taskRef }}</code>
+            </button>
+            <div v-if="loadingTasks" class="empty-state">正在加载任务...</div>
+            <div v-else-if="!filteredTasks.length" class="empty-state">没有匹配的任务。</div>
+          </div>
         </div>
       </aside>
 
-      <div class="folio-board__content">
-        <section class="task-strip">
-          <div class="task-strip__head">
-            <div>
-              <span class="label">Task Strip</span>
-              <strong class="task-strip__title">{{ selectedPlan || 'Tasks' }}</strong>
+      <section class="panel task-detail">
+        <header class="panel-header">
+          <div>
+            <span class="panel-kicker">任务详情</span>
+            <strong>{{ selectedTask?.title || '未选择任务' }}</strong>
+          </div>
+          <div v-if="selectedTask" class="toolbar">
+            <span class="pill pill-gray">{{ selectedTask.planName }}</span>
+            <span v-if="selectedTask.entryPoint" class="pill pill-gray">{{ selectedTask.entryPoint }}</span>
+            <span v-if="selectedTask.concurrency" class="pill pill-gray">{{ selectedTask.concurrency }}</span>
+          </div>
+        </header>
+
+        <div class="panel-body">
+          <template v-if="selectedTask">
+            <div class="tabs detail-tabs">
+              <button v-for="tab in tabs" :key="tab.key" class="tab" :class="{ 'is-active': activeTab === tab.key }" @click="activeTab = tab.key">
+                {{ tab.label }}
+              </button>
             </div>
-            <button class="btn btn-ghost" @click="refreshAll">Refresh</button>
-          </div>
 
-          <input v-model="taskQuery" class="input" placeholder="Search tasks" />
-
-          <div class="task-strip__list">
-            <button
-              v-for="task in filteredTasks"
-              :key="task.task_ref"
-              class="task-slip"
-              :class="{ 'is-active': selectedTaskRef === task.task_ref }"
-              @click="selectedTaskRef = task.task_ref"
-            >
-              <span class="task-slip__title">{{ task.meta?.title || task.task_ref }}</span>
-              <code>{{ task.task_ref }}</code>
-            </button>
-          </div>
-        </section>
-
-        <section class="dossier-sheet">
-          <div v-if="selectedTask" class="dossier-sheet__body">
-            <header class="dossier-sheet__head">
-              <div>
-                <span class="label">Task Dossier</span>
-                <strong class="dossier-sheet__title">{{ selectedTask.meta?.title || selectedTask.task_ref }}</strong>
+            <section v-if="activeTab === 'overview'" class="detail-section">
+              <div class="meta-grid">
+                <div class="meta-card"><span>计划</span><code>{{ selectedTask.planName }}</code></div>
+                <div class="meta-card"><span>任务引用</span><code>{{ selectedTask.taskRef }}</code></div>
+                <div class="meta-card"><span>输入字段</span><code>{{ taskInputs.length }}</code></div>
+                <div class="meta-card"><span>步骤</span><code>{{ stepRows.length }}</code></div>
               </div>
-              <div class="dossier-sheet__pills">
-                <span class="pill">{{ selectedTask.plan_name }}</span>
-                <span v-if="selectedTask.meta?.entry_point" class="pill">{{ selectedTask.meta.entry_point }}</span>
-                <span v-if="selectedTask.meta?.concurrency" class="pill">{{ selectedTask.meta.concurrency }}</span>
+              <p v-if="selectedTask.description" class="description">{{ selectedTask.description }}</p>
+
+              <details class="raw-block">
+                <summary>完整 definition</summary>
+                <pre class="json">{{ pretty(selectedTask.definition || {}) }}</pre>
+              </details>
+            </section>
+
+            <section v-else-if="activeTab === 'inputs'" class="detail-section">
+              <table>
+                <thead>
+                  <tr>
+                    <th>字段</th>
+                    <th>类型</th>
+                    <th>必填</th>
+                    <th>默认值</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="input in taskInputs" :key="input.name">
+                    <td><code>{{ input.name }}</code></td>
+                    <td>{{ input.type || '-' }}</td>
+                    <td>{{ input.required ? '是' : '否' }}</td>
+                    <td>{{ compact(input.default) }}</td>
+                  </tr>
+                  <tr v-if="!taskInputs.length">
+                    <td colspan="4" class="empty-cell">该任务没有声明输入字段。</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <details class="raw-block">
+                <summary>输入 schema 原始 JSON</summary>
+                <pre class="json">{{ pretty(selectedTask.inputs || []) }}</pre>
+              </details>
+            </section>
+
+            <section v-else-if="activeTab === 'steps'" class="detail-section">
+              <table>
+                <thead>
+                  <tr>
+                    <th>步骤</th>
+                    <th>Action</th>
+                    <th>依赖</th>
+                    <th>参数数</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in actionSchemaRows" :key="row.id">
+                    <td><code>{{ row.id }}</code></td>
+                    <td>{{ row.action || '-' }}</td>
+                    <td>{{ row.dependsOn.length ? row.dependsOn.join(', ') : '入口' }}</td>
+                    <td>{{ row.parameters.length }}</td>
+                  </tr>
+                  <tr v-if="!actionSchemaRows.length">
+                    <td colspan="4" class="empty-cell">该任务没有步骤定义。</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <details class="raw-block">
+                <summary>Action schema 详情</summary>
+                <pre class="json">{{ pretty(actionSchemaRows) }}</pre>
+              </details>
+            </section>
+
+            <section v-else class="detail-section">
+              <div class="toolbar">
+                <button class="btn btn-ghost" :disabled="checking || !apiTokenConfigured" @click="validateSelectedTask">Validate</button>
+                <button class="btn btn-primary" :disabled="checking || !apiTokenConfigured" @click="dryRunSelectedTask">Dry-run</button>
               </div>
-            </header>
+              <div v-if="!apiTokenConfigured" class="notice">Local API token required. Configure it in Settings.</div>
 
-            <code>{{ selectedTask.task_ref }}</code>
-            <p class="dossier-sheet__desc">{{ selectedTask.meta?.description || 'No description provided.' }}</p>
+              <div v-if="validationResult" class="result-block">
+                <span class="label">Validate Result</span>
+                <details open>
+                  <summary>原始 JSON</summary>
+                  <pre class="json">{{ pretty(validationResult) }}</pre>
+                </details>
+              </div>
 
-            <div class="dossier-sheet__grid">
-              <section class="dossier-block">
-                <span class="label">Inputs</span>
-                <table class="simple-table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Type</th>
-                      <th>Required</th>
-                      <th>Default</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="input in taskInputs" :key="input.name">
-                      <td>{{ input.name }}</td>
-                      <td>{{ input.type || '-' }}</td>
-                      <td>{{ input.required ? 'Yes' : 'No' }}</td>
-                      <td>{{ stringify(input.default) }}</td>
-                    </tr>
-                    <tr v-if="!taskInputs.length">
-                      <td colspan="4" class="empty-cell">This task has no declared input slots.</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </section>
+              <div v-if="dryRunResult" class="result-block">
+                <span class="label">Dry-run Result</span>
+                <details open>
+                  <summary>原始 JSON</summary>
+                  <pre class="json">{{ pretty(dryRunResult) }}</pre>
+                </details>
+              </div>
 
-              <section v-if="selectedTask.definition?.steps" class="dossier-block">
-                <span class="label">Step Preview</span>
-                <div class="step-slips">
-                  <div v-for="(step, id) in selectedTask.definition.steps" :key="id" class="step-slip">
-                    <code>{{ id }}</code>
-                    <strong>{{ step.action || '-' }}</strong>
-                  </div>
+              <div v-if="taskErrors.length" class="result-block">
+                <span class="label">加载错误</span>
+                <div v-for="(item, index) in taskErrors" :key="index" class="notice notice-danger">
+                  {{ item.message || compact(item.raw || item) }}
                 </div>
-              </section>
-            </div>
+              </div>
+            </section>
+          </template>
 
-            <div v-if="taskErrors.length" class="error-notes">
-              <span class="label">Load Errors</span>
-              <div v-for="(error, index) in taskErrors" :key="index" class="error-notes__item">{{ stringify(error) }}</div>
-            </div>
-          </div>
-
-          <div v-else class="empty-state">Select a task slip to inspect its dossier.</div>
-        </section>
-      </div>
+          <div v-else class="empty-state">请选择一个任务。</div>
+        </div>
+      </section>
     </section>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import axios from 'axios'
-import { getGuiConfig } from '../config.js'
+import { RefreshCw } from 'lucide-vue-next'
 
-const cfg = getGuiConfig()
-const api = axios.create({
-  baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
-  timeout: cfg?.api?.timeout_ms || 5000,
-})
+import { listActions, listPlans, listTaskLoadErrors, listTasks } from '../api/plans.js'
+import { dryRunTask, validateTask } from '../api/tasks.js'
+import { errorMessage } from '../api/errors.js'
+import { useApiTokenStatus } from '../composables/useApiToken.js'
+import { normalizeInputSchema } from '../utils/inputSchema.js'
+
+const tabs = [
+  { key: 'overview', label: '概览' },
+  { key: 'inputs', label: '输入' },
+  { key: 'steps', label: '步骤' },
+  { key: 'verify', label: '验证' },
+]
 
 const plans = ref([])
 const tasks = ref([])
 const taskErrors = ref([])
+const actions = ref([])
 const selectedPlan = ref('')
-const selectedTaskRef = ref('')
+const selectedTaskKey = ref('')
 const planQuery = ref('')
 const taskQuery = ref('')
+const activeTab = ref('overview')
+const loadingTasks = ref(false)
+const checking = ref(false)
+const pageError = ref('')
+const validationResult = ref(null)
+const dryRunResult = ref(null)
+const { hasToken: apiTokenConfigured } = useApiTokenStatus()
 
 const filteredPlans = computed(() => {
   const q = planQuery.value.trim().toLowerCase()
@@ -151,231 +235,296 @@ const filteredTasks = computed(() => {
   const q = taskQuery.value.trim().toLowerCase()
   return tasks.value.filter((task) => {
     if (!q) return true
-    return `${task.task_ref} ${task.meta?.title || ''} ${task.meta?.description || ''}`.toLowerCase().includes(q)
+    return `${task.title} ${task.taskRef} ${task.description}`.toLowerCase().includes(q)
   })
 })
 
 const selectedTask = computed(() =>
-  filteredTasks.value.find((task) => task.task_ref === selectedTaskRef.value) ||
+  tasks.value.find((task) => task.key === selectedTaskKey.value) ||
   filteredTasks.value[0] ||
   null
 )
 
-const taskInputs = computed(() => Array.isArray(selectedTask.value?.meta?.inputs) ? selectedTask.value.meta.inputs : [])
+const taskInputs = computed(() =>
+  (selectedTask.value?.inputs || []).map((input) => normalizeInputSchema(input))
+)
 
-async function loadPlans() {
-  const { data } = await api.get('/plans')
-  plans.value = Array.isArray(data) ? data : []
-  if (!selectedPlan.value && plans.value.length) {
-    selectedPlan.value = plans.value[0].name
+const stepRows = computed(() => selectedTask.value?.steps || [])
+
+const actionSchemaRows = computed(() =>
+  stepRows.value.map((step) => {
+    const action = actions.value.find((item) =>
+      item.fqid === step.action ||
+      item.name === step.action ||
+      item.fqid?.endsWith(`/${step.action}`) ||
+      item.fqid?.endsWith(`.${step.action}`)
+    )
+    return {
+      ...step,
+      parameters: Array.isArray(action?.parameters) ? action.parameters : [],
+      actionMeta: action || null,
+    }
+  })
+)
+
+async function refreshAll() {
+  try {
+    const [loadedPlans, loadedActions] = await Promise.all([
+      listPlans(),
+      listActions().catch(() => []),
+    ])
+    plans.value = loadedPlans
+    actions.value = loadedActions
+    if (!loadedPlans.some((plan) => plan.name === selectedPlan.value)) {
+      selectedPlan.value = loadedPlans.find((plan) => plan.taskCount > 0)?.name || loadedPlans[0]?.name || ''
+    }
+    await loadSelectedPlan()
+    pageError.value = ''
+  } catch (error) {
+    pageError.value = errorMessage(error, '任务库加载失败。')
   }
-}
-
-async function loadTasks(planName) {
-  if (!planName) {
-    tasks.value = []
-    taskErrors.value = []
-    selectedTaskRef.value = ''
-    return
-  }
-
-  const [taskResponse, errorResponse] = await Promise.all([
-    api.get(`/plans/${planName}/tasks`).catch(() => ({ data: [] })),
-    api.get(`/plans/${planName}/task-load-errors`).catch(() => ({ data: [] })),
-  ])
-
-  tasks.value = Array.isArray(taskResponse.data) ? taskResponse.data : []
-  taskErrors.value = Array.isArray(errorResponse.data) ? errorResponse.data : []
-  selectedTaskRef.value = tasks.value[0]?.task_ref || ''
 }
 
 async function selectPlan(planName) {
+  if (selectedPlan.value === planName) return
   selectedPlan.value = planName
-  await loadTasks(planName)
+  await loadSelectedPlan()
 }
 
-async function refreshAll() {
-  await loadPlans()
-  await loadTasks(selectedPlan.value)
+async function loadSelectedPlan() {
+  if (!selectedPlan.value) {
+    tasks.value = []
+    taskErrors.value = []
+    selectedTaskKey.value = ''
+    return
+  }
+  loadingTasks.value = true
+  validationResult.value = null
+  dryRunResult.value = null
+  try {
+    const [loadedTasks, loadedErrors] = await Promise.all([
+      listTasks(selectedPlan.value),
+      listTaskLoadErrors(selectedPlan.value).catch(() => []),
+    ])
+    tasks.value = loadedTasks
+    taskErrors.value = loadedErrors
+    if (!loadedTasks.some((task) => task.key === selectedTaskKey.value)) {
+      selectedTaskKey.value = loadedTasks[0]?.key || ''
+    }
+  } catch (error) {
+    tasks.value = []
+    taskErrors.value = []
+    selectedTaskKey.value = ''
+    pageError.value = errorMessage(error, '任务加载失败。')
+  } finally {
+    loadingTasks.value = false
+  }
 }
 
-function stringify(value) {
-  if (value === undefined || value === null || value === '') return '-'
-  if (typeof value === 'object') return JSON.stringify(value)
-  return String(value)
+async function validateSelectedTask() {
+  if (!selectedTask.value) return
+  if (!apiTokenConfigured.value) {
+    validationResult.value = {
+      status: 'error',
+      errorSummary: 'Local API token required. Configure it in Settings.',
+    }
+    return
+  }
+  checking.value = true
+  try {
+    validationResult.value = await validateTask({
+      planName: selectedTask.value.planName,
+      taskRef: selectedTask.value.taskRef,
+      strict: false,
+    })
+  } catch (error) {
+    validationResult.value = { status: 'error', errorSummary: errorMessage(error) }
+  } finally {
+    checking.value = false
+  }
+}
+
+async function dryRunSelectedTask() {
+  if (!selectedTask.value) return
+  if (!apiTokenConfigured.value) {
+    dryRunResult.value = {
+      status: 'error',
+      errorSummary: 'Local API token required. Configure it in Settings.',
+    }
+    return
+  }
+  checking.value = true
+  try {
+    dryRunResult.value = await dryRunTask({
+      planName: selectedTask.value.planName,
+      taskRef: selectedTask.value.taskRef,
+      strict: false,
+    })
+  } catch (error) {
+    dryRunResult.value = { status: 'error', errorSummary: errorMessage(error) }
+  } finally {
+    checking.value = false
+  }
+}
+
+function pretty(value) {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function compact(value) {
+  if (value === undefined) return '--'
+  if (value === null) return 'null'
+  if (typeof value === 'string') return value || '--'
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
 }
 
 onMounted(refreshAll)
 </script>
 
 <style scoped>
-.plans-page {
-  gap: 20px;
-}
-
-.plans-header {
-  padding: 18px;
-  border: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(59, 68, 72, 0.92), rgba(39, 46, 49, 0.92));
-  box-shadow: var(--shadow-plate), var(--shadow-inset);
-}
-
-.folio-board {
+.library-grid {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  gap: 18px;
-  min-height: calc(100vh - 250px);
-}
-
-.folio-board__index,
-.task-strip,
-.dossier-sheet {
-  border: 1px solid rgba(224, 214, 186, 0.1);
-  background: linear-gradient(180deg, rgba(56, 64, 68, 0.94), rgba(37, 45, 48, 0.94));
-  box-shadow: var(--shadow-plate), var(--shadow-inset);
-}
-
-.folio-board__index {
-  display: flex;
-  flex-direction: column;
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 14px;
-  padding: 16px;
+  align-items: start;
 }
 
-.folio-board__index-list,
-.task-strip__list {
+.library-index,
+.task-detail {
+  min-width: 0;
+}
+
+.plan-list,
+.task-list {
   display: flex;
-  min-height: 0;
   flex-direction: column;
-  gap: 10px;
-  overflow: auto;
-  padding-right: 6px;
+  gap: 8px;
 }
 
-.folio-board__content {
-  display: grid;
-  grid-template-rows: 260px minmax(0, 1fr);
-  gap: 18px;
-  min-height: 0;
-}
-
-.task-strip {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  gap: 12px;
-  padding: 16px;
-}
-
-.task-strip__head {
+.plan-row,
+.task-row {
   display: flex;
+  width: 100%;
+  min-width: 0;
   justify-content: space-between;
-  gap: 12px;
-  align-items: end;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
 }
 
-.task-strip__title,
-.dossier-sheet__title,
-.plan-folder strong,
-.task-slip__title {
-  color: var(--paper-2);
-  font-family: var(--font-display);
-  font-size: 30px;
-  letter-spacing: 0.08em;
-  line-height: 0.9;
-  text-transform: uppercase;
+.plan-row:hover,
+.task-row:hover,
+.plan-row.is-active,
+.task-row.is-active {
+  border-color: var(--border-strong);
+  background: var(--bg-elevated);
 }
 
-.plan-folder,
-.task-slip {
+.plan-row.is-active,
+.task-row.is-active {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.plan-row span,
+.task-row {
+  min-width: 0;
+}
+
+.plan-row span:first-child,
+.task-row {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px 14px;
-  border: 1px solid rgba(224, 214, 186, 0.1);
-  background: rgba(25, 31, 33, 0.32);
-  color: var(--text-main);
-  text-align: left;
-  cursor: pointer;
 }
 
-.plan-folder.is-active,
-.task-slip.is-active {
-  border-color: rgba(199, 104, 63, 0.22);
-  background: linear-gradient(90deg, rgba(199, 104, 63, 0.14), rgba(25, 31, 33, 0.4));
+.plan-row small {
+  color: var(--text-muted);
 }
 
-.plan-folder span,
-.task-slip code {
-  color: var(--text-soft);
-  font-size: 12px;
+.detail-tabs {
+  margin-bottom: 14px;
 }
 
-.dossier-sheet {
-  min-height: 0;
-  padding: 16px;
-}
-
-.dossier-sheet__body {
+.detail-section {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  min-height: 0;
-}
-
-.dossier-sheet__head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: start;
-  flex-wrap: wrap;
-}
-
-.dossier-sheet__pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.dossier-sheet__desc {
-  margin: 0;
-  color: var(--text-soft);
-  line-height: 1.7;
-}
-
-.dossier-sheet__grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
   gap: 14px;
 }
 
-.dossier-block,
-.error-notes {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid rgba(224, 214, 186, 0.1);
-  background: rgba(25, 31, 33, 0.32);
-}
-
-.step-slips {
-  display: flex;
-  flex-direction: column;
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
-.step-slip {
+.meta-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-2);
+}
+
+.meta-card span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.description {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.raw-block,
+.result-block {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid rgba(224, 214, 186, 0.08);
-  background: rgba(18, 22, 24, 0.28);
 }
 
-.error-notes__item {
-  color: #e8c1bb;
-  font-size: 12px;
-  line-height: 1.6;
+summary {
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.notice {
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.notice-danger {
+  border-color: rgba(239, 91, 91, 0.34);
+  background: var(--danger-soft);
+  color: #ffb4b4;
+}
+
+@media (max-width: 1120px) {
+  .library-grid {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

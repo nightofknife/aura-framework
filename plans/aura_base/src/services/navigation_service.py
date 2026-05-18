@@ -98,7 +98,13 @@ class _TemplateHeadingDetector:
         return True, float(best_angle), best_score
 
 
-@service_info(alias="navigation", public=True, deps={"app": "app", "config": "core/config"})
+@service_info(
+    alias="navigation",
+    public=True,
+    deps={"app": "app", "config": "core/config"},
+    capabilities=["desktop.window.focus", "desktop.mouse.input", "desktop.keyboard.input"],
+    side_effect_level="input",
+)
 class NavigationService:
     def __init__(self, app: AppProviderService, config: ConfigService):
         self.app = app

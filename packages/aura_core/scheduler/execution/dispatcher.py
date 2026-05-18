@@ -45,6 +45,10 @@ class DispatchService:
                     await asyncio.sleep(queue_full_sleep)
                     continue
 
+                reload_barrier = getattr(self._scheduler, "reload_barrier", None)
+                if reload_barrier is not None and not reload_barrier.is_set():
+                    await reload_barrier.wait()
+
                 tasklet = await self._scheduler.task_queue.get()
                 self._scheduler._ensure_tasklet_identifiers(tasklet)
                 dequeued_at = time.time()
@@ -79,12 +83,17 @@ class DispatchService:
                 except Exception:
                     pass
 
-                submit_task = asyncio.create_task(self._scheduler.execution_manager.submit(tasklet))
-
                 key = tasklet.cid
+
+                reload_barrier = getattr(self._scheduler, "reload_barrier", None)
+                if reload_barrier is not None and not reload_barrier.is_set():
+                    await reload_barrier.wait()
 
                 logger.info(f"[Queue Consumer] task enqueued: key={key}")
                 with self._scheduler.fallback_lock:
+                    submit_task = asyncio.create_task(
+                        self._submit_main_tasklet(tasklet, plan_name, task_name, dequeued_at, queued_at)
+                    )
                     self._scheduler.running_tasks[key] = submit_task
                     self._scheduler._running_task_meta[key] = {
                         "plan_name": plan_name,
@@ -109,7 +118,12 @@ class DispatchService:
                             logger.debug(f"[consume_main_task_queue] running task key already removed={key}")
                     finally:
                         try:
-                            self._scheduler.task_queue.task_done()
+                            lease_token = getattr(tasklet, "_queue_lease_token", None)
+                            ack = getattr(self._scheduler.task_queue, "ack", None)
+                            if callable(ack):
+                                pass
+                            else:
+                                self._scheduler.task_queue.task_done()
                         except Exception:
                             pass
                         try:
@@ -139,13 +153,81 @@ class DispatchService:
                         except Exception:
                             logger.debug("queue.completed emit failed")
 
-                submit_task.add_done_callback(_cleanup)
+                # Cleanup and durable ack are handled by _submit_main_tasklet.
 
             except asyncio.CancelledError:
                 break
             except Exception:
                 logger.error("Error consuming main task queue", exc_info=True)
                 await asyncio.sleep(consumer_error_sleep)
+
+    async def _submit_main_tasklet(
+        self,
+        tasklet: Tasklet,
+        plan_name: str | None,
+        task_name: str | None,
+        dequeued_at: float,
+        queued_at: float,
+    ) -> None:
+        key = tasklet.cid
+        try:
+            await self._scheduler.execution_manager.submit(tasklet)
+        finally:
+            meta = {
+                "plan_name": plan_name,
+                "task_name": task_name,
+                "source": tasklet.source,
+                "trace_id": tasklet.trace_id,
+                "trace_label": tasklet.trace_label,
+                "dequeued_at": dequeued_at,
+                "queued_at": queued_at,
+            }
+            try:
+                with self._scheduler.fallback_lock:
+                    removed = self._scheduler.running_tasks.pop(key, None)
+                    meta = self._scheduler._running_task_meta.pop(key, meta)
+                if removed:
+                    logger.debug(f"[consume_main_task_queue] removed running task key={key}")
+                else:
+                    logger.debug(f"[consume_main_task_queue] running task key already removed={key}")
+            finally:
+                try:
+                    lease_token = getattr(tasklet, "_queue_lease_token", None)
+                    ack = getattr(self._scheduler.task_queue, "ack", None)
+                    if callable(ack):
+                        ok = await ack(key, lease_token)
+                        if not ok:
+                            logger.error("Failed to ack durable queue item cid=%s", key)
+                    else:
+                        self._scheduler.task_queue.task_done()
+                except Exception:
+                    logger.error("Failed to ack durable queue item cid=%s", key, exc_info=True)
+
+                try:
+                    end_ts = time.time()
+                    start_ts = meta.get("dequeued_at") or end_ts
+                    q_at = meta.get("queued_at") or start_ts
+                    exec_ms = max(0.0, (end_ts - start_ts) * 1000)
+                    q_wait = max(0.0, (start_ts - q_at) * 1000)
+                    await self._scheduler.event_bus.publish(
+                        Event(
+                            name="queue.completed",
+                            payload={
+                                "cid": key,
+                                "trace_id": meta.get("trace_id"),
+                                "trace_label": meta.get("trace_label"),
+                                "plan_name": meta.get("plan_name"),
+                                "task_name": meta.get("task_name"),
+                                "source": meta.get("source"),
+                                "dequeued_at": start_ts,
+                                "completed_at": end_ts,
+                                "queue_wait_ms": q_wait,
+                                "exec_ms": exec_ms,
+                            },
+                        )
+                    )
+                except Exception:
+                    logger.debug("queue.completed emit failed", exc_info=True)
 
     async def consume_interrupt_queue(self):
         while self._scheduler.is_running.is_set():
@@ -264,7 +346,12 @@ class DispatchService:
         )
         self._scheduler._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=resolved.task_ref, source=source)
         try:
-            await self._scheduler.task_queue.put(tasklet)
+            await self.enqueue_tasklet(
+                tasklet,
+                plan_name=plan_name,
+                task_name=resolved.task_ref,
+                priority=(task_def.get("priority") if isinstance(task_def, dict) else None),
+            )
             return True
         except Exception as exc:
             logger.error("Schedule '%s' enqueue failed: %s", item_id, exc, exc_info=True)
@@ -315,6 +402,7 @@ class DispatchService:
         success = await self._scheduler.task_queue.insert_at(index, tasklet)
 
         if success:
+            await self._publish_queue_enqueued(tasklet, plan_name=plan_name, task_name=resolved.task_ref)
             self._scheduler.update_run_status(status_id, {"status": "queued", "queued_at": datetime.now()})
             return {
                 "status": "success",
@@ -371,3 +459,50 @@ class DispatchService:
         if success:
             return {"status": "success", "message": "Queue reordered successfully"}
         return {"status": "error", "message": "Failed to reorder queue"}
+
+    async def enqueue_tasklet(
+        self,
+        tasklet: Tasklet,
+        *,
+        plan_name: str | None = None,
+        task_name: str | None = None,
+        priority: Any = None,
+        high_priority: bool = False,
+    ) -> None:
+        await self._scheduler.task_queue.put(tasklet, high_priority=high_priority)
+        await self._publish_queue_enqueued(tasklet, plan_name=plan_name, task_name=task_name, priority=priority)
+
+    async def _publish_queue_enqueued(
+        self,
+        tasklet: Tasklet,
+        *,
+        plan_name: str | None = None,
+        task_name: str | None = None,
+        priority: Any = None,
+    ) -> None:
+        payload = tasklet.payload if isinstance(tasklet.payload, dict) else {}
+        if not plan_name:
+            plan_name = payload.get("plan_name")
+        if not task_name:
+            task_name = payload.get("task_name") or payload.get("task")
+        if (not plan_name or not task_name) and isinstance(tasklet.task_name, str) and "/" in tasklet.task_name:
+            plan_name, task_name = tasklet.task_name.split("/", 1)
+        try:
+            await self._scheduler.event_bus.publish(
+                Event(
+                    name="queue.enqueued",
+                    payload={
+                        "cid": tasklet.cid,
+                        "trace_id": tasklet.trace_id,
+                        "trace_label": tasklet.trace_label,
+                        "source": tasklet.source,
+                        "plan_name": plan_name,
+                        "task_name": task_name,
+                        "priority": priority,
+                        "enqueued_at": getattr(tasklet, "enqueued_at", None) or time.time(),
+                        "delay_until": None,
+                    },
+                )
+            )
+        except Exception:
+            logger.debug("queue.enqueued emit failed for %s", getattr(tasklet, "cid", None))

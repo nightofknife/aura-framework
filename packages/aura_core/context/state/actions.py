@@ -25,7 +25,7 @@ class StateSetParams(BaseModel):
     key: str = Field(..., description="要设置的键名。")
     value: Any = Field(..., description="要设置的值。")
 
-@action_info(name="state.set")
+@action_info(name="state.set", capabilities=['filesystem.write'])
 @requires_services(state_store="state_store")
 async def state_set(params: StateSetParams, state_store: StateStoreService):
     """在持久化状态存储中设置一个键值对。
@@ -49,7 +49,7 @@ class StateGetParams(BaseModel):
     key: str = Field(..., description="要获取的键名。")
     default: Any = Field(default=None, description="如果键不存在时返回的默认值。")
 
-@action_info(name="state.get", read_only=True)
+@action_info(name="state.get", read_only=True, capabilities=['filesystem.read'])
 @requires_services(state_store="state_store")
 async def state_get(params: StateGetParams, state_store: StateStoreService) -> Any:
     """从持久化状态存储中获取一个值。
@@ -70,7 +70,7 @@ class StateDeleteParams(BaseModel):
     """`state.delete` Action 的参数模型。"""
     key: str = Field(..., description="要删除的键名。")
 
-@action_info(name="state.delete")
+@action_info(name="state.delete", capabilities=['filesystem.write'])
 @requires_services(state_store="state_store")
 async def state_delete(params: StateDeleteParams, state_store: StateStoreService):
     """从持久化状态存储中删除一个键。
@@ -93,7 +93,7 @@ class EchoParams(BaseModel):
     message: Any = Field(..., description="??????")
 
 
-@action_info(name="sample.echo")
+@action_info(name="sample.echo", capabilities=['network.local'])
 async def sample_echo(params: EchoParams):
     """???????????? demo?"""
     return params.message
@@ -104,7 +104,7 @@ class SleepParams(BaseModel):
     seconds: float = Field(..., description="?????????")
 
 
-@action_info(name="sample.sleep")
+@action_info(name="sample.sleep", capabilities=['network.local'])
 async def sample_sleep(params: SleepParams):
     """????????????"""
     await asyncio.sleep(max(0.0, float(params.seconds)))

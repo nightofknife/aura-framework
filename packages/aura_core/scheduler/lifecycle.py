@@ -323,18 +323,28 @@ class LifecycleManager:
             return method()
 
     def initialize_async_components(self):
+        from packages.aura_core.scheduler.queues.durable_queue import DurableTaskQueue
         from packages.aura_core.scheduler.queues.task_queue import TaskQueue
 
         logger.debug("Initializing async scheduler components...")
 
         self.scheduler.is_running = asyncio.Event()
+        self.scheduler.reload_barrier = asyncio.Event()
+        self.scheduler.reload_barrier.set()
 
         if not hasattr(self.scheduler, "api_log_queue") or self.scheduler.api_log_queue is None:
             self.scheduler.api_log_queue = queue.Queue(maxsize=0)
 
-        self.scheduler.task_queue = TaskQueue(
-            maxsize=int(get_config_value("scheduler.queue.main_maxsize", 1000))
-        )
+        main_maxsize = int(get_config_value("scheduler.queue.main_maxsize", 1000))
+        durable_enabled = bool(get_config_value("scheduler.queue.main_durable", True))
+        if durable_enabled and getattr(self.scheduler, "observability", None) is not None:
+            self.scheduler.task_queue = DurableTaskQueue(
+                run_store=self.scheduler.observability.run_store,
+                maxsize=main_maxsize,
+                lease_ttl_sec=float(get_config_value("scheduler.queue.lease_ttl_sec", 3600.0)),
+            )
+        else:
+            self.scheduler.task_queue = TaskQueue(maxsize=main_maxsize)
         self.scheduler.event_task_queue = TaskQueue(
             maxsize=int(get_config_value("scheduler.queue.event_maxsize", 2000))
         )

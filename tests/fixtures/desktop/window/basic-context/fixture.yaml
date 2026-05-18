@@ -1,0 +1,24 @@
+fixture_schema_version: 2
+id: window/basic-context
+desktop_profile: fixture
+window:
+  title: Fake Window
+  class_name: AuraFakeWindow
+  hwnd: 1
+  screen_rect: [0, 0, 1280, 720]
+  client_rect: [0, 0, 1280, 720]
+  dpi_scale: 1.0
+expected:
+  actions:
+    - action: plans/aura_base/focus_window
+      backend: fake
+      ok: true
+      data:
+        focused: true
+  window:
+    title: Fake Window
+    class_name: AuraFakeWindow
+    hwnd: 1
+    screen_rect: [0, 0, 1280, 720]
+    client_rect: [0, 0, 1280, 720]
+    dpi_scale: 1.0

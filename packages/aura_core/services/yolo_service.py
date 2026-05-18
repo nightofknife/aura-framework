@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import threading
 from dataclasses import dataclass
@@ -10,6 +11,11 @@ from packages.aura_core.api import service_info
 from packages.aura_core.config.service import ConfigService
 from packages.aura_core.context.plan import current_plan_name
 from packages.aura_core.observability.logging.core_logger import logger
+from packages.aura_core.utils.safe_paths import is_windows_absolute_like
+
+
+class ModelTrustError(ValueError):
+    """Raised when a requested YOLO model source is outside trusted roots."""
 
 
 @dataclass(frozen=True)
@@ -20,12 +26,16 @@ class YoloModelReference:
     family: Optional[str] = None
     variant: Optional[str] = None
     is_path: bool = False
+    source_kind: str = "alias"
+    sha256: Optional[str] = None
 
 
 @service_info(
     alias="yolo",
     public=True,
     description="Core Ultralytics YOLO service with model-family support for YOLO 8/10/11/26.",
+    capabilities=["desktop.capture.read", "filesystem.read"],
+    side_effect_level="read",
 )
 class YoloService:
     _SUPPORTED_FAMILIES = ("yolo8", "yolo10", "yolo11", "yolo26")
@@ -87,6 +97,8 @@ class YoloService:
                 family=self._infer_family_from_name(resolved_path.stem),
                 variant=self._infer_variant_from_name(resolved_path.stem),
                 is_path=True,
+                source_kind="path",
+                sha256=_sha256_file(resolved_path) if resolved_path.is_file() else None,
             )
 
         canonical_family = None
@@ -103,6 +115,7 @@ class YoloService:
                 family=canonical_family,
                 variant=resolved_variant,
                 is_path=False,
+                source_kind="official_alias",
             )
 
         lowered = raw.lower()
@@ -117,6 +130,7 @@ class YoloService:
                 family=canonical_family,
                 variant=resolved_variant,
                 is_path=False,
+                source_kind="official_alias",
             )
 
         return YoloModelReference(
@@ -126,6 +140,7 @@ class YoloService:
             family=self._infer_family_from_name(raw),
             variant=self._infer_variant_from_name(raw),
             is_path=False,
+            source_kind="alias",
         )
 
     def preload_model(
@@ -143,9 +158,10 @@ class YoloService:
             if cache_key in self._models and not force_reload:
                 return self.get_model_info(cache_key)
 
+        load_source = self._trusted_load_source(model_ref)
         model_cls = self._load_yolo_class()
-        logger.info("Loading core YOLO model '%s' from '%s'", cache_key, model_ref.source)
-        model = model_cls(model_ref.source)
+        logger.info("Loading core YOLO model '%s' from '%s'", cache_key, load_source)
+        model = model_cls(load_source)
         class_names = self._extract_class_names(model)
 
         with self._lock:
@@ -209,6 +225,8 @@ class YoloService:
                 "variant": model_ref.variant if model_ref else None,
                 "source": model_ref.source if model_ref else None,
                 "is_path": model_ref.is_path if model_ref else False,
+                "source_kind": model_ref.source_kind if model_ref else None,
+                "sha256": model_ref.sha256 if model_ref else None,
                 "class_count": len(self._class_names.get(model_name, {})),
             }
 
@@ -437,22 +455,100 @@ class YoloService:
 
     def _resolve_explicit_path(self, raw: str) -> Path:
         candidate = Path(raw)
-        if candidate.is_absolute():
-            return candidate.resolve()
-
         base_path = self._repo_root()
+        if candidate.is_absolute() or is_windows_absolute_like(raw):
+            resolved = candidate.resolve(strict=False)
+            if not bool(self._config.get("yolo.allow_absolute_model_paths", False)):
+                raise ModelTrustError(f"model_path_untrusted: absolute YOLO model paths are disabled: {raw}")
+            if not self._is_under_any_trusted_root(resolved):
+                raise ModelTrustError(f"model_path_untrusted: YOLO model path is outside trusted roots: {resolved}")
+            if not resolved.is_file():
+                raise ModelTrustError(f"model_path_untrusted: YOLO model file not found: {resolved}")
+            return resolved
+
         plan_name = current_plan_name.get()
+        candidates: list[Path] = []
         if plan_name:
-            plan_candidate = (base_path / "plans" / plan_name / candidate).resolve()
-            if plan_candidate.exists():
-                return plan_candidate
+            for root in self._plan_model_roots(plan_name):
+                candidates.append((root / candidate).resolve())
+                candidates.append((root / candidate.name).resolve())
 
-        direct_candidate = (base_path / candidate).resolve()
-        if direct_candidate.exists():
-            return direct_candidate
+        candidates.append((base_path / candidate).resolve())
+        for root in self._trusted_model_roots(include_plan=False):
+            candidates.append((root / candidate).resolve())
+            candidates.append((root / candidate.name).resolve())
 
-        models_root = (base_path / str(self._config.get("yolo.models_root", "models/yolo"))).resolve()
-        return (models_root / candidate.name).resolve()
+        for item in _dedupe_paths(candidates):
+            if item.is_file() and self._is_under_any_trusted_root(item):
+                return item
+
+        raise ModelTrustError(f"model_path_untrusted: YOLO model path is not under trusted roots or does not exist: {raw}")
+
+    def _trusted_load_source(self, model_ref: YoloModelReference) -> str:
+        if model_ref.is_path:
+            resolved = Path(model_ref.source).resolve(strict=False)
+            if not resolved.is_file() or not self._is_under_any_trusted_root(resolved):
+                raise ModelTrustError(f"model_path_untrusted: YOLO model path is outside trusted roots: {model_ref.source}")
+            return str(resolved)
+
+        if model_ref.source_kind == "official_alias":
+            local = self._find_local_official_model(model_ref.source)
+            if local is not None:
+                return str(local)
+            if bool(self._config.get("yolo.allow_auto_download", False)):
+                return model_ref.source
+            raise ModelTrustError(
+                "model_path_untrusted: YOLO auto-download is disabled; place the model under "
+                f"{self._models_root()} or enable yolo.allow_auto_download with network.remote policy."
+            )
+
+        if bool(self._config.get("yolo.allow_auto_download", False)):
+            return model_ref.source
+        raise ModelTrustError(f"model_path_untrusted: untrusted YOLO model alias: {model_ref.source}")
+
+    def _models_root(self) -> Path:
+        configured = Path(str(self._config.get("yolo.models_root", "models/yolo")))
+        if configured.is_absolute() or is_windows_absolute_like(str(configured)):
+            return configured.resolve()
+        return (self._repo_root() / configured).resolve()
+
+    def _trusted_model_roots(self, *, include_plan: bool = True) -> list[Path]:
+        roots = [self._models_root()]
+        if include_plan:
+            plan_name = current_plan_name.get()
+            if plan_name:
+                roots.extend(self._plan_model_roots(plan_name))
+        configured = self._config.get("yolo.trusted_model_roots", []) or []
+        if isinstance(configured, str):
+            configured = [item.strip() for item in configured.split(";") if item.strip()]
+        for item in configured:
+            path = Path(str(item))
+            roots.append(path.resolve() if path.is_absolute() or is_windows_absolute_like(str(path)) else (self._repo_root() / path).resolve())
+        return _dedupe_paths(roots)
+
+    def _plan_model_roots(self, plan_name: str) -> list[Path]:
+        plan_root = (self._repo_root() / "plans" / str(plan_name).strip("/\\")).resolve()
+        return [(plan_root / "models").resolve(), (plan_root / "resources" / "models").resolve()]
+
+    def _is_under_any_trusted_root(self, path: Path) -> bool:
+        resolved = path.resolve(strict=False)
+        for root in self._trusted_model_roots():
+            try:
+                resolved.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _find_local_official_model(self, model_source: str) -> Optional[Path]:
+        candidates = []
+        for root in self._trusted_model_roots():
+            candidates.append((root / model_source).resolve())
+            candidates.append((root / Path(model_source).name).resolve())
+        for item in _dedupe_paths(candidates):
+            if item.is_file() and self._is_under_any_trusted_root(item):
+                return item
+        return None
 
     @staticmethod
     def _to_native_sequence(value: Any) -> List[Any]:
@@ -503,3 +599,26 @@ class YoloService:
         if isinstance(window_rect, (list, tuple)) and len(window_rect) >= 2:
             return int(window_rect[0]), int(window_rect[1])
         return 0, 0
+
+
+def _dedupe_paths(paths: Sequence[Path]) -> list[Path]:
+    rows: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        rows.append(path)
+        seen.add(key)
+    return rows
+
+
+def _sha256_file(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return f"sha256:{digest.hexdigest()}"
+    except OSError:
+        return None

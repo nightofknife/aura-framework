@@ -1,0 +1,108 @@
+name: Release Pack
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the leading v
+        required: true
+        default: "0.1.0"
+
+permissions:
+  contents: write
+
+env:
+  PYTHONNOUSERSITE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  release-pack:
+    name: Build release artifacts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: aura_gui/package-lock.json
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-pack-${{ hashFiles('requirements/**/*.txt', 'requirements/**/*.lock') }}
+
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}"
+          } else {
+            $version = "${{ github.ref_name }}"
+            if ($version.StartsWith("v")) {
+              $version = $version.Substring(1)
+            }
+          }
+          if (-not $version) {
+            throw "Release version is empty."
+          }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Release version: $version"
+
+      - name: Setup test runtime
+        shell: pwsh
+        run: .\scripts\setup_test_runtime.ps1 -BasePython "$env:pythonLocation\python.exe"
+
+      - name: Install GUI dependencies
+        working-directory: aura_gui
+        run: npm ci
+
+      - name: Build release package set
+        shell: pwsh
+        run: .\.venv-test\Scripts\python.exe cli.py release pack --version "$env:RELEASE_VERSION" --output dist\release
+
+      - name: Smoke release artifacts
+        shell: pwsh
+        run: .\.venv-test\Scripts\python.exe scripts\verify_release_artifacts.py --release-dir dist\release --version "$env:RELEASE_VERSION"
+
+      - name: Upload release artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-release-${{ env.RELEASE_VERSION }}
+          path: |
+            dist/release/AuraRuntime-win-x64-${{ env.RELEASE_VERSION }}.zip
+            dist/release/AuraGUI-win-x64-${{ env.RELEASE_VERSION }}.zip
+            dist/release/aura_base-${{ env.RELEASE_VERSION }}.aura
+            dist/release/release-manifest.json
+            dist/release/checksums.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $files = @(
+            "dist/release/AuraRuntime-win-x64-$env:RELEASE_VERSION.zip",
+            "dist/release/AuraGUI-win-x64-$env:RELEASE_VERSION.zip",
+            "dist/release/aura_base-$env:RELEASE_VERSION.aura",
+            "dist/release/release-manifest.json",
+            "dist/release/checksums.sha256"
+          )
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag @files --clobber
+          } else {
+            gh release create $tag @files --title "Aura $env:RELEASE_VERSION" --notes "Aura Runtime, GUI Desktop, and official aura_base package." --verify-tag
+          }

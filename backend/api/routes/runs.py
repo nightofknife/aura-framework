@@ -119,7 +119,67 @@ def get_run_detail(cid: str) -> RunDetailResponse:
         user_data=user_data,
         framework_data=framework_data,
         nodes=run.get("nodes") or [],
+        action_results=run.get("action_results") or [],
+        policy_decisions=run.get("policy_decisions") or [],
+        evidence=run.get("evidence") or [],
     )
+
+
+@router.get("/runs/{cid}/evidence")
+def get_run_evidence(cid: str) -> Dict[str, Any]:
+    scheduler = peek_core_scheduler()
+    if scheduler is None:
+        raise HTTPException(status_code=404, detail=f"Run '{cid}' not found.")
+    run = scheduler.get_run_detail(cid)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{cid}' not found.")
+    return {
+        "cid": cid,
+        "evidence": run.get("evidence") or [],
+        "action_results": [
+            {
+                "node_id": item.get("node_id"),
+                "action": item.get("action"),
+                "backend": item.get("backend"),
+                "evidence": item.get("evidence") or [],
+            }
+            for item in (run.get("action_results") or [])
+            if isinstance(item, dict)
+        ],
+    }
+
+
+@router.get("/runs/{cid}/evidence/manifest")
+def get_run_evidence_manifest(cid: str) -> Dict[str, Any]:
+    scheduler = peek_core_scheduler()
+    if scheduler is None:
+        raise HTTPException(status_code=404, detail=f"Run '{cid}' not found.")
+    run = scheduler.get_run_detail(cid)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{cid}' not found.")
+    return scheduler.observability.run_store.evidence_manifest(cid)
+
+
+@router.get("/runs/{cid}/locators")
+def get_run_locators(cid: str) -> Dict[str, Any]:
+    scheduler = peek_core_scheduler()
+    if scheduler is None:
+        raise HTTPException(status_code=404, detail=f"Run '{cid}' not found.")
+    run = scheduler.get_run_detail(cid)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{cid}' not found.")
+    return {"cid": cid, "locators": scheduler.observability.run_store.list_locators(cid)}
+
+
+@router.get("/runs/{cid}/debug-report")
+def get_run_debug_report(cid: str) -> Dict[str, Any]:
+    scheduler = peek_core_scheduler()
+    if scheduler is None:
+        raise HTTPException(status_code=404, detail=f"Run '{cid}' not found.")
+    report = scheduler.observability.run_store.debug_report(cid)
+    if report.get("status") != "success":
+        raise HTTPException(status_code=404, detail=f"Run '{cid}' not found.")
+    return report
 
 
 @router.get("/run/{cid}/detail")

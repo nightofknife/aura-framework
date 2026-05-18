@@ -1,0 +1,127 @@
+name: PR CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONNOUSERSITE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  python-preflight:
+    name: Python preflight
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-runtime-${{ hashFiles('requirements/**/*.txt', 'requirements/**/*.lock') }}
+
+      - name: Setup runtime
+        shell: pwsh
+        run: .\scripts\setup_python_runtime.ps1 -BasePython "$env:pythonLocation\python.exe"
+
+      - name: Preflight runtime
+        shell: pwsh
+        run: .\scripts\build_preflight.ps1
+
+  pytest-fast:
+    name: Pytest fast
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-test-${{ hashFiles('requirements/**/*.txt', 'requirements/**/*.lock') }}
+
+      - name: Setup test runtime
+        shell: pwsh
+        run: .\scripts\setup_test_runtime.ps1 -BasePython "$env:pythonLocation\python.exe"
+
+      - name: Run default pytest layer
+        shell: pwsh
+        run: .\scripts\run_tests.ps1
+
+  gui-build:
+    name: GUI build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: aura_gui/package-lock.json
+
+      - name: Install GUI dependencies
+        working-directory: aura_gui
+        run: npm ci
+
+      - name: Build GUI
+        working-directory: aura_gui
+        run: npm run build
+
+      - name: Check Electron entrypoints
+        shell: pwsh
+        run: |
+          node --check aura_gui\electron\main.cjs
+          node --check aura_gui\electron\preload.cjs
+
+  contract-security:
+    name: Contract and security checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-contract-${{ hashFiles('requirements/**/*.txt', 'requirements/**/*.lock') }}
+
+      - name: Setup test runtime
+        shell: pwsh
+        run: .\scripts\setup_test_runtime.ps1 -BasePython "$env:pythonLocation\python.exe"
+
+      - name: Run framework contract checks
+        shell: pwsh
+        run: |
+          .\.venv-test\Scripts\python.exe cli.py core smoke --profile framework-core --minimal-workspace
+          .\.venv-test\Scripts\python.exe cli.py validate --strict
+          .\.venv-test\Scripts\python.exe cli.py package doctor --format json
+          .\.venv-test\Scripts\python.exe cli.py package deps doctor plans/aura_base --format json
+          .\.venv-test\Scripts\python.exe cli.py policy doctor
+          .\.venv-test\Scripts\python.exe cli.py sdk doctor
+          .\.venv-test\Scripts\python.exe cli.py migration status
+          .\.venv-test\Scripts\python.exe cli.py compat check --format json
+          .\.venv-test\Scripts\python.exe cli.py fixture verify-all --format json

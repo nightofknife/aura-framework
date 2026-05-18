@@ -1,4 +1,6 @@
 .venv/
+.venv-test/
+.aura_tmp/
 .runtime/
 .idea/
 .pytest_cache/
@@ -6,6 +8,7 @@
 __pycache__/
 *.pyc
 logs/
+.env
 python-runtime.local.ps1
 *.log
 .venv_py313_freeze_*.txt
@@ -14,6 +17,8 @@ null
 aura_gui/null
 aura_gui/node_modules/
 aura_gui/dist/
+aura_gui/release/
+dist/
 
 # Local-only plans and tests
 plans/resonance/

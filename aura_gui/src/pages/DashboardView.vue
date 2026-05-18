@@ -186,15 +186,15 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue';
-import axios from 'axios';
 import { getGuiConfig } from '../config.js';
+import { createAuraAxiosClient } from '../api/client.js';
 import { useAuraSockets } from '../composables/useAuraSockets.js';
 import { useRuns } from '../composables/useRuns.js';
 import { useQueueStore } from '../composables/useQueueStore.js';
 
 const cfg = getGuiConfig();
 const API_BASE = cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1';
-const api = axios.create({ baseURL: API_BASE, timeout: cfg?.api?.timeout_ms || 5000 });
+const api = createAuraAxiosClient({ baseURL: API_BASE, timeout: cfg?.api?.timeout_ms || 5000 });
 const LOG_DISPLAY_LEVEL = (cfg?.logs?.display_level || 'info').toLowerCase();
 
 const { logs, events } = useAuraSockets();

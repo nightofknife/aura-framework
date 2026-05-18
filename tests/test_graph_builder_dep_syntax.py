@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 from enum import Enum
 
+import pytest
+
 from packages.aura_core.engine.graph_builder import GraphBuilder
+
+pytestmark = pytest.mark.unit
 
 
 class _StepState(Enum):

@@ -111,14 +111,14 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import axios from 'axios';
+import { createAuraAxiosClient } from '../api/client.js';
 import { getGuiConfig } from '../config.js';
 import ProFilterBar from '../components/ProFilterBar.vue';
 import ProDataTable from '../components/ProDataTable.vue';
 import ProContextPanel from '../components/ProContextPanel.vue';
 
 const cfg = getGuiConfig();
-const api = axios.create({
+const api = createAuraAxiosClient({
   baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
   timeout: cfg?.api?.timeout_ms || 10000,
 });

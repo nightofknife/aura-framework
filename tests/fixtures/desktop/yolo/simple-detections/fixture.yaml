@@ -1,0 +1,28 @@
+fixture_schema_version: 2
+id: yolo/simple-detections
+desktop_profile: fixture
+capture:
+  backend: fake
+  image: capture/basic-screen.png
+expected:
+  actions:
+    - action: plans/aura_base/yolo_detect_image
+      backend: fake
+      ok: true
+      data:
+        detections: 1
+  yolo:
+    - model: yolo11n
+      class_id: 0
+      label: target
+      confidence: 0.91
+      bbox: [220, 180, 64, 64]
+      source: fixture://capture/basic-screen.png
+  locators:
+    - method: yolo
+      backend: fake
+      source: fixture://capture/basic-screen.png
+      bbox: [220, 180, 64, 64]
+      center: [252, 212]
+      score: 0.91
+      threshold: 0.5

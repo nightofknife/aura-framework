@@ -96,6 +96,7 @@ class Scheduler:
 
         self.pause_event = asyncio.Event()
         self.pause_event.set()
+        self.reload_barrier: Optional[asyncio.Event] = None
 
         self.id_generator = SnowflakeGenerator(
             instance=int(get_config_value("id_generator.instance_id", 1)),
@@ -650,6 +651,27 @@ class Scheduler:
         """Perform a full destructive reload."""
         return await self.hot_reload_control.reload_all()
 
+    def get_reload_status(self) -> Dict[str, Any]:
+        return self.hot_reload_control.get_reload_status()
+
+    def plan_runtime_reload(self, package_id: Optional[str] = None, *, mode: str = "runtime") -> Dict[str, Any]:
+        return self.hot_reload_control.plan_reload(package_id=package_id, mode=mode)
+
+    async def apply_runtime_reload(
+        self,
+        package_id: Optional[str] = None,
+        *,
+        mode: str = "runtime",
+        drain: bool = False,
+        timeout_sec: float = 30.0,
+    ) -> Dict[str, Any]:
+        return await self.hot_reload_control.apply_reload(
+            package_id=package_id,
+            mode=mode,
+            drain=drain,
+            timeout_sec=timeout_sec,
+        )
+
     def enable_hot_reload(self):
         """Enable file-system watch to hot reload plan/task files."""
         return self.hot_reload_control.enable_hot_reload()
@@ -698,6 +720,24 @@ class Scheduler:
     async def queue_reorder(self, cid_order: List[str]) -> Dict[str, Any]:
         """Reorder the queue."""
         return await self.dispatch.queue_reorder(cid_order)
+
+    def queue_recovery_status(self) -> Dict[str, Any]:
+        task_queue = getattr(self, "task_queue", None)
+        if task_queue is not None and hasattr(task_queue, "recovery_status"):
+            return task_queue.recovery_status()
+        return {"status": "success", "recoverable_count": 0, "stale_leased_count": 0, "items": []}
+
+    def queue_recover(self) -> Dict[str, Any]:
+        task_queue = getattr(self, "task_queue", None)
+        if task_queue is not None and hasattr(task_queue, "recover"):
+            return task_queue.recover()
+        return {"status": "success", "recovered": [], "abandoned": []}
+
+    def queue_abandon_stale(self) -> Dict[str, Any]:
+        task_queue = getattr(self, "task_queue", None)
+        if task_queue is not None and hasattr(task_queue, "abandon_stale"):
+            return task_queue.abandon_stale()
+        return {"status": "success", "abandoned": []}
 
     def update_task_priority(self, cid: str, new_priority: int) -> Dict[str, Any]:
         """调整指定任务的优先级。

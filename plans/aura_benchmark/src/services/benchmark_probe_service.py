@@ -14,6 +14,8 @@ from packages.aura_core.api import service_info
     public=True,
     singleton=True,
     description="Collects runtime concurrency and latency metrics for benchmark tasks.",
+    capabilities=["network.local"],
+    side_effect_level="read",
 )
 class BenchmarkProbeService:
     def __init__(self):

@@ -223,7 +223,10 @@ class ExportScanner:
         positional_defaults = [None] * (len(node.args.args) - len(node.args.defaults)) + list(node.args.defaults)
         parameters: List[Dict[str, Any]] = []
         for arg, default in zip(node.args.args, positional_defaults):
-            if arg.arg in {"self", "context", "engine"}:
+            if arg.arg in {"self", "context", "engine", "action_context"}:
+                continue
+            annotation = self._annotation_name(arg.annotation)
+            if annotation in {"ActionContext", "EvidenceWriter", "PolicyContext", "ActionResultBuilder"}:
                 continue
             if arg.arg in service_deps:
                 continue
@@ -236,6 +239,20 @@ class ExportScanner:
                 }
             )
         return parameters
+
+    @staticmethod
+    def _annotation_name(annotation: ast.AST | None) -> str:
+        if annotation is None:
+            return ""
+        if isinstance(annotation, ast.Name):
+            return annotation.id
+        if isinstance(annotation, ast.Attribute):
+            return annotation.attr
+        if isinstance(annotation, ast.Constant):
+            return str(annotation.value)
+        if isinstance(annotation, ast.Subscript):
+            return ExportScanner._annotation_name(annotation.value)
+        return ""
 
     def _validate_service_deps(self, deps: Dict[str, str], py_file: Path):
         for dependency in deps.values():

@@ -1,22 +1,23 @@
 html {
-  scrollbar-color: rgba(240, 223, 179, 0.28) rgba(6, 16, 27, 0.2);
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 body ::-webkit-scrollbar {
-  width: 11px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
 }
 
 body ::-webkit-scrollbar-track {
-  background: rgba(6, 16, 27, 0.35);
+  background: transparent;
 }
 
 body ::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(213, 187, 134, 0.34), rgba(239, 106, 62, 0.26));
-  border: 2px solid rgba(6, 16, 27, 0.5);
+  border: 2px solid var(--bg-app);
+  border-radius: 999px;
+  background: var(--border-strong);
 }
 
 ::selection {
-  background: rgba(239, 106, 62, 0.28);
-  color: var(--sand-bright);
+  background: var(--accent-soft);
+  color: var(--text-primary);
 }

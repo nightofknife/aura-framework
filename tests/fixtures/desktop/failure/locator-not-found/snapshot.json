@@ -1,0 +1,42 @@
+{
+  "status": "error",
+  "fixture": {
+    "id": "failure/locator-not-found",
+    "desktop_profile": "fixture",
+    "schema_version": 2
+  },
+  "action_results": [
+    {
+      "ok": false,
+      "action": "plans/aura_base/find_image",
+      "backend": "fake",
+      "data": {
+        "value": {
+          "found": false,
+          "error_code": "locator_not_found"
+        }
+      }
+    }
+  ],
+  "captures": [],
+  "locators": [
+    {
+      "method": "template",
+      "backend": "fake",
+      "source": "fixture://capture/basic-screen.png",
+      "bbox": null,
+      "center": null,
+      "score": 0.0,
+      "threshold": 0.9,
+      "error_code": "locator_not_found",
+      "candidates": []
+    }
+  ],
+  "ocr": [],
+  "yolo": [],
+  "window": null,
+  "diagnostics": {
+    "error_category": "locator_not_found",
+    "suggestion": "Review captured evidence and locator thresholds."
+  }
+}

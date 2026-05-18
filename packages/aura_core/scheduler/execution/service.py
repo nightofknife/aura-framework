@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from packages.aura_core.observability.events import Event, EventBus
 from packages.aura_core.observability.logging.core_logger import logger
 from packages.aura_core.scheduler.queues.task_queue import Tasklet
 from packages.aura_core.types import TaskRefResolver
@@ -113,26 +111,12 @@ class ExecutionService:
             return {"status": "error", "message": f"Create Tasklet failed: {exc}"}
 
         async def _enqueue():
-            try:
-                await self._scheduler.event_bus.publish(
-                    Event(
-                        name="queue.enqueued",
-                        payload={
-                            "cid": tasklet.cid,
-                            "trace_id": tasklet.trace_id,
-                            "trace_label": tasklet.trace_label,
-                            "source": tasklet.source,
-                            "plan_name": plan_name,
-                            "task_name": resolved.task_ref,
-                            "priority": None,
-                            "enqueued_at": time.time(),
-                            "delay_until": None,
-                        },
-                    )
-                )
-            except Exception:
-                pass
-            await self._scheduler.task_queue.put(tasklet)
+            await self._scheduler.dispatch.enqueue_tasklet(
+                tasklet,
+                plan_name=plan_name,
+                task_name=resolved.task_ref,
+                priority=None,
+            )
 
         try:
             self._run_on_control_loop(_enqueue(), timeout=5.0)
@@ -195,31 +179,16 @@ class ExecutionService:
                 self._scheduler._ensure_tasklet_identifiers(tasklet, plan_name=plan_name, task_name=resolved.task_ref, source="manual")
 
             if self._scheduler.task_queue:
-                await self._scheduler.task_queue.put(tasklet)
+                await self._scheduler.dispatch.enqueue_tasklet(
+                    tasklet,
+                    plan_name=plan_name,
+                    task_name=resolved.task_ref,
+                    priority=(self._scheduler.all_tasks_definitions.get(full_task_id) or {}).get("priority"),
+                )
                 await self._scheduler._async_update_run_status(
                     status_id,
                     {"status": "queued", "queued_at": datetime.now()},
                 )
-
-                try:
-                    await self._scheduler.event_bus.publish(
-                        Event(
-                            name="queue.enqueued",
-                            payload={
-                                "cid": tasklet.cid,
-                                "trace_id": tasklet.trace_id,
-                                "trace_label": tasklet.trace_label,
-                                "source": tasklet.source,
-                                "plan_name": plan_name,
-                                "task_name": resolved.task_ref,
-                                "priority": (self._scheduler.all_tasks_definitions.get(full_task_id) or {}).get("priority"),
-                                "enqueued_at": datetime.now().timestamp(),
-                                "delay_until": None,
-                            },
-                        )
-                    )
-                except Exception:
-                    pass
 
             return {
                 "status": "success",

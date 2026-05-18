@@ -29,7 +29,7 @@ exports:
     public: true
     singleton: true
     replace: null
-    description: 【异步升级版】一个统一的、高级的键鼠控制器。
+    description: Synchronous-compatible mouse and keyboard controller.
   - name: navigation
     module: plans.aura_base.src.services.navigation_service
     class: NavigationService
@@ -57,7 +57,7 @@ exports:
     public: true
     singleton: true
     replace: null
-    description: Async screen capture service with sync facade.
+    description: Synchronous-compatible screen capture and window helper service.
   - name: vision
     module: plans.aura_base.src.services.vision_service
     class: VisionService
@@ -2113,4 +2113,4 @@ exports:
   tasks: []
 metadata:
   generated_by: ManifestGenerator
-  generated_at: '2026-04-04T14:02:09Z'
+  generated_at: '2026-05-16T08:46:33Z'

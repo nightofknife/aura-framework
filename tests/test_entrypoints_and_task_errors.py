@@ -8,10 +8,13 @@ import tempfile
 import textwrap
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
 from backend.api.dependencies import reset_core_scheduler
+
+pytestmark = pytest.mark.api
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -110,11 +113,13 @@ def test_api_smoke_and_task_error_exposure(monkeypatch):
 
     _build_workspace(workspace)
     monkeypatch.setenv("AURA_BASE_PATH", str(workspace))
+    monkeypatch.setenv("AURA_API_AUTH_KEY", "local-secret")
     reset_core_scheduler()
 
     app = create_app()
     try:
         with TestClient(app) as client:
+            headers = {"X-Aura-Api-Key": "local-secret"}
             health_resp = client.get("/api/v1/system/health")
             assert health_resp.status_code == 200
             assert health_resp.json()["status"] == "ok"
@@ -142,6 +147,7 @@ def test_api_smoke_and_task_error_exposure(monkeypatch):
 
             dispatch_resp = client.post(
                 "/api/v1/tasks/dispatch",
+                headers=headers,
                 json={
                     "plan_name": "demo",
                     "task_ref": "tasks:valid.yaml",
@@ -153,6 +159,7 @@ def test_api_smoke_and_task_error_exposure(monkeypatch):
 
             broken_dispatch = client.post(
                 "/api/v1/tasks/dispatch",
+                headers=headers,
                 json={
                     "plan_name": "demo",
                     "task_ref": "tasks:legacy.yaml",

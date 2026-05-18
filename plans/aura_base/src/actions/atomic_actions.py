@@ -10,14 +10,13 @@ from pydantic import BaseModel, Field
 
 # --- 核心导入 ---
 from packages.aura_core.api import action_info, requires_services
-from packages.aura_core.engine import ExecutionEngine
-# [MODIFIED] 导入新的ExecutionContext
-from packages.aura_core.context import ExecutionContext
+from packages.aura_core.sdk import ActionContext
+from packages.aura_core.utils.safe_paths import safe_resolve_under
+# [MODIFIED] 导入新的ActionContext
 from packages.aura_core.observability.events import EventBus, Event
 from packages.aura_core.utils.exceptions import StopTaskException
 from packages.aura_core.observability.logging.core_logger import logger
 # [MODIFIED] 导入新的StateStoreService
-from packages.aura_core.context.persistence.store_service import StateStoreService
 
 # --- 服务与数据模型导入 (来自本包) ---
 from ..services.app_provider_service import AppProviderService
@@ -26,14 +25,14 @@ from ..services.process_manager_service import ProcessManagerService
 from ..services.screen_service import ScreenService
 from ..services.vision_service import VisionService, MatchResult, MultiMatchResult
 
-def _resolve_template_path(engine: ExecutionEngine, vision: VisionService, template: str) -> str:
-    plan_path = engine.orchestrator.current_plan_path
-    plan_name = engine.orchestrator.plan_name
+def _resolve_template_path(action_context: ActionContext, vision: VisionService, template: str) -> str:
+    plan_path = Path(action_context.plan_path or ".")
+    plan_name = str(action_context.plan_name or "")
     return str(vision.resolve_template(plan_name, template, plan_path))
 
-def _expand_template_paths(engine: ExecutionEngine, vision: VisionService, templates_ref: str) -> List[Path]:
-    plan_path = engine.orchestrator.current_plan_path
-    plan_name = engine.orchestrator.plan_name
+def _expand_template_paths(action_context: ActionContext, vision: VisionService, templates_ref: str) -> List[Path]:
+    plan_path = Path(action_context.plan_path or ".")
+    plan_name = str(action_context.plan_name or "")
     return vision.expand_templates(plan_name, templates_ref, plan_path)
 
 
@@ -43,12 +42,12 @@ def _expand_template_paths(engine: ExecutionEngine, vision: VisionService, templ
 # ==============================================================================
 
 # --- Template Library Actions ---
-@action_info(name="register_template_library", public=True)
+@action_info(name="register_template_library", public=True, capabilities=['desktop.capture.read', 'filesystem.write'])
 @requires_services(vision='vision')
-def register_template_library(vision: VisionService, engine: ExecutionEngine, name: str, path: str,
+def register_template_library(vision: VisionService, action_context: ActionContext, name: str, path: str,
                               recursive: bool = False, extensions: Optional[List[str]] = None) -> bool:
-    plan_name = engine.orchestrator.plan_name
-    plan_path = engine.orchestrator.current_plan_path
+    plan_name = str(action_context.plan_name or "")
+    plan_path = Path(action_context.plan_path or ".")
     root_path = Path(path)
     if not root_path.is_absolute():
         root_path = plan_path / root_path
@@ -62,35 +61,35 @@ def register_template_library(vision: VisionService, engine: ExecutionEngine, na
     return True
 
 
-@action_info(name="unregister_template_library", public=True)
+@action_info(name="unregister_template_library", public=True, capabilities=['desktop.capture.read', 'filesystem.write'])
 @requires_services(vision='vision')
-def unregister_template_library(vision: VisionService, engine: ExecutionEngine, name: str) -> bool:
-    plan_name = engine.orchestrator.plan_name
+def unregister_template_library(vision: VisionService, action_context: ActionContext, name: str) -> bool:
+    plan_name = str(action_context.plan_name or "")
     vision.unregister_template_library(plan_key=plan_name, name=name)
     return True
 
 
-@action_info(name="list_template_libraries", read_only=True, public=True)
+@action_info(name="list_template_libraries", read_only=True, public=True, capabilities=['desktop.capture.read', 'filesystem.read'])
 @requires_services(vision='vision')
-def list_template_libraries(vision: VisionService, engine: ExecutionEngine) -> Dict[str, Dict[str, Any]]:
-    plan_name = engine.orchestrator.plan_name
+def list_template_libraries(vision: VisionService, action_context: ActionContext) -> Dict[str, Dict[str, Any]]:
+    plan_name = str(action_context.plan_name or "")
     return vision.list_template_libraries(plan_key=plan_name)
 
 
-@action_info(name="list_capture_backends", read_only=True, public=True)
+@action_info(name="list_capture_backends", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(screen='screen')
 def list_capture_backends(screen: ScreenService) -> Dict[str, Any]:
     return screen.list_backends()
 
 
-@action_info(name="set_capture_backend", public=True)
+@action_info(name="set_capture_backend", public=True, capabilities=['desktop.capture.read'])
 @requires_services(screen='screen')
 def set_capture_backend(screen: ScreenService, backend: str) -> bool:
     screen.set_default_backend(backend)
     return True
 
 
-@action_info(name="screen_selfcheck", read_only=True, public=True)
+@action_info(name="screen_selfcheck", read_only=True, public=True, capabilities=['filesystem.read'])
 @requires_services(screen='screen')
 def screen_selfcheck(screen: ScreenService) -> Dict[str, Any]:
     return screen.self_check()
@@ -98,27 +97,27 @@ def screen_selfcheck(screen: ScreenService) -> Dict[str, Any]:
 
 
 # --- Find Actions (查找信息) ---
-@action_info(name="find_image", read_only=True, public=True)
+@action_info(name="find_image", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
 # [MODIFIED] 移除旧Context，engine保留
-def find_image(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def find_image(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
                preprocess: str = "none", mask: Optional[str] = None) -> MatchResult:
-    # [MODIFIED] __is_inspect_mode__ 现在从 initial context 获取
-    is_inspect_mode = engine.root_context.data.get("initial", {}).get("__is_inspect_mode__", False)
+    # [MODIFIED] __is_inspect_mode__ 现在从 initial action_context 获取
+    is_inspect_mode = action_context.initial.get("__is_inspect_mode__", False)
     capture = app.capture(rect=region)
     if not capture.success:
         logger.error("行为 'find_image' 失败：无法截图。")
         return MatchResult(found=False)
 
     source_image_for_debug = capture.image.copy()
-    template_path = _resolve_template_path(engine, vision, template)
+    template_path = _resolve_template_path(action_context, vision, template)
 
     # 解析mask路径（如果提供）
     mask_path = None
     if mask:
-        mask_path = _resolve_template_path(engine, vision, mask)
+        mask_path = _resolve_template_path(action_context, vision, mask)
 
     match_result = vision.find_template(
         source_image=source_image_for_debug,
@@ -154,10 +153,10 @@ def find_image(app: AppProviderService, vision: VisionService, engine: Execution
     return match_result
 
 
-@action_info(name="find_all_images", read_only=True, public=True)
+@action_info(name="find_all_images", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
 # [MODIFIED] 移除旧Context，engine保留
-def find_all_images(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def find_all_images(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                     region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                     use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
                     preprocess: str = "none") -> MultiMatchResult:
@@ -166,7 +165,7 @@ def find_all_images(app: AppProviderService, vision: VisionService, engine: Exec
         logger.error("行为 'find_all_images' 失败：无法截图。")
         return MultiMatchResult()
 
-    template_path = _resolve_template_path(engine, vision, template)
+    template_path = _resolve_template_path(action_context, vision, template)
     multi_match_result = vision.find_all_templates(
         source_image=capture.image,
         template_image=template_path,
@@ -186,9 +185,9 @@ def find_all_images(app: AppProviderService, vision: VisionService, engine: Exec
     return multi_match_result
 
     # NOTE: debug-friendly single best match
-@action_info(name="find_best_image", read_only=True, public=True)
+@action_info(name="find_best_image", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def find_best_image(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def find_best_image(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                    region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                    use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
                    preprocess: str = "none") -> MatchResult:
@@ -197,7 +196,7 @@ def find_best_image(app: AppProviderService, vision: VisionService, engine: Exec
         logger.error("?? 'find_best_image' ????????")
         return MatchResult(found=False)
 
-    template_path = _resolve_template_path(engine, vision, template)
+    template_path = _resolve_template_path(action_context, vision, template)
     match_result = vision.find_template(
         source_image=capture.image,
         template_image=template_path,
@@ -228,9 +227,9 @@ def find_best_image(app: AppProviderService, vision: VisionService, engine: Exec
     return match_result
 
 
-@action_info(name="find_templates_in_set", read_only=True, public=True)
+@action_info(name="find_templates_in_set", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def find_templates_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+def find_templates_in_set(app: AppProviderService, vision: VisionService, action_context: ActionContext, templates_ref: str,
                           region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                           use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
                           preprocess: str = "none") -> Dict[str, Any]:
@@ -239,7 +238,7 @@ def find_templates_in_set(app: AppProviderService, vision: VisionService, engine
         logger.error("行为 'find_templates_in_set' 失败：无法截图。")
         return {"count": 0, "matches": []}
 
-    template_paths = _expand_template_paths(engine, vision, templates_ref)
+    template_paths = _expand_template_paths(action_context, vision, templates_ref)
     matches: List[Dict[str, Any]] = []
     template_images = [str(path) for path in template_paths]
     match_results = vision.find_templates_batch(
@@ -275,9 +274,9 @@ def find_templates_in_set(app: AppProviderService, vision: VisionService, engine
     return {"count": len(matches), "matches": matches}
 
 
-@action_info(name="find_all_templates_in_set", read_only=True, public=True)
+@action_info(name="find_all_templates_in_set", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def find_all_templates_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+def find_all_templates_in_set(app: AppProviderService, vision: VisionService, action_context: ActionContext, templates_ref: str,
                               region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                               nms_threshold: float = 0.5, use_grayscale: bool = True,
                               match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> Dict[str, Any]:
@@ -286,7 +285,7 @@ def find_all_templates_in_set(app: AppProviderService, vision: VisionService, en
         logger.error("Action 'find_all_templates_in_set' failed: capture failed.")
         return {"count": 0, "matches": []}
 
-    template_paths = _expand_template_paths(engine, vision, templates_ref)
+    template_paths = _expand_template_paths(action_context, vision, templates_ref)
     matches: List[Dict[str, Any]] = []
     template_images = [str(path) for path in template_paths]
     batch_results = vision.find_all_templates_batch(
@@ -325,16 +324,16 @@ def find_all_templates_in_set(app: AppProviderService, vision: VisionService, en
     return {"count": len(matches), "matches": matches}
 
 
-@action_info(name="find_unique_template_in_set", read_only=True, public=True)
+@action_info(name="find_unique_template_in_set", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def find_unique_template_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+def find_unique_template_in_set(app: AppProviderService, vision: VisionService, action_context: ActionContext, templates_ref: str,
                                 region: Optional[tuple[int, int, int, int]] = None,
                                 threshold: float = 0.8, use_grayscale: bool = True,
                                 match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> MatchResult:
     result = find_templates_in_set(
         app,
         vision,
-        engine,
+        action_context,
         templates_ref,
         region,
         threshold,
@@ -349,16 +348,16 @@ def find_unique_template_in_set(app: AppProviderService, vision: VisionService, 
     return MatchResult(found=False)
 
 
-@action_info(name="find_best_template_in_set", read_only=True, public=True)
+@action_info(name="find_best_template_in_set", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def find_best_template_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+def find_best_template_in_set(app: AppProviderService, vision: VisionService, action_context: ActionContext, templates_ref: str,
                               region: Optional[tuple[int, int, int, int]] = None,
                               threshold: float = 0.8, use_grayscale: bool = True,
                               match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> Dict[str, Any]:
     result = find_templates_in_set(
         app,
         vision,
-        engine,
+        action_context,
         templates_ref,
         region,
         threshold,
@@ -373,23 +372,23 @@ def find_best_template_in_set(app: AppProviderService, vision: VisionService, en
     return best_match
 
 
-@action_info(name="list_templates_in_set", read_only=True, public=True)
+@action_info(name="list_templates_in_set", read_only=True, public=True, capabilities=['desktop.capture.read', 'filesystem.read'])
 @requires_services(vision='vision')
-def list_templates_in_set(vision: VisionService, engine: ExecutionEngine, templates_ref: str) -> Dict[str, Any]:
-    template_paths = _expand_template_paths(engine, vision, templates_ref)
+def list_templates_in_set(vision: VisionService, action_context: ActionContext, templates_ref: str) -> Dict[str, Any]:
+    template_paths = _expand_template_paths(action_context, vision, templates_ref)
     return {"count": len(template_paths), "templates": [str(path) for path in template_paths]}
 
 
-@action_info(name="assert_any_template_in_set", read_only=True, public=True)
+@action_info(name="assert_any_template_in_set", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def assert_any_template_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, templates_ref: str,
+def assert_any_template_in_set(app: AppProviderService, vision: VisionService, action_context: ActionContext, templates_ref: str,
                                region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                                message: Optional[str] = None, use_grayscale: bool = True,
                                match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none"):
     result = find_templates_in_set(
         app,
         vision,
-        engine,
+        action_context,
         templates_ref,
         region,
         threshold,
@@ -407,14 +406,14 @@ def assert_any_template_in_set(app: AppProviderService, vision: VisionService, e
     return True
 
 
-@action_info(name="assert_all_templates_in_set", read_only=True, public=True)
+@action_info(name="assert_all_templates_in_set", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def assert_all_templates_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine,
+def assert_all_templates_in_set(app: AppProviderService, vision: VisionService, action_context: ActionContext,
                                 templates_ref: str, region: Optional[tuple[int, int, int, int]] = None,
                                 threshold: float = 0.8, message: Optional[str] = None,
                                 use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
                                 preprocess: str = "none"):
-    template_paths = _expand_template_paths(engine, vision, templates_ref)
+    template_paths = _expand_template_paths(action_context, vision, templates_ref)
     if not template_paths:
         error_message = message or f"Assertion failed: template set '{templates_ref}' resolved to no files."
         logger.error(error_message)
@@ -452,9 +451,9 @@ def assert_all_templates_in_set(app: AppProviderService, vision: VisionService, 
     return True
 
 
-@action_info(name="wait_for_any_template_in_set", public=True)
+@action_info(name="wait_for_any_template_in_set", public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def wait_for_any_template_in_set(app: AppProviderService, vision: VisionService, engine: ExecutionEngine,
+def wait_for_any_template_in_set(app: AppProviderService, vision: VisionService, action_context: ActionContext,
                                  templates_ref: str, timeout: float = 10.0, interval: float = 1.0,
                                  region: Optional[tuple[int, int, int, int]] = None,
                                  threshold: float = 0.8, use_grayscale: bool = True,
@@ -465,7 +464,7 @@ def wait_for_any_template_in_set(app: AppProviderService, vision: VisionService,
         result = find_templates_in_set(
             app,
             vision,
-            engine,
+            action_context,
             templates_ref,
             region,
             threshold,
@@ -483,9 +482,9 @@ def wait_for_any_template_in_set(app: AppProviderService, vision: VisionService,
     return {"template": None, "match": MatchResult(found=False)}
 
 
-@action_info(name="wait_for_templates_in_set_to_disappear", public=True)
+@action_info(name="wait_for_templates_in_set_to_disappear", public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def wait_for_templates_in_set_to_disappear(app: AppProviderService, vision: VisionService, engine: ExecutionEngine,
+def wait_for_templates_in_set_to_disappear(app: AppProviderService, vision: VisionService, action_context: ActionContext,
                                            templates_ref: str, timeout: float = 10.0, interval: float = 1.0,
                                            region: Optional[tuple[int, int, int, int]] = None,
                                            threshold: float = 0.8, use_grayscale: bool = True,
@@ -496,7 +495,7 @@ def wait_for_templates_in_set_to_disappear(app: AppProviderService, vision: Visi
         result = find_templates_in_set(
             app,
             vision,
-            engine,
+            action_context,
             templates_ref,
             region,
             threshold,
@@ -513,10 +512,10 @@ def wait_for_templates_in_set_to_disappear(app: AppProviderService, vision: Visi
     return False
 
 
-@action_info(name="find_image_in_scrolling_area", public=True)
+@action_info(name="find_image_in_scrolling_area", public=True, capabilities=['desktop.capture.read', 'desktop.mouse.input'])
 @requires_services(vision='vision', app='app')
 # [MODIFIED] 移除旧Context，engine保留
-def find_image_in_scrolling_area(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def find_image_in_scrolling_area(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                                  scroll_area: tuple[int, int, int, int], scroll_direction: str = 'down',
                                  max_scrolls: int = 5, scroll_amount: int = 200, threshold: float = 0.8,
                                  delay_after_scroll: float = 0.5, use_grayscale: bool = True,
@@ -541,7 +540,7 @@ def find_image_in_scrolling_area(app: AppProviderService, vision: VisionService,
         match_result = find_image(
             app,
             vision,
-            engine,
+            action_context,
             template,
             region=scroll_area,
             threshold=threshold,
@@ -557,19 +556,19 @@ def find_image_in_scrolling_area(app: AppProviderService, vision: VisionService,
     return MatchResult(found=False)
 
 
-@action_info(name="preload_ocr", read_only=True, public=True)
+@action_info(name="preload_ocr", read_only=True, public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr')
 def preload_ocr(ocr: OcrService, warmup: bool = False) -> Dict[str, Any]:
     device = ocr.preload_engine(warmup=warmup)
     return {"ok": True, "device": device, "warmed": bool(warmup)}
 
 
-@action_info(name="find_text", read_only=True, public=True)
+@action_info(name="find_text", read_only=True, public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
 # [MODIFIED] 移除旧Context，engine保留
-def find_text(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine, text_to_find: str,
+def find_text(app: AppProviderService, ocr: OcrService, action_context: ActionContext, text_to_find: str,
               region: Optional[tuple[int, int, int, int]] = None, match_mode: str = "exact") -> OcrResult:
-    is_inspect_mode = engine.root_context.data.get("initial", {}).get("__is_inspect_mode__", False)
+    is_inspect_mode = action_context.initial.get("__is_inspect_mode__", False)
     capture = app.capture(rect=region)
     if not capture.success:
         logger.error("行为 'find_text' 失败：无法截图。")
@@ -596,7 +595,7 @@ def find_text(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine,
 
 
 # ... (recognize_all_text, get_text_in_region 保持类似修改，移除engine注入因其不再需要)
-@action_info(name="recognize_all_text", read_only=True, public=True)
+@action_info(name="recognize_all_text", read_only=True, public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
 def recognize_all_text(app: AppProviderService, ocr: OcrService,
                        region: Optional[tuple[int, int, int, int]] = None) -> MultiOcrResult:
@@ -614,7 +613,7 @@ def recognize_all_text(app: AppProviderService, ocr: OcrService,
     return multi_ocr_result
 
 
-@action_info(name="get_text_in_region", read_only=True, public=True)
+@action_info(name="get_text_in_region", read_only=True, public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
 def get_text_in_region(app: AppProviderService, ocr: OcrService, region: tuple[int, int, int, int],
                        whitelist: Optional[str] = None, join_with: str = " ") -> str:
@@ -634,24 +633,24 @@ def get_text_in_region(app: AppProviderService, ocr: OcrService, region: tuple[i
     return result
 
 # --- Check Actions (检查状态，返回布尔值) ---
-@action_info(name="check_text_exists", read_only=True, public=True)
+@action_info(name="check_text_exists", read_only=True, public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
-def check_text_exists(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine, text_to_find: str,
+def check_text_exists(app: AppProviderService, ocr: OcrService, action_context: ActionContext, text_to_find: str,
                       region: Optional[tuple[int, int, int, int]] = None, match_mode: str = "exact") -> bool:
-    ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode)
+    ocr_result = find_text(app, ocr, action_context, text_to_find, region, match_mode)
     return ocr_result.found
 
 
-@action_info(name="check_image_exists", read_only=True, public=True)
+@action_info(name="check_image_exists", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def check_image_exists(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def check_image_exists(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                        region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                        use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
                        preprocess: str = "none", mask: Optional[str] = None) -> bool:
     match_result = find_image(
         app,
         vision,
-        engine,
+        action_context,
         template,
         region,
         threshold,
@@ -665,9 +664,9 @@ def check_image_exists(app: AppProviderService, vision: VisionService, engine: E
 
 # --- Assert Actions (断言条件，失败则中断) ---
 # ... (所有assert_* actions保持类似修改, 移除旧Context, 保留engine)
-@action_info(name="assert_image_exists", read_only=True, public=True)
+@action_info(name="assert_image_exists", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def assert_image_exists(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def assert_image_exists(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                         region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                         message: Optional[str] = None, use_grayscale: bool = True,
                         match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none",
@@ -675,7 +674,7 @@ def assert_image_exists(app: AppProviderService, vision: VisionService, engine: 
     match_result = find_image(
         app,
         vision,
-        engine,
+        action_context,
         template,
         region,
         threshold,
@@ -693,16 +692,16 @@ def assert_image_exists(app: AppProviderService, vision: VisionService, engine: 
 
 
 # ... (其他assert_* actions类似)
-@action_info(name="assert_image_not_exists", read_only=True, public=True)
+@action_info(name="assert_image_not_exists", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def assert_image_not_exists(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def assert_image_not_exists(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                             region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                             message: Optional[str] = None, use_grayscale: bool = True,
                             match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none"):
     match_result = find_image(
         app,
         vision,
-        engine,
+        action_context,
         template,
         region,
         threshold,
@@ -720,12 +719,12 @@ def assert_image_not_exists(app: AppProviderService, vision: VisionService, engi
 
 # [MODIFIED] 接着上一段代码...
 
-@action_info(name="assert_text_exists", read_only=True, public=True)
+@action_info(name="assert_text_exists", read_only=True, public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
-def assert_text_exists(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine, text_to_find: str,
+def assert_text_exists(app: AppProviderService, ocr: OcrService, action_context: ActionContext, text_to_find: str,
                        region: Optional[tuple[int, int, int, int]] = None, match_mode: str = "contains",
                        message: Optional[str] = None):
-    ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode)
+    ocr_result = find_text(app, ocr, action_context, text_to_find, region, match_mode)
     if not ocr_result.found:
         error_message = message or f"断言失败：期望的文本 '{text_to_find}' 不存在。"
         logger.error(error_message)
@@ -734,12 +733,12 @@ def assert_text_exists(app: AppProviderService, ocr: OcrService, engine: Executi
     return True
 
 
-@action_info(name="assert_text_not_exists", read_only=True, public=True)
+@action_info(name="assert_text_not_exists", read_only=True, public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
-def assert_text_not_exists(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine, text_to_find: str,
+def assert_text_not_exists(app: AppProviderService, ocr: OcrService, action_context: ActionContext, text_to_find: str,
                            region: Optional[tuple[int, int, int, int]] = None, match_mode: str = "contains",
                            message: Optional[str] = None):
-    ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode)
+    ocr_result = find_text(app, ocr, action_context, text_to_find, region, match_mode)
     if ocr_result.found:
         error_message = message or f"断言失败：不期望的文本 '{ocr_result.text}' 却存在了。"
         logger.error(error_message)
@@ -748,13 +747,13 @@ def assert_text_not_exists(app: AppProviderService, ocr: OcrService, engine: Exe
     return True
 
 
-@action_info(name="assert_text_equals", read_only=True, public=True)
+@action_info(name="assert_text_equals", read_only=True, public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
-def assert_text_equals(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine, text_to_find: str,
+def assert_text_equals(app: AppProviderService, ocr: OcrService, action_context: ActionContext, text_to_find: str,
                        expected_value: str, region: Optional[tuple[int, int, int, int]] = None,
                        message: Optional[str] = None):
     """断言找到的文本内容必须精确等于期望值。"""
-    ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode="exact")
+    ocr_result = find_text(app, ocr, action_context, text_to_find, region, match_mode="exact")
     if not ocr_result.found:
         error_message = message or f"断言失败：期望的文本 '{text_to_find}' 不存在。"
         raise StopTaskException(error_message, success=False)
@@ -766,15 +765,15 @@ def assert_text_equals(app: AppProviderService, ocr: OcrService, engine: Executi
 
 
 # --- Wait Actions (等待UI变化) ---
-@action_info(name="wait_for_text", public=True)
+@action_info(name="wait_for_text", public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
-def wait_for_text(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine, text_to_find: str,
+def wait_for_text(app: AppProviderService, ocr: OcrService, action_context: ActionContext, text_to_find: str,
                   timeout: float = 10.0, interval: float = 1.0, region: Optional[tuple[int, int, int, int]] = None,
                   match_mode: str = "contains") -> OcrResult:
     logger.info(f"开始等待文本 '{text_to_find}' 出现，最长等待 {timeout} 秒...")
     start_time = time.time()
     while time.time() - start_time < timeout:
-        ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode)
+        ocr_result = find_text(app, ocr, action_context, text_to_find, region, match_mode)
         if ocr_result.found:
             logger.info(f"成功等到文本 '{ocr_result.text}'！")
             return ocr_result
@@ -784,16 +783,16 @@ def wait_for_text(app: AppProviderService, ocr: OcrService, engine: ExecutionEng
     return OcrResult(found=False)
 
 
-@action_info(name="wait_for_text_to_disappear", public=True)
+@action_info(name="wait_for_text_to_disappear", public=True, capabilities=['desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
-def wait_for_text_to_disappear(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine, text_to_monitor: str,
+def wait_for_text_to_disappear(app: AppProviderService, ocr: OcrService, action_context: ActionContext, text_to_monitor: str,
                                timeout: float = 10.0, interval: float = 1.0,
                                region: Optional[tuple[int, int, int, int]] = None,
                                match_mode: str = "contains") -> bool:
     logger.info(f"开始等待文本 '{text_to_monitor}' 消失，最长等待 {timeout} 秒...")
     start_time = time.time()
     while time.time() - start_time < timeout:
-        ocr_result = find_text(app, ocr, engine, text_to_monitor, region, match_mode)
+        ocr_result = find_text(app, ocr, action_context, text_to_monitor, region, match_mode)
         if not ocr_result.found:
             logger.info(f"文本 '{text_to_monitor}' 已消失。等待成功！")
             return True
@@ -803,9 +802,9 @@ def wait_for_text_to_disappear(app: AppProviderService, ocr: OcrService, engine:
     return False
 
 
-@action_info(name="wait_for_image", public=True)
+@action_info(name="wait_for_image", public=True, capabilities=['desktop.capture.read'])
 @requires_services(vision='vision', app='app')
-def wait_for_image(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def wait_for_image(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                    timeout: float = 10.0, interval: float = 1.0, region: Optional[tuple[int, int, int, int]] = None,
                    threshold: float = 0.8, use_grayscale: bool = True,
                    match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> MatchResult:
@@ -815,7 +814,7 @@ def wait_for_image(app: AppProviderService, vision: VisionService, engine: Execu
         match_result = find_image(
             app,
             vision,
-            engine,
+            action_context,
             template,
             region,
             threshold,
@@ -836,7 +835,7 @@ def wait_for_image(app: AppProviderService, vision: VisionService, engine: Execu
 # II. 键鼠控制原子行为 (I/O Control Actions)
 # ==============================================================================
 # [MODIFIED] 这一部分的所有action都不再需要context或engine，因为它们只与AppProviderService交互。
-@action_info(name="click", public=True)
+@action_info(name="click", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(app='app')
 def click(app: AppProviderService, x: Optional[int] = None, y: Optional[int] = None, button: str = 'left',
           clicks: int = 1, interval: float = 0.1):
@@ -848,28 +847,28 @@ def click(app: AppProviderService, x: Optional[int] = None, y: Optional[int] = N
     return True
 
 
-@action_info(name="double_click", public=True)
+@action_info(name="double_click", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(app='app')
 def double_click(app: AppProviderService, x: Optional[int] = None, y: Optional[int] = None):
     click(app, x, y, button='left', clicks=2, interval=0.05)
     return True
 
 
-@action_info(name="right_click", public=True)
+@action_info(name="right_click", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(app='app')
 def right_click(app: AppProviderService, x: Optional[int] = None, y: Optional[int] = None):
     click(app, x, y, button='right', clicks=1)
     return True
 
 
-@action_info(name="move_to", public=True)
+@action_info(name="move_to", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(app='app')
 def move_to(app: AppProviderService, x: int, y: int, duration: float = 0.25):
     app.move_to(x, y, duration)
     return True
 
 
-@action_info(name="drag", public=True)
+@action_info(name="drag", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(app='app')
 def drag(app: AppProviderService, start_x: int, start_y: int, end_x: int, end_y: int, button: str = 'left',
          duration: float = 0.5):
@@ -877,14 +876,14 @@ def drag(app: AppProviderService, start_x: int, start_y: int, end_x: int, end_y:
     return True
 
 
-@action_info(name="press_key", public=True)
+@action_info(name="press_key", public=True, capabilities=['desktop.keyboard.input'])
 @requires_services(app='app')
 def press_key(app: AppProviderService, key: str, presses: int = 1, interval: float = 0.1):
     app.press_key(key, presses, interval)
     return True
 
 
-@action_info(name="press_hotkey", public=True)
+@action_info(name="press_hotkey", public=True, capabilities=['desktop.keyboard.input'])
 @requires_services(app='app')
 def press_hotkey(app: AppProviderService, keys: List[str]):
     if not isinstance(keys, list) or not keys:
@@ -898,14 +897,14 @@ def press_hotkey(app: AppProviderService, keys: List[str]):
     return True
 
 
-@action_info(name="type_text", public=True)
+@action_info(name="type_text", public=True, capabilities=['desktop.keyboard.input', 'desktop.ocr.read'])
 @requires_services(app='app')
 def type_text(app: AppProviderService, text: str, interval: float = 0.01):
     app.type_text(text, interval)
     return True
 
 
-@action_info(name="scroll", public=True)
+@action_info(name="scroll", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(app='app')
 def scroll(app: AppProviderService, direction: str, amount: int):
     direction_map = {"up": 1, "down": -1}
@@ -918,34 +917,34 @@ def scroll(app: AppProviderService, direction: str, amount: int):
     return True
 
 
-@action_info(name="get_pixel_color", read_only=True, public=True)
+@action_info(name="get_pixel_color", read_only=True, public=True, capabilities=['desktop.capture.read'])
 @requires_services(app='app')
 def get_pixel_color(app: AppProviderService, x: int, y: int) -> tuple:
     return app.get_pixel_color(x, y)
 
 
-@action_info(name="mouse_move_relative", public=True)
+@action_info(name="mouse_move_relative", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(app='app')
 def mouse_move_relative(app: AppProviderService, dx: int, dy: int, duration: float = 0.2):
     app.move_relative(dx, dy, duration)
     return True
 
 
-@action_info(name="key_down", public=True)
+@action_info(name="key_down", public=True, capabilities=['desktop.keyboard.input'])
 @requires_services(app='app')
 def key_down(app: AppProviderService, key: str):
     app.key_down(key)
     return True
 
 
-@action_info(name="key_up", public=True)
+@action_info(name="key_up", public=True, capabilities=['desktop.keyboard.input'])
 @requires_services(app='app')
 def key_up(app: AppProviderService, key: str):
     app.key_up(key)
     return True
 
 
-@action_info(name="mouse_down", public=True)
+@action_info(name="mouse_down", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(app='app')
 def mouse_down(app: AppProviderService, button: str = 'left'):
     logger.info(f"按下鼠标 '{button}' 键")
@@ -953,7 +952,7 @@ def mouse_down(app: AppProviderService, button: str = 'left'):
     return True
 
 
-@action_info(name="mouse_up", public=True)
+@action_info(name="mouse_up", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(app='app')
 def mouse_up(app: AppProviderService, button: str = 'left'):
     logger.info(f"松开鼠标 '{button}' 键")
@@ -964,13 +963,13 @@ def mouse_up(app: AppProviderService, button: str = 'left'):
 # ==============================================================================
 # III. 流程控制与数据处理行为 (Flow & Data Actions)
 # ==============================================================================
-@action_info(name="sleep", read_only=True, public=True)
+@action_info(name="sleep", read_only=True, public=True, capabilities=['filesystem.read'])
 def sleep(seconds: float):
     time.sleep(seconds)
     return True
 
 
-@action_info(name="log", read_only=True, public=True)
+@action_info(name="log", read_only=True, public=True, capabilities=['filesystem.read'])
 def log(message: str, level: str = "info"):
     level_str = str(level).lower()
     log_func = getattr(logger, level_str, logger.debug)
@@ -978,12 +977,12 @@ def log(message: str, level: str = "info"):
     return True
 
 
-@action_info(name="stop_task", read_only=True)
+@action_info(name="stop_task", read_only=True, capabilities=['filesystem.read'])
 def stop_task(message: str = "任务已停止", success: bool = True):
     raise StopTaskException(message, success)
 
 
-@action_info(name="assert_condition", read_only=True, public=True)
+@action_info(name="assert_condition", read_only=True, public=True, capabilities=['filesystem.read'])
 def assert_condition(condition: bool, message: str = "断言失败"):
     if not condition:
         raise StopTaskException(message, success=False)
@@ -991,9 +990,9 @@ def assert_condition(condition: bool, message: str = "断言失败"):
     return True
 
 
-@action_info(name="set_variable", public=True)
-# [MODIFIED] 注入新的ExecutionContext
-def set_variable(context: ExecutionContext, name: str, value: any) -> bool:
+@action_info(name="set_variable", public=True, capabilities=['network.local'])
+# [MODIFIED] 注入新的ActionContext
+def set_variable(action_context: ActionContext, name: str, value: any) -> bool:
     # [MODIFIED] 在新模型下，此action没有意义，因为无法修改上游上下文。
     # 我们将其行为改为打印一个警告，并建议用户使用具名输出。
     # 如果确实需要这个功能，需要engine支持将数据写回root_context，但这会破坏数据流的清晰性。
@@ -1001,26 +1000,26 @@ def set_variable(context: ExecutionContext, name: str, value: any) -> bool:
     logger.warning(f"请在节点的 'outputs' 块中定义输出来传递数据。")
     logger.warning(f"尝试设置 '{name}' = {repr(value)} 的操作已被忽略。")
     # 如果要强制实现，可以这样做，但不推荐：
-    # context.data['nodes'][f'__variable_{name}'] = {'output': value}
+    # action_context.data['nodes'][f'__variable_{name}'] = {'output': value}
     return False
 
 
-@action_info(name="string_format", read_only=True, public=True)
+@action_info(name="string_format", read_only=True, public=True, capabilities=['filesystem.read'])
 def string_format(template: str, *args, **kwargs) -> str:
     return template.format(*args, **kwargs)
 
 
-@action_info(name="string_split", read_only=True, public=True)
+@action_info(name="string_split", read_only=True, public=True, capabilities=['filesystem.read'])
 def string_split(text: str, separator: str, max_split: int = -1) -> List[str]:
     return text.split(separator, max_split)
 
 
-@action_info(name="string_join", read_only=True, public=True)
+@action_info(name="string_join", read_only=True, public=True, capabilities=['filesystem.read'])
 def string_join(items: List[Any], separator: str) -> str:
     return separator.join(str(item) for item in items)
 
 
-@action_info(name="regex_search", read_only=True, public=True)
+@action_info(name="regex_search", read_only=True, public=True, capabilities=['filesystem.read'])
 def regex_search(text: str, pattern: str) -> Optional[Dict[str, Any]]:
     match = re.search(pattern, text)
     if match:
@@ -1032,7 +1031,7 @@ def regex_search(text: str, pattern: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-@action_info(name="math_compute", read_only=True, public=True)
+@action_info(name="math_compute", read_only=True, public=True, capabilities=['filesystem.read'])
 def math_compute(expression: str) -> Any:
     allowed_chars = "0123456789.+-*/() "
     if all(char in allowed_chars for char in expression):
@@ -1053,7 +1052,7 @@ def math_compute(expression: str) -> Any:
 # [MODIFIED] 移除所有旧的 persistent_context 和 state_store action，
 # 因为它们已经被新的 state.set/get/delete action (在state_actions.py中) 替代。
 
-@action_info(name="publish_event", public=True)
+@action_info(name="publish_event", public=True, capabilities=['network.local'])
 @requires_services(event_bus='core/event_bus')
 # [MODIFIED] 移除旧context
 async def publish_event(event_bus: EventBus, name: str, payload: Dict[str, Any] = None,
@@ -1073,20 +1072,20 @@ async def publish_event(event_bus: EventBus, name: str, payload: Dict[str, Any] 
         return False
 
 
-@action_info(name="get_window_size", read_only=True, public=True)
+@action_info(name="get_window_size", read_only=True, public=True, capabilities=['desktop.window.read'])
 @requires_services(app='app')
 def get_window_size(app: AppProviderService) -> Optional[Tuple[int, int]]:
     return app.get_window_size()
 
 
-@action_info(name="focus_window", public=True)
+@action_info(name="focus_window", public=True, capabilities=['desktop.window.focus'])
 @requires_services(app='app')
 def focus_window(app: AppProviderService) -> bool:
     # 假设AppProviderService有screen属性
     return app.screen.focus()
 
 
-@action_info(name="focus_window_with_input", public=True)
+@action_info(name="focus_window_with_input", public=True, capabilities=['desktop.window.focus'])
 @requires_services(app='app')
 def focus_window_with_input(app: AppProviderService, click_delay: float = 0.3) -> bool:
     """置顶窗口并激活键盘输入焦点
@@ -1111,20 +1110,15 @@ def focus_window_with_input(app: AppProviderService, click_delay: float = 0.3) -
     # 第2步：短暂延迟，让窗口完全置顶
     time.sleep(click_delay)
 
-    # 第3步：获取窗口矩形区域
-    import win32gui
     try:
-        hwnd = app.screen.hwnd
-        if not hwnd:
-            logger.warning("无法获取窗口句柄")
+        size = app.get_window_size()
+        if not size:
+            logger.warning("无法获取窗口尺寸")
             return False
 
-        # 获取窗口客户区坐标
-        left, top, right, bottom = win32gui.GetClientRect(hwnd)
-
         # 计算窗口中心点（客户区坐标）
-        center_x = (left + right) // 2
-        center_y = (top + bottom) // 2
+        center_x = int(size[0]) // 2
+        center_y = int(size[1]) // 2
 
         # 第4步：点击窗口中心以激活键盘焦点
         logger.info(f"点击窗口中心位置 ({center_x}, {center_y}) 以激活键盘焦点")
@@ -1137,11 +1131,11 @@ def focus_window_with_input(app: AppProviderService, click_delay: float = 0.3) -
         return False
 
 
-@action_info(name="file_read", read_only=True, public=True)
-def file_read(engine: ExecutionEngine, file_path: str) -> Optional[str]:
+@action_info(name="file_read", read_only=True, public=True, capabilities=['filesystem.read'])
+def file_read(action_context: ActionContext, file_path: str) -> Optional[str]:
     try:
         # 路径安全由Orchestrator处理
-        full_path = engine.orchestrator.current_plan_path / file_path
+        full_path = safe_resolve_under(Path(action_context.plan_path or "."), file_path, label="file_read path")
         if not full_path.is_file():
             logger.error(f"文件读取失败：'{file_path}' 不存在或不是一个文件。")
             return None
@@ -1151,10 +1145,10 @@ def file_read(engine: ExecutionEngine, file_path: str) -> Optional[str]:
         return None
 
 
-@action_info(name="file_write", public=True)
-def file_write(engine: ExecutionEngine, file_path: str, content: str, append: bool = False) -> bool:
+@action_info(name="file_write", public=True, capabilities=['filesystem.write'])
+def file_write(action_context: ActionContext, file_path: str, content: str, append: bool = False) -> bool:
     try:
-        full_path = engine.orchestrator.current_plan_path / file_path
+        full_path = safe_resolve_under(Path(action_context.plan_path or "."), file_path, label="file_write path")
         full_path.parent.mkdir(parents=True, exist_ok=True)
         mode = 'a' if append else 'w'
         full_path.write_text(content, encoding='utf-8')
@@ -1168,9 +1162,9 @@ def file_write(engine: ExecutionEngine, file_path: str, content: str, append: bo
 # V. 复合与高级行为 (Compound & Advanced Actions)
 # ==============================================================================
 # [MODIFIED] 所有复合action同样更新签名
-@action_info(name="find_image_and_click", public=True)
+@action_info(name="find_image_and_click", public=True, capabilities=['desktop.capture.read', 'desktop.mouse.input'])
 @requires_services(vision='vision', app='app')
-def find_image_and_click(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def find_image_and_click(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                          region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                          button: str = 'left', move_duration: float = 0.2,
                          use_grayscale: bool = True, match_method: int = cv2.TM_CCOEFF_NORMED,
@@ -1178,7 +1172,7 @@ def find_image_and_click(app: AppProviderService, vision: VisionService, engine:
     match_result = find_image(
         app,
         vision,
-        engine,
+        action_context,
         template,
         region,
         threshold,
@@ -1203,12 +1197,12 @@ def find_image_and_click(app: AppProviderService, vision: VisionService, engine:
         return False
 
 
-@action_info(name="find_text_and_click", public=True)
+@action_info(name="find_text_and_click", public=True, capabilities=['desktop.mouse.input', 'desktop.ocr.read'])
 @requires_services(ocr='ocr', app='app')
-def find_text_and_click(app: AppProviderService, ocr: OcrService, engine: ExecutionEngine, text_to_find: str,
+def find_text_and_click(app: AppProviderService, ocr: OcrService, action_context: ActionContext, text_to_find: str,
                         region: Optional[tuple[int, int, int, int]] = None, match_mode: str = "contains",
                         button: str = 'left', move_duration: float = 0.2) -> bool:
-    ocr_result = find_text(app, ocr, engine, text_to_find, region, match_mode)
+    ocr_result = find_text(app, ocr, action_context, text_to_find, region, match_mode)
     if ocr_result.found:
         found_x, found_y = ocr_result.center_point
         logger.info(
@@ -1241,9 +1235,9 @@ def find_text_and_click(app: AppProviderService, ocr: OcrService, engine: Execut
         return False
 
 
-@action_info(name="drag_to_find", public=True)
+@action_info(name="drag_to_find", public=True, capabilities=['desktop.mouse.input'])
 @requires_services(vision='vision', app='app')
-def drag_to_find(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, drag_from_template: str,
+def drag_to_find(app: AppProviderService, vision: VisionService, action_context: ActionContext, drag_from_template: str,
                  drag_to_template: str, from_region: Optional[tuple[int, int, int, int]] = None,
                  to_region: Optional[tuple[int, int, int, int]] = None, threshold: float = 0.8,
                  duration: float = 0.5, use_grayscale: bool = True,
@@ -1251,7 +1245,7 @@ def drag_to_find(app: AppProviderService, vision: VisionService, engine: Executi
     source_match = find_image(
         app,
         vision,
-        engine,
+        action_context,
         drag_from_template,
         from_region,
         threshold,
@@ -1265,7 +1259,7 @@ def drag_to_find(app: AppProviderService, vision: VisionService, engine: Executi
     target_match = find_image(
         app,
         vision,
-        engine,
+        action_context,
         drag_to_template,
         to_region,
         threshold,
@@ -1284,8 +1278,8 @@ def drag_to_find(app: AppProviderService, vision: VisionService, engine: Executi
 
 
 # --- 占位符与脚本执行行为 ---
-@action_info(name="aura.run_task", public=True)
-def run_task(engine, task_ref: str, inputs: dict = None):
+@action_info(name="aura.run_task", public=True, capabilities=['network.local'])
+def run_task(action_context, task_ref: str, inputs: dict = None):
     # [MODIFIED] 这个action的实现完全在engine内部，这里只是一个注册占位符。
     # 它不需要修改，因为engine内部会处理上下文传递。
     pass
@@ -1299,9 +1293,9 @@ def run_task(engine, task_ref: str, inputs: dict = None):
 # @action_info(name="run_python", ...)
 
 # ... (其他复合action也类似地更新签名)
-@action_info(name="scan_and_find_best_match", read_only=True, public=True)
+@action_info(name="scan_and_find_best_match", read_only=True, public=True, capabilities=['filesystem.read'])
 @requires_services(vision='vision', app='app')
-def scan_and_find_best_match(app: AppProviderService, vision: VisionService, engine: ExecutionEngine, template: str,
+def scan_and_find_best_match(app: AppProviderService, vision: VisionService, action_context: ActionContext, template: str,
                              region: tuple[int, int, int, int], priority: str = 'top',
                              threshold: float = 0.8, use_grayscale: bool = True,
                              match_method: int = cv2.TM_CCOEFF_NORMED, preprocess: str = "none") -> MatchResult:
@@ -1309,7 +1303,7 @@ def scan_and_find_best_match(app: AppProviderService, vision: VisionService, eng
     multi_match_result = find_all_images(
         app,
         vision,
-        engine,
+        action_context,
         template,
         region,
         threshold,
@@ -1342,7 +1336,7 @@ def scan_and_find_best_match(app: AppProviderService, vision: VisionService, eng
     return best_match
 
 
-@action_info(name="start_process", public=True)
+@action_info(name="start_process", public=True, capabilities=['process.control'])
 @requires_services(process_manager="process_manager")
 def start_process(
     process_manager: ProcessManagerService,
@@ -1360,7 +1354,7 @@ def start_process(
     return res
 
 
-@action_info(name="stop_process", public=True)
+@action_info(name="stop_process", public=True, capabilities=['process.control'])
 @requires_services(process_manager="process_manager")
 def stop_process(
     process_manager: ProcessManagerService,
@@ -1374,7 +1368,7 @@ def stop_process(
     return res
 
 
-@action_info(name="get_process_status", read_only=True, public=True)
+@action_info(name="get_process_status", read_only=True, public=True, capabilities=['process.read'])
 @requires_services(process_manager="process_manager")
 def get_process_status(
     process_manager: ProcessManagerService,
@@ -1383,7 +1377,7 @@ def get_process_status(
     return process_manager.get_process_status(identifier=identifier)
 
 
-@action_info(name="wait_for_process_exit", public=True)
+@action_info(name="wait_for_process_exit", public=True, capabilities=['process.read'])
 @requires_services(process_manager="process_manager")
 def wait_for_process_exit(
     process_manager: ProcessManagerService,

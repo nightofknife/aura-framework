@@ -22,7 +22,7 @@
         class="select"
         :disabled="normalized.readonly"
       >
-        <option v-if="!normalized.required" :value="null">Not selected</option>
+        <option v-if="!normalized.required" :value="null">未选择</option>
         <option v-for="option in normalized.enum || []" :key="option" :value="option">{{ option }}</option>
       </select>
 
@@ -67,7 +67,7 @@
       <TagInput
         v-else-if="widgetConfig.widget === 'tag-input'"
         v-model="innerValue"
-        :placeholder="normalized.placeholder || 'Press Enter to add a tag'"
+        :placeholder="normalized.placeholder || '回车添加标签'"
       />
 
       <div v-else-if="isSimpleDictList" class="table-block">
@@ -75,7 +75,7 @@
           <thead>
             <tr>
               <th v-for="column in tableColumns" :key="column.key">{{ column.label || column.name || column.key }}</th>
-              <th>Action</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -122,15 +122,15 @@
                 />
               </td>
               <td>
-                <button type="button" class="btn btn-ghost btn-sm" @click="removeList(index)">Remove</button>
+                <button type="button" class="btn btn-ghost btn-sm" @click="removeList(index)">移除</button>
               </td>
             </tr>
             <tr v-if="listValue.length === 0">
-              <td :colspan="tableColumns.length + 1" class="empty-state">No items yet.</td>
+              <td :colspan="tableColumns.length + 1" class="empty-state">暂无条目。</td>
             </tr>
           </tbody>
         </table>
-        <button type="button" class="btn btn-ghost btn-sm" @click="addList">Add Row</button>
+        <button type="button" class="btn btn-ghost btn-sm" @click="addList">添加行</button>
       </div>
 
       <div v-else class="list-block">
@@ -140,9 +140,9 @@
             :model-value="item"
             @update:modelValue="updateList(index, $event)"
           />
-          <button type="button" class="btn btn-ghost btn-sm" @click="removeList(index)">Remove</button>
+          <button type="button" class="btn btn-ghost btn-sm" @click="removeList(index)">移除</button>
         </div>
-        <button type="button" class="btn btn-ghost btn-sm" @click="addList">Add Item</button>
+        <button type="button" class="btn btn-ghost btn-sm" @click="addList">添加项</button>
       </div>
     </template>
 

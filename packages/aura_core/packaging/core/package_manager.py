@@ -11,9 +11,19 @@ from typing import Dict, Iterable, List, Optional
 
 from ...api import ACTION_REGISTRY, ActionDefinition, ServiceDefinition, service_registry
 from ...config.loader import get_config_value
+from ...policy import infer_action_capabilities, infer_service_capabilities
 from ..manifest import ManifestGenerator, ManifestParser, PluginManifest
+from .workspace_lifecycle import WorkspaceLifecycleService, normalize_package_id
 
 logger = logging.getLogger(__name__)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 class PackageManager:
@@ -23,6 +33,8 @@ class PackageManager:
         self.packages_dir = packages_dir
         self.plans_dir = plans_dir
         self.base_path = packages_dir.parent
+        if str(self.base_path) not in sys.path:
+            sys.path.insert(0, str(self.base_path))
 
         manifest_mode = str(
             get_config_value("package.manifest_mode", "", base_path=str(self.base_path)) or ""
@@ -42,8 +54,16 @@ class PackageManager:
                 base_path=str(self.base_path),
             )
         )
+        self.auto_sync_installed_packages = bool(
+            get_config_value(
+                "package.auto_sync_installed_packages",
+                False,
+                base_path=str(self.base_path),
+            )
+        )
 
         self.loaded_packages: Dict[str, PluginManifest] = {}
+        self.workspace_lifecycle = WorkspaceLifecycleService(self.base_path)
 
     @property
     def _is_hybrid_mode(self) -> bool:
@@ -76,6 +96,11 @@ class PackageManager:
 
         synced_count = 0
         for package_dir in self._iter_package_dirs():
+            if (
+                not self.auto_sync_installed_packages
+                and _is_relative_to(package_dir.resolve(), self.packages_dir.resolve())
+            ):
+                continue
             try:
                 generator = ManifestGenerator(package_dir)
                 try:
@@ -186,7 +211,23 @@ class PackageManager:
                 if fallback:
                     manifests[fallback.package.canonical_id] = fallback
 
-        return manifests
+        return self._filter_by_workspace_profile(manifests)
+
+    def _filter_by_workspace_profile(self, manifests: Dict[str, PluginManifest]) -> Dict[str, PluginManifest]:
+        if not self.workspace_lifecycle.workspace_exists():
+            return manifests
+        enabled_ids = self.workspace_lifecycle.enabled_package_ids()
+        enabled_paths = self.workspace_lifecycle.enabled_source_paths()
+        filtered: Dict[str, PluginManifest] = {}
+        for package_id, manifest in manifests.items():
+            normalized_id = normalize_package_id(package_id)
+            manifest_path = Path(getattr(manifest, "path", "") or "").resolve()
+            if normalized_id in enabled_ids or manifest_path in enabled_paths:
+                filtered[package_id] = manifest
+        skipped = sorted(set(manifests) - set(filtered))
+        if skipped:
+            logger.info("Workspace profile skipped disabled package(s): %s", ", ".join(skipped))
+        return filtered
 
     def _validate_manifests(self, manifests: Dict[str, PluginManifest]):
         for package_id, manifest in manifests.items():
@@ -294,10 +335,6 @@ class PackageManager:
             normalized = normalized[:-3]
         normalized = normalized.strip(".")
 
-        module = self._import_module_with_recovery(normalized)
-        if module is not None:
-            return module
-
         package_prefix = self._derive_package_import_prefix(manifest.path)
         if package_prefix:
             for candidate in (
@@ -309,6 +346,16 @@ class PackageManager:
                 module = self._import_module_with_recovery(candidate)
                 if module is not None:
                     return module
+
+        previous_path = list(sys.path)
+        try:
+            if str(manifest.path) not in sys.path:
+                sys.path.insert(0, str(manifest.path))
+            module = self._import_module_with_recovery(normalized)
+            if module is not None:
+                return module
+        finally:
+            sys.path[:] = previous_path
         raise ImportError(f"Unable to import module '{module_path}' for package '{manifest.package.canonical_id}'.")
 
     def _import_module_with_recovery(self, module_name: str):
@@ -336,6 +383,11 @@ class PackageManager:
             prefixes.append(root)
             if len(parts) > 1:
                 prefixes.append(".".join(parts[:2]))
+        elif root == "packages":
+            if len(parts) > 1:
+                prefixes.append(".".join(parts[:2]))
+        else:
+            prefixes.append(root)
 
         for prefix in prefixes:
             for loaded_name in list(sys.modules):
@@ -406,6 +458,9 @@ class PackageManager:
                 }
 
                 service_fqid = f"{manifest.package.canonical_id}/{service.name}"
+                service_capabilities = list(service_meta.get("capabilities") or [])
+                if not service_capabilities:
+                    service_capabilities = infer_service_capabilities(service.name)
 
                 definition = ServiceDefinition(
                     alias=service.name,
@@ -418,6 +473,12 @@ class PackageManager:
                     singleton=service.singleton,
                     service_deps=resolved_deps,
                     description=service.description or service_meta.get("description", ""),
+                    capabilities=service_capabilities,
+                    capabilities_declared=bool(service_meta.get("capabilities_declared")),
+                    side_effect_level=str(service_meta.get("side_effect_level") or "read"),
+                    requires_foreground=bool(service_meta.get("requires_foreground")),
+                    requires_admin=bool(service_meta.get("requires_admin")),
+                    stability=str(service_meta.get("stability") or "stable"),
                 )
                 service_registry.register(definition)
 
@@ -445,10 +506,15 @@ class PackageManager:
                     action_fqid = f"{author}/{package_name}/{action.name}"
 
                 raw_service_deps = getattr(action_func, "_service_dependencies", {})
+                action_meta = getattr(action_func, "__aura_action__", {}) or {}
                 service_deps = {
                     alias: self._resolve_dependency_service_id(manifest, dep_id, local_service_names)
                     for alias, dep_id in raw_service_deps.items()
                 }
+                capabilities = list(action_meta.get("capabilities") or [])
+                capabilities_declared = bool(action_meta.get("capabilities_declared"))
+                if not capabilities:
+                    capabilities = infer_action_capabilities(action.name, read_only=bool(action.read_only))
 
                 definition = ActionDefinition(
                     func=action_func,
@@ -460,6 +526,12 @@ class PackageManager:
                     is_async=inspect.iscoroutinefunction(action_func),
                     timeout=action.timeout,
                     description=action.description or "",
+                    capabilities=capabilities,
+                    capabilities_declared=capabilities_declared,
+                    side_effect_level=str(action_meta.get("side_effect_level") or ("read" if action.read_only else "input")),
+                    requires_foreground=bool(action_meta.get("requires_foreground")),
+                    requires_admin=bool(action_meta.get("requires_admin")),
+                    stability=str(action_meta.get("stability") or "stable"),
                 )
                 ACTION_REGISTRY.register(definition)
 

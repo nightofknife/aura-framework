@@ -1,0 +1,15 @@
+workspace_schema_version: 1
+workspace:
+  name: default
+  profile: workspace-default
+runtime:
+  api_profile: local_only
+  desktop_profile: default
+  persistence: sqlite
+packages:
+- id: plans/aura_base
+  enabled: true
+  source: plans/aura_base
+- id: plans/aura_benchmark
+  enabled: true
+  source: plans/aura_benchmark

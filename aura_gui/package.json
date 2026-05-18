@@ -2,21 +2,51 @@
   "name": "aura-gui",
   "private": true,
   "version": "0.1.0",
+  "description": "Aura local desktop automation console",
+  "author": "Aura",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 4173"
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "desktop:dev": "node scripts/electron-dev.mjs",
+    "desktop:preview": "npm run build && electron .",
+    "desktop:build": "npm run build",
+    "desktop:package": "npm run build && electron-builder --win dir",
+    "desktop:zip": "node scripts/zip-electron-output.mjs"
   },
   "dependencies": {
     "@vueuse/core": "^12.7.0",
     "axios": "^1.9.0",
+    "lucide-vue-next": "^1.0.0",
     "pinia": "^3.0.2",
     "vue": "^3.5.13",
     "vue-virtual-scroller": "^2.0.0-beta.8"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
+    "archiver": "^8.0.0",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.8.1",
     "vite": "^6.2.0"
+  },
+  "build": {
+    "appId": "dev.aura.gui",
+    "productName": "Aura",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "dir"
+      ]
+    },
+    "npmRebuild": false
   }
 }

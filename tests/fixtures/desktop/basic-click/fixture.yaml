@@ -1,0 +1,14 @@
+fixture_schema_version: 1
+id: desktop/basic-click
+desktop_profile: fixture
+capture:
+  backend: fake
+  image: capture/basic-screen.png
+window:
+  title: Fake Window
+  rect: [0, 0, 1280, 720]
+expected:
+  actions:
+    - action: plans/aura_base/click
+      backend: fake
+      ok: true

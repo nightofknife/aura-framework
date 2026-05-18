@@ -225,7 +225,16 @@ class ServiceRegistry:
             finally:
                 self._registering.discard(definition.fqid)
 
-    def register_instance(self, alias: str, instance: Any, fqid: Optional[str] = None, public: bool = False):
+    def register_instance(
+        self,
+        alias: str,
+        instance: Any,
+        fqid: Optional[str] = None,
+        public: bool = False,
+        *,
+        capabilities: Optional[List[str]] = None,
+        side_effect_level: Optional[str] = None,
+    ):
         with self._lock:
             target_fqid = fqid or f"core/{alias}"
             if alias in self._active_alias_map or target_fqid in self._fqid_map:
@@ -234,6 +243,13 @@ class ServiceRegistry:
                     f"Core service registration conflict for alias '{alias}' "
                     f"(existing: '{existing_fqid}', new: '{target_fqid}')."
                 )
+
+            meta = getattr(type(instance), "_aura_service_meta", {}) or {}
+            resolved_capabilities = list(capabilities or meta.get("capabilities") or [])
+            if not resolved_capabilities:
+                from packages.aura_core.policy import infer_service_capabilities
+
+                resolved_capabilities = infer_service_capabilities(alias)
 
             definition = ServiceDefinition(
                 alias=alias,
@@ -246,6 +262,12 @@ class ServiceRegistry:
                 instance=instance,
                 status="resolved",
                 singleton=True,
+                capabilities=resolved_capabilities,
+                capabilities_declared=True,
+                side_effect_level=str(side_effect_level or meta.get("side_effect_level") or "read"),
+                requires_foreground=bool(meta.get("requires_foreground", False)),
+                requires_admin=bool(meta.get("requires_admin", False)),
+                stability=str(meta.get("stability") or "stable"),
             )
             self._fqid_map[target_fqid] = definition
             self._active_alias_map[alias] = target_fqid

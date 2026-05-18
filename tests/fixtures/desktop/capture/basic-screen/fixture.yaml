@@ -1,0 +1,25 @@
+fixture_schema_version: 2
+id: capture/basic-screen
+desktop_profile: fixture
+capture:
+  backend: fake
+  image: capture/basic-screen.png
+window:
+  title: Fake Window
+  rect: [0, 0, 1280, 720]
+expected:
+  actions:
+    - action: plans/aura_base/capture_screen
+      backend: fake
+      ok: true
+      data:
+        capture_ref: fixture://capture/basic-screen.png
+  captures:
+    - image_ref: fixture://capture/basic-screen.png
+      backend: fake
+      width: 1280
+      height: 720
+      quality_flags: [fixture]
+  window:
+    title: Fake Window
+    rect: [0, 0, 1280, 720]

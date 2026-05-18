@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pydantic
+PyYAML
+python-dotenv
+jinja2
+click
+prompt_toolkit
+croniter
+watchdog
+fastjsonschema
+psutil
+cachetools

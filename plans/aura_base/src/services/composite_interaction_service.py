@@ -17,6 +17,8 @@ from .vision_service import VisionService, MatchResult
     "composite-interaction",
     public=True,
     deps={"app": "app", "screen": "screen", "ocr": "ocr", "vision": "vision"},
+    capabilities=["desktop.capture.read", "desktop.ocr.read", "desktop.mouse.input"],
+    side_effect_level="input",
 )
 class CompositeInteractionService:
     """

@@ -1,18 +1,13 @@
 // === src/composables/useStagingRunner.js ===
 import { ref, watch, effectScope } from 'vue';
-import axios from 'axios';
 import { getGuiConfig } from '../config.js';
+import { api } from '../api/client.js';
 import { useStagingQueue, GUI_STATUS } from './useStagingQueue.js';
 import { useToasts } from './useToasts.js';
 import { useRuns } from './useRuns.js';
 import { useQueueStore } from './useQueueStore.js';
 
 const cfg = getGuiConfig();
-const API_BASE = cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1';
-const api = axios.create({
-    baseURL: API_BASE,
-    timeout: cfg?.api?.dispatch_timeout_ms || cfg?.api?.timeout_ms || 10000,
-});
 
 const running = ref(false);
 const autoMode = ref(false);
@@ -40,7 +35,7 @@ export function useStagingRunner() {
 
     async function pollActiveRuns() {
         try {
-            const { data } = await api.get('/runs/active');
+            const data = await api.get('/runs/active');
             setRuns(data || []);
         } catch (err) {
             console.error('[Polling] Failed to fetch active runs:', err);
@@ -69,11 +64,11 @@ export function useStagingRunner() {
             const results = [];
 
             for (let i = 0; i < repeatCount; i++) {
-                const { data } = await api.post('/tasks/dispatch', {
+                const data = await api.post('/tasks/dispatch', {
                     plan_name: nextItem.plan_name,
                     task_ref: nextItem.task_name,
                     inputs: nextItem.inputs || {},
-                });
+                }, { timeout: cfg?.api?.dispatch_timeout_ms || cfg?.api?.timeout_ms || 10000 });
 
                 if (data.status === 'success') {
                     results.push({

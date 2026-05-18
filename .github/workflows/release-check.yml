@@ -1,0 +1,53 @@
+name: Release Check
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONNOUSERSITE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  release-check:
+    name: Release readiness
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: aura_gui/package-lock.json
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-release-${{ hashFiles('requirements/**/*.txt', 'requirements/**/*.lock') }}
+
+      - name: Setup test runtime
+        shell: pwsh
+        run: .\scripts\setup_test_runtime.ps1 -BasePython "$env:pythonLocation\python.exe"
+
+      - name: Install GUI dependencies
+        working-directory: aura_gui
+        run: npm ci
+
+      - name: Run release check
+        shell: pwsh
+        run: .\.venv-test\Scripts\python.exe cli.py release check

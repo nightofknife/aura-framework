@@ -1,12 +1,18 @@
 param(
     [string]$BasePython = "C:\\Python313\\python.exe",
     [string]$VenvPath = ".venv",
-    [string]$RuntimeRequirements = "requirements/runtime.txt",
-    [string]$LockFile = "requirements/runtime.lock",
+    [string[]]$Profiles = @("workspace-default"),
     [switch]$UseLock = $true
 )
 
 $ErrorActionPreference = "Stop"
+
+$profileMap = @{
+    "framework-core"    = @{ Requirements = "requirements/framework-core.txt"; Lock = $null }
+    "workspace-default" = @{ Requirements = "requirements/workspace-default.txt"; Lock = "requirements/workspace-default.lock" }
+    "yolo"              = @{ Requirements = "requirements/yolo.txt"; Lock = $null }
+    "test"              = @{ Requirements = "requirements/test.txt"; Lock = $null }
+}
 
 function Assert-PathExists {
     param([string]$PathValue, [string]$Label)
@@ -15,8 +21,28 @@ function Assert-PathExists {
     }
 }
 
+function Get-InstallFileForProfile {
+    param([string]$ProfileName, [bool]$PreferLock)
+
+    if (-not $profileMap.ContainsKey($ProfileName)) {
+        throw "Unknown dependency profile: $ProfileName"
+    }
+
+    $spec = $profileMap[$ProfileName]
+    $requirementsFile = [string]$spec.Requirements
+    Assert-PathExists -PathValue $requirementsFile -Label "$ProfileName requirements"
+
+    $lockFile = [string]$spec.Lock
+    if ($PreferLock -and $lockFile -and (Test-Path $lockFile)) {
+        return $lockFile
+    }
+    return $requirementsFile
+}
+
 Assert-PathExists -PathValue $BasePython -Label "Base Python"
-Assert-PathExists -PathValue $RuntimeRequirements -Label "Runtime requirements"
+foreach ($profile in $Profiles) {
+    [void](Get-InstallFileForProfile -ProfileName $profile -PreferLock:$UseLock)
+}
 
 $version = & $BasePython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
 if (-not $version.StartsWith("3.13.")) {
@@ -47,11 +73,14 @@ if ($cfgText -notmatch "include-system-site-packages\s*=\s*false") {
 Write-Host "Installing runtime dependencies ..."
 & $venvPython -m pip install --upgrade pip setuptools wheel
 
-if ($UseLock -and (Test-Path $LockFile)) {
-    & $venvPython -m pip install -r $LockFile
-} else {
-    & $venvPython -m pip install -r $RuntimeRequirements
-    & $venvPython -m pip freeze --all | Set-Content -Path $LockFile -Encoding UTF8
+foreach ($profile in $Profiles) {
+    $installFile = Get-InstallFileForProfile -ProfileName $profile -PreferLock:$UseLock
+    Write-Host "Installing profile '$profile' from $installFile ..."
+    & $venvPython -m pip install -r $installFile
+}
+
+if (-not $UseLock -and $Profiles.Count -eq 1 -and $Profiles[0] -eq "workspace-default") {
+    & $venvPython -m pip freeze --all | Set-Content -Path "requirements/workspace-default.lock" -Encoding UTF8
 }
 
 Write-Host "Running pip check ..."
@@ -62,4 +91,5 @@ Write-Host ""
 Write-Host "Runtime ready."
 Write-Host "Base python : $BasePython"
 Write-Host "Venv python : $venvPython"
+Write-Host "Profiles    : $($Profiles -join ', ')"
 Write-Host "Version     : $venvVersion"

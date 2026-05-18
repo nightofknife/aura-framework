@@ -1,0 +1,57 @@
+{
+  "status": "success",
+  "fixture": {
+    "id": "ocr/simple-text",
+    "desktop_profile": "fixture",
+    "schema_version": 2
+  },
+  "action_results": [
+    {
+      "ok": true,
+      "action": "plans/aura_base/find_text",
+      "backend": "fake",
+      "data": {
+        "value": {
+          "found": true,
+          "text": "Aura"
+        }
+      }
+    }
+  ],
+  "captures": [],
+  "locators": [
+    {
+      "method": "ocr_text",
+      "backend": "fake",
+      "source": "fixture://capture/basic-screen.png",
+      "bbox": [
+        10,
+        10,
+        90,
+        30
+      ],
+      "center": [
+        50,
+        20
+      ],
+      "score": 0.99,
+      "threshold": 0.8
+    }
+  ],
+  "ocr": [
+    {
+      "text": "Aura",
+      "confidence": 0.99,
+      "bbox": [
+        10,
+        10,
+        90,
+        30
+      ],
+      "source": "fixture://capture/basic-screen.png"
+    }
+  ],
+  "yolo": [],
+  "window": null,
+  "diagnostics": {}
+}

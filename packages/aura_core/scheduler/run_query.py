@@ -102,14 +102,26 @@ class RunQueryService:
                     "public": service_def.public,
                     "service_class_info": class_info,
                     "plugin": plugin_info,
+                    "capabilities": list(getattr(service_def, "capabilities", []) or []),
+                    "side_effect_level": getattr(service_def, "side_effect_level", "read"),
+                    "requires_foreground": bool(getattr(service_def, "requires_foreground", False)),
+                    "requires_admin": bool(getattr(service_def, "requires_admin", False)),
+                    "stability": getattr(service_def, "stability", "stable"),
                 }
             )
         return api_safe_services
 
     def get_queue_overview(self) -> Dict[str, Any]:
+        task_queue = getattr(self._scheduler, "task_queue", None)
+        if task_queue is not None and hasattr(task_queue, "overview"):
+            return task_queue.overview()
         return self._scheduler.observability.get_queue_overview()
 
     def list_queue(self, state: str, limit: int = 200) -> Dict[str, Any]:
+        task_queue = getattr(self._scheduler, "task_queue", None)
+        if task_queue is not None and hasattr(task_queue, "_run_store") and state in {"ready", "delayed"}:
+            rows = task_queue._run_store.queue_list(state=state, limit=limit)
+            return {"items": rows, "next_cursor": None}
         return self._scheduler.observability.list_queue(state, limit)
 
     def get_metrics_snapshot(self) -> Dict[str, Any]:

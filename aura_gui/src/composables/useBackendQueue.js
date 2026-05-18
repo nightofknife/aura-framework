@@ -1,13 +1,9 @@
 // === src/composables/useBackendQueue.js ===
 import { ref } from 'vue';
-import axios from 'axios';
 import { getGuiConfig } from '../config.js';
+import { api } from '../api/client.js';
 
 const cfg = getGuiConfig();
-const api = axios.create({
-    baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
-    timeout: cfg?.api?.timeout_ms || 5000,
-});
 
 const readyQueue = ref([]);
 const overview = ref(null);
@@ -16,7 +12,7 @@ const activeRuns = ref([]);
 async function fetchReady() {
     try {
         const limit = cfg?.api?.queue_list_limit || 200;
-        const { data } = await api.get('/queue/list', { params: { state: 'ready', limit } });
+        const data = await api.get('/queue/list', { params: { state: 'ready', limit } });
         readyQueue.value = data?.items || [];
         console.log('[BackendQueue] ready items:', readyQueue.value.length, readyQueue.value);
         const invalid = readyQueue.value.filter(it => !it.cid);
@@ -30,8 +26,7 @@ async function fetchReady() {
 
 async function fetchOverview() {
     try {
-        const { data } = await api.get('/queue/overview');
-        overview.value = data || null;
+        overview.value = await api.get('/queue/overview') || null;
     } catch (e) {
         overview.value = null;
     }
@@ -39,8 +34,7 @@ async function fetchOverview() {
 
 async function fetchActiveRuns() {
     try {
-        const { data } = await api.get('/runs/active');
-        activeRuns.value = data || [];
+        activeRuns.value = await api.get('/runs/active') || [];
         console.log('[BackendQueue] active runs:', activeRuns.value.length, activeRuns.value);
     } catch (e) {
         activeRuns.value = [];

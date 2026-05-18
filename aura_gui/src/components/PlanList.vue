@@ -29,7 +29,7 @@
 
 <script setup>
 import {ref, onMounted} from 'vue';
-import axios from 'axios';
+import { createAuraAxiosClient } from '../api/client.js';
 import { getGuiConfig } from '../config.js';
 
 defineProps({selectedPlan: String});
@@ -39,7 +39,7 @@ const plans = ref([]);
 const loading = ref(true);
 const error = ref(null);
 const cfg = getGuiConfig();
-const apiClient = axios.create({
+const apiClient = createAuraAxiosClient({
   baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
   timeout: cfg?.api?.timeout_ms || 5000,
 });

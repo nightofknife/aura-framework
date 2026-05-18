@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from packages.aura_core.api.definitions import ActionDefinition, ServiceDefinition
 from packages.aura_core.context.execution import ExecutionContext
 from packages.aura_core.engine import action_injector as action_injector_module
@@ -22,6 +24,8 @@ from packages.aura_core.scheduler.queues.task_queue import Tasklet
 from packages.aura_core.scheduler.run_query import RunQueryService
 from packages.aura_core.scheduler import scheduling_service as scheduling_module
 from packages.aura_core.utils.middleware import Middleware, middleware_manager
+
+pytestmark = pytest.mark.unit
 
 
 class _DummyRenderer:

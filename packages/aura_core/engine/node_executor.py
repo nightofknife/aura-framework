@@ -76,6 +76,7 @@ class NodeExecutor:
         execution_success = False
         action_result = None
         loop_info: Dict[str, Any] = {}
+        node_context.data["_current_node_id"] = node_id
         try:
             loop_info = getattr(node_context, "data", {}).get("loop", {}) or {}
         except Exception:
@@ -210,6 +211,7 @@ class NodeExecutor:
             node_context.data['nodes'][node_id]['metadata'] = metadata.copy()
             self.engine.root_context.data['nodes'][node_id]['metadata'] = metadata.copy()
 
+            action_envelope = node_context.data.get("_last_action_result")
             outputs_block = node_data.get('outputs', {})
             if outputs_block:
                 renderer = TemplateRenderer(node_context, self.engine.state_store)
@@ -228,7 +230,10 @@ class NodeExecutor:
                     'end_time': end_ts,
                     'duration_ms': round((end_ts - start_time) * 1000, 3),
                     'retry_count': actual_retry_count,
-                    'output': node_result
+                    'output': node_result,
+                    'action_result': action_envelope,
+                    'policy_decision': (action_envelope or {}).get("policy"),
+                    'evidence': (action_envelope or {}).get("evidence", []),
                 })
 
 
@@ -294,7 +299,14 @@ class NodeExecutor:
                 start_time,
                 error=error_details
             )
+            action_envelope = node_context.data.get("_last_action_result")
+            policy_decision = node_context.data.get("_last_policy_decision")
             final_node_output = {"run_state": run_state, **node_result}
+            if action_envelope:
+                action_envelope["node_id"] = node_id
+                final_node_output["action_result"] = action_envelope
+            if policy_decision:
+                final_node_output["policy_decision"] = policy_decision
             node_context.add_node_result(node_id, final_node_output)
             self.engine.root_context.add_node_result(node_id, final_node_output)
 
@@ -311,7 +323,10 @@ class NodeExecutor:
                     **_base_payload(),
                     'end_time': end_ts,
                     'duration_ms': round((end_ts - start_time) * 1000, 3),
-                    'status': status
+                    'status': status,
+                    'action_result': action_envelope,
+                    'policy_decision': policy_decision,
+                    'evidence': (action_envelope or {}).get("evidence", []),
                 })
 
     async def _resolve_step_note(

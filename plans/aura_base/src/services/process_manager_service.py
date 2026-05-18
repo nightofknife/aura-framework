@@ -36,6 +36,8 @@ class ProcRecord:
     alias="process_manager",
     public=True,
     deps={"config": "core/config", "state_store": "core/state_store"},
+    capabilities=["process.read", "process.control"],
+    side_effect_level="input",
 )
 class ProcessManagerService:
     """

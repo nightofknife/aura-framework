@@ -1,0 +1,1296 @@
+{
+  "snapshot_schema_version": 1,
+  "actions": {
+    "plans/aura_base/assert_all_templates_in_set": {
+      "name": "assert_all_templates_in_set",
+      "parameters": [
+        "templates_ref",
+        "region",
+        "threshold",
+        "message",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/assert_any_template_in_set": {
+      "name": "assert_any_template_in_set",
+      "parameters": [
+        "templates_ref",
+        "region",
+        "threshold",
+        "message",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/assert_condition": {
+      "name": "assert_condition",
+      "parameters": [
+        "condition",
+        "message"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/assert_image_exists": {
+      "name": "assert_image_exists",
+      "parameters": [
+        "template",
+        "region",
+        "threshold",
+        "message",
+        "use_grayscale",
+        "match_method",
+        "preprocess",
+        "mask"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/assert_image_not_exists": {
+      "name": "assert_image_not_exists",
+      "parameters": [
+        "template",
+        "region",
+        "threshold",
+        "message",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/assert_text_equals": {
+      "name": "assert_text_equals",
+      "parameters": [
+        "text_to_find",
+        "expected_value",
+        "region",
+        "message"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/assert_text_exists": {
+      "name": "assert_text_exists",
+      "parameters": [
+        "text_to_find",
+        "region",
+        "match_mode",
+        "message"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/assert_text_not_exists": {
+      "name": "assert_text_not_exists",
+      "parameters": [
+        "text_to_find",
+        "region",
+        "match_mode",
+        "message"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/aura.run_task": {
+      "name": "aura.run_task",
+      "parameters": [
+        "task_ref",
+        "inputs"
+      ],
+      "capabilities": [
+        "network.local"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/check_image_exists": {
+      "name": "check_image_exists",
+      "parameters": [
+        "template",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess",
+        "mask"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/check_text_exists": {
+      "name": "check_text_exists",
+      "parameters": [
+        "text_to_find",
+        "region",
+        "match_mode"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/click": {
+      "name": "click",
+      "parameters": [
+        "x",
+        "y",
+        "button",
+        "clicks",
+        "interval"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/double_click": {
+      "name": "double_click",
+      "parameters": [
+        "x",
+        "y"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/drag": {
+      "name": "drag",
+      "parameters": [
+        "start_x",
+        "start_y",
+        "end_x",
+        "end_y",
+        "button",
+        "duration"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/drag_to_find": {
+      "name": "drag_to_find",
+      "parameters": [
+        "drag_from_template",
+        "drag_to_template",
+        "from_region",
+        "to_region",
+        "threshold",
+        "duration",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/file_read": {
+      "name": "file_read",
+      "parameters": [
+        "file_path"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/file_write": {
+      "name": "file_write",
+      "parameters": [
+        "file_path",
+        "content",
+        "append"
+      ],
+      "capabilities": [
+        "filesystem.write"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_all_images": {
+      "name": "find_all_images",
+      "parameters": [
+        "template",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_all_templates_in_set": {
+      "name": "find_all_templates_in_set",
+      "parameters": [
+        "templates_ref",
+        "region",
+        "threshold",
+        "nms_threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_best_image": {
+      "name": "find_best_image",
+      "parameters": [
+        "template",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_best_template_in_set": {
+      "name": "find_best_template_in_set",
+      "parameters": [
+        "templates_ref",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_image": {
+      "name": "find_image",
+      "parameters": [
+        "template",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess",
+        "mask"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_image_and_click": {
+      "name": "find_image_and_click",
+      "parameters": [
+        "template",
+        "region",
+        "threshold",
+        "button",
+        "move_duration",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read",
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_image_in_scrolling_area": {
+      "name": "find_image_in_scrolling_area",
+      "parameters": [
+        "template",
+        "scroll_area",
+        "scroll_direction",
+        "max_scrolls",
+        "scroll_amount",
+        "threshold",
+        "delay_after_scroll",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read",
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_templates_in_set": {
+      "name": "find_templates_in_set",
+      "parameters": [
+        "templates_ref",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_text": {
+      "name": "find_text",
+      "parameters": [
+        "text_to_find",
+        "region",
+        "match_mode"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_text_and_click": {
+      "name": "find_text_and_click",
+      "parameters": [
+        "text_to_find",
+        "region",
+        "match_mode",
+        "button",
+        "move_duration"
+      ],
+      "capabilities": [
+        "desktop.mouse.input",
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/find_unique_template_in_set": {
+      "name": "find_unique_template_in_set",
+      "parameters": [
+        "templates_ref",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/focus_window": {
+      "name": "focus_window",
+      "parameters": [],
+      "capabilities": [
+        "desktop.window.focus"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/focus_window_with_input": {
+      "name": "focus_window_with_input",
+      "parameters": [
+        "click_delay"
+      ],
+      "capabilities": [
+        "desktop.window.focus"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/get_pixel_color": {
+      "name": "get_pixel_color",
+      "parameters": [
+        "x",
+        "y"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/get_process_status": {
+      "name": "get_process_status",
+      "parameters": [
+        "identifier"
+      ],
+      "capabilities": [
+        "process.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/get_text_in_region": {
+      "name": "get_text_in_region",
+      "parameters": [
+        "region",
+        "whitelist",
+        "join_with"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/get_window_size": {
+      "name": "get_window_size",
+      "parameters": [],
+      "capabilities": [
+        "desktop.window.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/key_down": {
+      "name": "key_down",
+      "parameters": [
+        "key"
+      ],
+      "capabilities": [
+        "desktop.keyboard.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/key_up": {
+      "name": "key_up",
+      "parameters": [
+        "key"
+      ],
+      "capabilities": [
+        "desktop.keyboard.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/list_capture_backends": {
+      "name": "list_capture_backends",
+      "parameters": [],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/list_template_libraries": {
+      "name": "list_template_libraries",
+      "parameters": [],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/list_templates_in_set": {
+      "name": "list_templates_in_set",
+      "parameters": [
+        "templates_ref"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/log": {
+      "name": "log",
+      "parameters": [
+        "message",
+        "level"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/math_compute": {
+      "name": "math_compute",
+      "parameters": [
+        "expression"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/mouse_down": {
+      "name": "mouse_down",
+      "parameters": [
+        "button"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/mouse_move_relative": {
+      "name": "mouse_move_relative",
+      "parameters": [
+        "dx",
+        "dy",
+        "duration"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/mouse_up": {
+      "name": "mouse_up",
+      "parameters": [
+        "button"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/move_to": {
+      "name": "move_to",
+      "parameters": [
+        "x",
+        "y",
+        "duration"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/preload_ocr": {
+      "name": "preload_ocr",
+      "parameters": [
+        "warmup"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/press_hotkey": {
+      "name": "press_hotkey",
+      "parameters": [
+        "keys"
+      ],
+      "capabilities": [
+        "desktop.keyboard.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/press_key": {
+      "name": "press_key",
+      "parameters": [
+        "key",
+        "presses",
+        "interval"
+      ],
+      "capabilities": [
+        "desktop.keyboard.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/publish_event": {
+      "name": "publish_event",
+      "parameters": [
+        "name",
+        "payload",
+        "source",
+        "channel"
+      ],
+      "capabilities": [
+        "network.local"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/recognize_all_text": {
+      "name": "recognize_all_text",
+      "parameters": [
+        "region"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/regex_search": {
+      "name": "regex_search",
+      "parameters": [
+        "text",
+        "pattern"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/register_template_library": {
+      "name": "register_template_library",
+      "parameters": [
+        "name",
+        "path",
+        "recursive",
+        "extensions"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/right_click": {
+      "name": "right_click",
+      "parameters": [
+        "x",
+        "y"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/scan_and_find_best_match": {
+      "name": "scan_and_find_best_match",
+      "parameters": [
+        "template",
+        "region",
+        "priority",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/screen_selfcheck": {
+      "name": "screen_selfcheck",
+      "parameters": [],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/scroll": {
+      "name": "scroll",
+      "parameters": [
+        "direction",
+        "amount"
+      ],
+      "capabilities": [
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/set_capture_backend": {
+      "name": "set_capture_backend",
+      "parameters": [
+        "backend"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/set_variable": {
+      "name": "set_variable",
+      "parameters": [
+        "name",
+        "value"
+      ],
+      "capabilities": [
+        "network.local"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/sleep": {
+      "name": "sleep",
+      "parameters": [
+        "seconds"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/start_process": {
+      "name": "start_process",
+      "parameters": [
+        "identifier",
+        "executable_path",
+        "args",
+        "cwd",
+        "env"
+      ],
+      "capabilities": [
+        "process.control"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/stop_process": {
+      "name": "stop_process",
+      "parameters": [
+        "identifier",
+        "force",
+        "timeout"
+      ],
+      "capabilities": [
+        "process.control"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/stop_task": {
+      "name": "stop_task",
+      "parameters": [
+        "message",
+        "success"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/string_format": {
+      "name": "string_format",
+      "parameters": [
+        "template",
+        "args",
+        "kwargs"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/string_join": {
+      "name": "string_join",
+      "parameters": [
+        "items",
+        "separator"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/string_split": {
+      "name": "string_split",
+      "parameters": [
+        "text",
+        "separator",
+        "max_split"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/type_text": {
+      "name": "type_text",
+      "parameters": [
+        "text",
+        "interval"
+      ],
+      "capabilities": [
+        "desktop.keyboard.input",
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/unregister_template_library": {
+      "name": "unregister_template_library",
+      "parameters": [
+        "name"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/wait_for_any_template_in_set": {
+      "name": "wait_for_any_template_in_set",
+      "parameters": [
+        "templates_ref",
+        "timeout",
+        "interval",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/wait_for_image": {
+      "name": "wait_for_image",
+      "parameters": [
+        "template",
+        "timeout",
+        "interval",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/wait_for_process_exit": {
+      "name": "wait_for_process_exit",
+      "parameters": [
+        "identifier",
+        "timeout"
+      ],
+      "capabilities": [
+        "process.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/wait_for_templates_in_set_to_disappear": {
+      "name": "wait_for_templates_in_set_to_disappear",
+      "parameters": [
+        "templates_ref",
+        "timeout",
+        "interval",
+        "region",
+        "threshold",
+        "use_grayscale",
+        "match_method",
+        "preprocess"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/wait_for_text": {
+      "name": "wait_for_text",
+      "parameters": [
+        "text_to_find",
+        "timeout",
+        "interval",
+        "region",
+        "match_mode"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/wait_for_text_to_disappear": {
+      "name": "wait_for_text_to_disappear",
+      "parameters": [
+        "text_to_monitor",
+        "timeout",
+        "interval",
+        "region",
+        "match_mode"
+      ],
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_click_all_targets": {
+      "name": "yolo_click_all_targets",
+      "parameters": [
+        "target_labels",
+        "roi",
+        "model_name",
+        "options",
+        "min_confidence",
+        "sort_mode",
+        "anchor_point",
+        "click_offset",
+        "button",
+        "clicks",
+        "interval",
+        "delay_between_clicks_sec",
+        "max_clicks"
+      ],
+      "capabilities": [
+        "desktop.capture.read",
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_count_targets": {
+      "name": "yolo_count_targets",
+      "parameters": [
+        "target_labels",
+        "roi",
+        "model_name",
+        "options",
+        "min_confidence"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_detect_image": {
+      "name": "yolo_detect_image",
+      "parameters": [
+        "image_path",
+        "model_name",
+        "options"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_detect_on_screen": {
+      "name": "yolo_detect_on_screen",
+      "parameters": [
+        "roi",
+        "model_name",
+        "options"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_find_and_click_target": {
+      "name": "yolo_find_and_click_target",
+      "parameters": [
+        "target_labels",
+        "roi",
+        "model_name",
+        "options",
+        "min_confidence",
+        "sort_mode",
+        "anchor_point",
+        "click_offset",
+        "button",
+        "clicks",
+        "interval",
+        "post_delay_sec"
+      ],
+      "capabilities": [
+        "desktop.capture.read",
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_find_target": {
+      "name": "yolo_find_target",
+      "parameters": [
+        "target_labels",
+        "roi",
+        "model_name",
+        "options",
+        "min_confidence",
+        "sort_mode",
+        "anchor_point"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_find_target_and_press_key": {
+      "name": "yolo_find_target_and_press_key",
+      "parameters": [
+        "key",
+        "target_labels",
+        "roi",
+        "model_name",
+        "options",
+        "min_confidence",
+        "sort_mode",
+        "anchor_point",
+        "presses",
+        "interval"
+      ],
+      "capabilities": [
+        "desktop.capture.read",
+        "desktop.keyboard.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_get_active_model": {
+      "name": "yolo_get_active_model",
+      "parameters": [],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_get_class_names": {
+      "name": "yolo_get_class_names",
+      "parameters": [
+        "model_name"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_list_loaded_models": {
+      "name": "yolo_list_loaded_models",
+      "parameters": [],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_preload_model": {
+      "name": "yolo_preload_model",
+      "parameters": [
+        "model_name"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_resolve_class_ids": {
+      "name": "yolo_resolve_class_ids",
+      "parameters": [
+        "labels",
+        "model_name"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_set_active_model": {
+      "name": "yolo_set_active_model",
+      "parameters": [
+        "model_name"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_unload_model": {
+      "name": "yolo_unload_model",
+      "parameters": [
+        "model_name"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_wait_for_target": {
+      "name": "yolo_wait_for_target",
+      "parameters": [
+        "target_labels",
+        "timeout_sec",
+        "poll_interval_sec",
+        "roi",
+        "model_name",
+        "options",
+        "min_confidence",
+        "sort_mode",
+        "anchor_point"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/yolo_wait_for_target_disappear": {
+      "name": "yolo_wait_for_target_disappear",
+      "parameters": [
+        "target_labels",
+        "timeout_sec",
+        "poll_interval_sec",
+        "roi",
+        "model_name",
+        "options",
+        "min_confidence"
+      ],
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_benchmark/benchmark_reset": {
+      "name": "benchmark_reset",
+      "parameters": [
+        "scenario"
+      ],
+      "capabilities": [
+        "network.local"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_benchmark/benchmark_sleep": {
+      "name": "benchmark_sleep",
+      "parameters": [
+        "duration_ms",
+        "scenario",
+        "label",
+        "payload"
+      ],
+      "capabilities": [
+        "network.local"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_benchmark/benchmark_snapshot": {
+      "name": "benchmark_snapshot",
+      "parameters": [
+        "scenario"
+      ],
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    }
+  },
+  "services": {
+    "core/config": {
+      "alias": "config",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "core/event_bus": {
+      "alias": "event_bus",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "core/execution_manager": {
+      "alias": "execution_manager",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "core/file_watcher_service": {
+      "alias": "file_watcher_service",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "core/interrupt_service": {
+      "alias": "interrupt_service",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "core/plan_manager": {
+      "alias": "plan_manager",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "core/scheduler": {
+      "alias": "scheduler",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "core/scheduling_service": {
+      "alias": "scheduling_service",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "core/state_store": {
+      "alias": "state_store",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "core/yolo": {
+      "alias": "yolo",
+      "capabilities": [],
+      "stability": "stable"
+    },
+    "plans/aura_base/app": {
+      "alias": "app",
+      "capabilities": [
+        "desktop.window.focus"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/composite-interaction": {
+      "alias": "composite-interaction",
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/controller": {
+      "alias": "controller",
+      "capabilities": [
+        "desktop.keyboard.input",
+        "desktop.mouse.input"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/navigation": {
+      "alias": "navigation",
+      "capabilities": [
+        "desktop.window.focus"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/ocr": {
+      "alias": "ocr",
+      "capabilities": [
+        "desktop.ocr.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/process_manager": {
+      "alias": "process_manager",
+      "capabilities": [
+        "process.control"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/screen": {
+      "alias": "screen",
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_base/vision": {
+      "alias": "vision",
+      "capabilities": [
+        "desktop.capture.read"
+      ],
+      "stability": "stable"
+    },
+    "plans/aura_benchmark/benchmark_probe": {
+      "alias": "benchmark_probe",
+      "capabilities": [
+        "filesystem.read"
+      ],
+      "stability": "stable"
+    }
+  },
+  "schemas": {
+    "task_dsl_schema": "docs/schemas/task-schema.json",
+    "manifest_schema": "packages/aura_core/packaging/manifest/schema.py",
+    "desktop_result_schema": "plans/aura_base/src/desktop_runtime/models.py",
+    "evidence_schema": "logs/evidence/{cid}/manifest.json"
+  }
+}

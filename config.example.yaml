@@ -1,0 +1,29 @@
+api:
+  host: 127.0.0.1
+  port: 18098
+  remote:
+    enabled: false
+  auth:
+    key: "change-me"
+  trusted:
+    hosts:
+      - 127.0.0.1
+      - localhost
+  enable:
+    logs: false
+    plan:
+      editing: false
+    hot:
+      reload:
+        admin: false
+  cors:
+    enabled: false
+    allowed:
+      origins: []
+
+logging:
+  log_dir: logs
+
+state_store:
+  type: file
+  path: ./project_state.json

@@ -9,12 +9,15 @@ import textwrap
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
 from backend.api.dependencies import get_core_scheduler, peek_core_scheduler, reset_core_scheduler
 from packages.aura_core.observability.events import Event
 from packages.aura_core.scheduler.queues.task_queue import Tasklet
+
+pytestmark = pytest.mark.api
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -65,11 +68,13 @@ def test_minimal_platform_api_surface(monkeypatch):
     _build_workspace(workspace)
 
     monkeypatch.setenv("AURA_BASE_PATH", str(workspace))
+    monkeypatch.setenv("AURA_API_AUTH_KEY", "local-secret")
     reset_core_scheduler()
 
     app = create_app()
     try:
         with TestClient(app) as client:
+            headers = {"X-Aura-Api-Key": "local-secret"}
             status_resp = client.get("/api/v1/system/status")
             assert status_resp.status_code == 200
             status_payload = status_resp.json()
@@ -101,6 +106,7 @@ def test_minimal_platform_api_surface(monkeypatch):
 
             queued_resp = client.post(
                 "/api/v1/tasks/dispatch",
+                headers=headers,
                 json={
                     "plan_name": "demo",
                     "task_ref": "tasks:valid.yaml",
@@ -114,6 +120,7 @@ def test_minimal_platform_api_surface(monkeypatch):
 
             batch_status = client.post(
                 "/api/v1/tasks/status/batch",
+                headers=headers,
                 json={"cids": [queued_payload["cid"]]},
             )
             assert batch_status.status_code == 200
@@ -122,7 +129,7 @@ def test_minimal_platform_api_surface(monkeypatch):
             scheduler = get_core_scheduler()
             scheduler.execution_manager.max_concurrent_tasks = 0
 
-            start_resp = client.post("/api/v1/system/start")
+            start_resp = client.post("/api/v1/system/start", headers=headers)
             assert start_resp.status_code == 200
 
             scheduler = peek_core_scheduler()
@@ -235,11 +242,11 @@ def test_minimal_platform_api_surface(monkeypatch):
             assert queue_items[0]["task_ref"] == "tasks:valid.yaml"
             assert queue_items[0]["task_name"] == "tasks:valid.yaml"
 
-            move_resp = client.post("/api/v1/queue/queue-a/move-to-front")
+            move_resp = client.post("/api/v1/queue/queue-a/move-to-front", headers=headers)
             assert move_resp.status_code == 200
-            reordered_resp = client.post("/api/v1/queue/reorder", json={"cid_order": ["queue-b", "queue-a"]})
+            reordered_resp = client.post("/api/v1/queue/reorder", headers=headers, json={"cid_order": ["queue-b", "queue-a"]})
             assert reordered_resp.status_code == 200
-            remove_resp = client.delete("/api/v1/queue/queue-a")
+            remove_resp = client.delete("/api/v1/queue/queue-a", headers=headers)
             assert remove_resp.status_code == 200
 
             active_resp = client.get("/api/v1/runs/active")
@@ -262,7 +269,7 @@ def test_minimal_platform_api_surface(monkeypatch):
             assert legacy_detail.status_code == 200
             assert legacy_detail.json()["run"]["cid"] == "run-finished"
 
-            clear_resp = client.delete("/api/v1/queue/clear")
+            clear_resp = client.delete("/api/v1/queue/clear", headers=headers)
             assert clear_resp.status_code == 200
     finally:
         reset_core_scheduler()

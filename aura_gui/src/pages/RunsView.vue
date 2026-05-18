@@ -1,60 +1,63 @@
 <template>
   <div class="page-shell runs-page">
-    <section class="runs-header">
-      <div class="runs-header__copy">
-        <span class="eyebrow">Route Record Wall</span>
-        <h1 class="page-title">Runs</h1>
-        <p class="page-subtitle">Execution history should feel like pinned route slips and mission receipts, not a system console.</p>
+    <div class="page-heading">
+      <div class="heading-block">
+        <h1 class="page-title">运行记录</h1>
       </div>
-
-      <div class="runs-header__stats">
-        <div class="runs-stat">
-          <span class="runs-stat__label">active</span>
-          <strong class="runs-stat__value">{{ activeRuns.length }}</strong>
-        </div>
-        <div class="runs-stat">
-          <span class="runs-stat__label">queued</span>
-          <strong class="runs-stat__value">{{ queuedCount }}</strong>
-        </div>
-        <div class="runs-stat">
-          <span class="runs-stat__label">success</span>
-          <strong class="runs-stat__value">{{ successCount }}</strong>
-        </div>
-        <div class="runs-stat">
-          <span class="runs-stat__label">failed</span>
-          <strong class="runs-stat__value">{{ failedCount }}</strong>
-        </div>
+      <div class="heading-actions">
+        <button class="btn btn-ghost" @click="refreshRuns">
+          <RefreshCw class="icon" />
+          刷新
+        </button>
       </div>
-    </section>
+    </div>
 
-    <section class="runs-wall">
-      <div class="runs-wall__filters">
-        <ProFilterBar
-          v-model="filters"
-          :status-options="['running', 'queued', 'success', 'failed', 'cancelled']"
-          :plan-options="planOptions"
-          @reset="refreshRuns"
+    <div v-if="detailError" class="notice notice-danger">{{ detailError }}</div>
+
+    <ProFilterBar
+      v-model="filters"
+      :status-options="statusOptions"
+      :plan-options="planOptions"
+      @reset="refreshRuns"
+    />
+
+    <section class="panel">
+      <header class="panel-header">
+        <div>
+          <span class="panel-kicker">记录</span>
+          <strong>{{ rowsView.length }} 条</strong>
+        </div>
+        <span class="pill pill-gray">active {{ activeRuns.length }}</span>
+      </header>
+
+      <div class="panel-body table-body">
+        <ProDataTable
+          :columns="columns"
+          :rows="rowsView"
+          row-key="key"
+          max-height="calc(100vh - 260px)"
+          :sort-default="{ key: 'startedAtMs', dir: 'desc' }"
+          @row-click="openRun"
         >
-          <button class="btn btn-ghost" @click="refreshRuns">Refresh</button>
-        </ProFilterBar>
-      </div>
-
-      <div class="runs-wall__body">
-        <aside class="runs-wall__rail">
-          <div class="runs-wall__rail-card">
-            <span class="label">Status Split</span>
-            <span class="pill pill-running">active {{ activeRuns.length }}</span>
-            <span class="pill pill-queued">queued {{ queuedCount }}</span>
-            <span class="pill pill-green">success {{ successCount }}</span>
-            <span class="pill pill-red">failed {{ failedCount }}</span>
-          </div>
-          <p class="runs-wall__copy">Open any run slip to inspect the dossier on the right edge of the app.</p>
-        </aside>
-
-        <main class="runs-wall__list">
-          <VirtualRunsList :runs="rowsView" max-height="68vh" @row-click="openRun" />
-          <div v-if="detailError" class="runs-error">{{ detailError }}</div>
-        </main>
+          <template #col-status="{ value }">
+            <span class="pill" :class="statusClass(value)">{{ statusLabel(value) }}</span>
+          </template>
+          <template #col-taskRef="{ row }">
+            <div class="task-cell">
+              <strong>{{ row.taskRef || row.title || '-' }}</strong>
+              <code>{{ row.shortCid }}</code>
+            </div>
+          </template>
+          <template #col-startedAtMs="{ value }">
+            {{ formatTime(value) }}
+          </template>
+          <template #col-durationMs="{ value }">
+            {{ formatDuration(value) }}
+          </template>
+          <template #col-errorSummary="{ value }">
+            <span class="error-cell">{{ value || '--' }}</span>
+          </template>
+        </ProDataTable>
       </div>
     </section>
 
@@ -64,18 +67,24 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import axios from 'axios'
+import { RefreshCw } from 'lucide-vue-next'
 
-import { getGuiConfig } from '../config.js'
+import ProDataTable from '../components/ProDataTable.vue'
 import ProFilterBar from '../components/ProFilterBar.vue'
-import VirtualRunsList from '../components/VirtualRunsList.vue'
 import RunDetailDrawer from '../components/RunDetailDrawer.vue'
+import { getRunDetail, listActiveRuns, listRunHistory } from '../api/runs.js'
+import { errorMessage } from '../api/errors.js'
 
-const cfg = getGuiConfig()
-const api = axios.create({
-  baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
-  timeout: cfg?.api?.timeout_ms || 5000,
-})
+const columns = [
+  { key: 'status', label: '状态', width: '120px', sortable: true },
+  { key: 'taskRef', label: '任务', sortable: true },
+  { key: 'planName', label: '计划', width: '160px', sortable: true },
+  { key: 'startedAtMs', label: '开始时间', width: '180px', sortable: true },
+  { key: 'durationMs', label: '耗时', width: '110px', sortable: true },
+  { key: 'errorSummary', label: '错误摘要', width: '260px' },
+]
+
+const statusOptions = ['queued', 'running', 'success', 'failed', 'cancelled', 'unknown']
 
 const activeRuns = ref([])
 const historyRuns = ref([])
@@ -87,71 +96,84 @@ const detailError = ref('')
 const mergedRuns = computed(() => {
   const byCid = new Map()
   for (const run of [...activeRuns.value, ...historyRuns.value]) {
-    const normalized = normalizeRun(run)
-    byCid.set(normalized.cid || normalized.key, normalized)
+    byCid.set(run.cid || run.key, run)
   }
-  return [...byCid.values()].sort((a, b) => (b.finishedAt || b.startedAt || 0) - (a.finishedAt || a.startedAt || 0))
+  return [...byCid.values()].sort((a, b) => {
+    const av = a.finishedAtMs || a.startedAtMs || 0
+    const bv = b.finishedAtMs || b.startedAtMs || 0
+    return bv - av
+  })
 })
 
-const planOptions = computed(() => [...new Set(mergedRuns.value.map((run) => run.plan_name).filter(Boolean))])
+const planOptions = computed(() =>
+  [...new Set(mergedRuns.value.map((run) => run.planName).filter(Boolean))].sort()
+)
 
 const rowsView = computed(() => {
   const q = filters.value.query.trim().toLowerCase()
   return mergedRuns.value.filter((run) => {
     if (q) {
-      const haystack = `${run.plan_name} ${run.task_name} ${run.task_ref} ${run.cid}`.toLowerCase()
+      const haystack = `${run.planName} ${run.taskRef} ${run.title} ${run.cid}`.toLowerCase()
       if (!haystack.includes(q)) return false
     }
     if (filters.value.status && run.status !== filters.value.status) return false
-    if (filters.value.plan && run.plan_name !== filters.value.plan) return false
+    if (filters.value.plan && run.planName !== filters.value.plan) return false
     return true
   })
 })
 
-const queuedCount = computed(() => mergedRuns.value.filter((run) => run.status === 'queued').length)
-const successCount = computed(() => mergedRuns.value.filter((run) => run.status === 'success').length)
-const failedCount = computed(() => mergedRuns.value.filter((run) => run.status === 'failed').length)
-
-function normalizeRun(run) {
-  const startedAt = run?.started_at ?? run?.startedAt ?? null
-  const finishedAt = run?.finished_at ?? run?.finishedAt ?? null
-  const startMs = startedAt ? (startedAt > 1e12 ? startedAt : startedAt * 1000) : null
-  const finishMs = finishedAt ? (finishedAt > 1e12 ? finishedAt : finishedAt * 1000) : null
-  return {
-    ...run,
-    key: run?.cid || run?.id || `${run?.plan_name || 'plan'}::${run?.task_ref || run?.task_name || 'task'}::${startMs || 0}`,
-    task_name: run?.task_name ?? run?.task_ref ?? run?.task ?? '-',
-    task_ref: run?.task_ref ?? run?.task_name ?? '-',
-    startedAt: startMs ? new Date(startMs) : null,
-    finishedAt: finishMs ? new Date(finishMs) : null,
-    elapsed: run?.duration_ms ?? (startMs && finishMs ? finishMs - startMs : null),
-  }
-}
-
 async function refreshRuns() {
-  try {
-    const [active, history] = await Promise.all([
-      api.get('/runs/active').catch(() => ({ data: [] })),
-      api.get('/runs/history', { params: { limit: 50 } }).catch(() => ({ data: { runs: [] } })),
-    ])
-    activeRuns.value = Array.isArray(active.data) ? active.data : []
-    historyRuns.value = Array.isArray(history.data?.runs) ? history.data.runs : []
-  } catch {
-    activeRuns.value = []
-    historyRuns.value = []
-  }
+  const [active, history] = await Promise.all([
+    listActiveRuns().catch(() => []),
+    listRunHistory({ limit: 100 }).catch(() => []),
+  ])
+  activeRuns.value = active
+  historyRuns.value = history
 }
 
 async function openRun(row) {
-  const runId = row.cid || row.id
+  if (!row?.cid) return
   detailError.value = ''
   try {
-    const { data } = await api.get(`/runs/${runId}`)
-    currentRun.value = { ...row, ...data }
+    currentRun.value = await getRunDetail(row.cid)
     drawerOpen.value = true
   } catch (error) {
-    detailError.value = error?.response?.data?.detail || error?.message || 'Failed to load run details.'
+    detailError.value = errorMessage(error, '运行详情加载失败。')
   }
+}
+
+function statusClass(status) {
+  const value = String(status || '').toLowerCase()
+  if (value === 'success') return 'pill-green'
+  if (value === 'failed') return 'pill-red'
+  if (value === 'running') return 'pill-running'
+  if (value === 'cancelled') return 'pill-gray'
+  return 'pill-queued'
+}
+
+function statusLabel(status) {
+  const labels = {
+    queued: '排队',
+    running: '运行中',
+    success: '成功',
+    failed: '失败',
+    cancelled: '已取消',
+    unknown: '未知',
+  }
+  return labels[status] || status || '未知'
+}
+
+function formatTime(ms) {
+  if (!ms) return '--'
+  return new Date(ms).toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatDuration(ms) {
+  if (ms === null || ms === undefined || Number.isNaN(Number(ms))) return '--'
+  const value = Number(ms)
+  if (value < 1000) return `${Math.round(value)}ms`
+  if (value < 60000) return `${(value / 1000).toFixed(1)}s`
+  return `${Math.floor(value / 60000)}m ${Math.floor((value % 60000) / 1000)}s`
 }
 
 let pollTimer = null
@@ -162,113 +184,47 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (pollTimer) {
-    window.clearInterval(pollTimer)
-    pollTimer = null
-  }
+  if (pollTimer) window.clearInterval(pollTimer)
 })
 </script>
 
 <style scoped>
-.runs-page {
-  gap: 20px;
+.table-body {
+  padding: 0;
 }
 
-.runs-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) 420px;
-  gap: 18px;
-}
-
-.runs-header__copy,
-.runs-header__stats {
-  padding: 18px;
-  border: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(59, 68, 72, 0.92), rgba(39, 46, 49, 0.92));
-  box-shadow: var(--shadow-plate), var(--shadow-inset);
-}
-
-.runs-header__stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.runs-stat {
+.task-cell {
   display: flex;
-  min-height: 88px;
+  min-width: 0;
   flex-direction: column;
-  justify-content: space-between;
-  padding: 12px;
-  border: 1px solid rgba(224, 214, 186, 0.1);
-  background: rgba(26, 31, 33, 0.34);
+  gap: 5px;
 }
 
-.runs-stat__label {
-  color: var(--text-soft);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+.task-cell strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.runs-stat__value {
-  color: var(--paper-2);
-  font-family: var(--font-display);
-  font-size: 38px;
-  letter-spacing: 0.08em;
-  line-height: 0.9;
+.error-cell {
+  display: inline-block;
+  max-width: 240px;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.runs-wall {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 16px;
-  min-height: calc(100vh - 280px);
-  padding: 20px;
-  border: 1px solid rgba(224, 214, 186, 0.08);
-  background: linear-gradient(180deg, rgba(56, 64, 68, 0.94), rgba(37, 45, 48, 0.94));
-  box-shadow: var(--shadow-soft), var(--shadow-inset);
+.notice {
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
 }
 
-.runs-wall__body {
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 16px;
-  min-height: 0;
-}
-
-.runs-wall__rail {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.runs-wall__rail-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-  border: 1px solid rgba(224, 214, 186, 0.1);
-  background: rgba(26, 31, 33, 0.38);
-}
-
-.runs-wall__copy {
-  margin: 0;
-  color: var(--text-soft);
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.runs-wall__list {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.runs-error {
-  color: #e8c1bb;
-  font-size: 13px;
+.notice-danger {
+  border-color: rgba(239, 91, 91, 0.34);
+  background: var(--danger-soft);
+  color: #ffb4b4;
 }
 </style>

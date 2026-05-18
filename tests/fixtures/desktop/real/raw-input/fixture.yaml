@@ -1,0 +1,13 @@
+fixture_schema_version: 2
+id: real/raw-input
+desktop_profile: raw
+side_effects: true
+markers: [desktop, raw_input]
+expected:
+  actions:
+    - action: plans/aura_base/raw_input_monitor
+      backend: raw_input
+      ok: true
+  diagnostics:
+    opt_in: true
+    command: python cli.py fixture run real/raw-input --allow-side-effects

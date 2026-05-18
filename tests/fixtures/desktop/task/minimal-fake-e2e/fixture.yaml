@@ -1,0 +1,19 @@
+fixture_schema_version: 2
+id: task/minimal-fake-e2e
+desktop_profile: fixture
+expected:
+  actions:
+    - action: plans/aura_base/click
+      backend: fake
+      ok: true
+      data:
+        simulated: true
+    - action: plans/aura_base/find_text
+      backend: fake
+      ok: true
+      data:
+        found: true
+  diagnostics:
+    run_detail: true
+    diagnostics_bundle: true
+    compat_check: true

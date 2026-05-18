@@ -37,7 +37,7 @@ class ConfigService:
 
         for key, value in os.environ.items():
             if key.upper().startswith("AURA_"):
-                config_key = key.upper().replace("AURA_", "").lower().replace("_", ".")
+                config_key = self._config_key_from_env_name(key)
                 self._set_nested_key(self._env_config, config_key, value)
 
         global_config_path = base_path / "config.yaml"
@@ -74,6 +74,13 @@ class ConfigService:
         for key in keys[:-1]:
             data = data.setdefault(key, {})
         data[keys[-1]] = value
+
+    @staticmethod
+    def _config_key_from_env_name(env_name: str) -> str:
+        raw = env_name.upper().replace("AURA_", "", 1)
+        if "__" in raw:
+            return ".".join(part.lower() for part in raw.split("__") if part)
+        return raw.lower().replace("_", ".")
 
     def get_state_store_config(self) -> Dict[str, Any]:
         return self.get("state_store", {"type": "file", "path": "./project_state.json"})

@@ -14,6 +14,7 @@ from packages.aura_core.config.loader import get_config_value
 from packages.aura_core.observability.events import Event, EventBus
 from packages.aura_core.observability.logging.core_logger import logger
 from packages.aura_core.observability.run_store import RunStore
+from packages.aura_core.observability.writer import ObservabilityWriter
 
 
 class ObservabilityService:
@@ -45,15 +46,24 @@ class ObservabilityService:
             "observability.runs.dir",
             str(base_path / "logs" / "runs"),
         )
-        self.persist_runs = bool(get_config_value("observability.persist_runs", False))
+        self.persist_runs = bool(get_config_value("observability.persist_runs", True))
         self.run_history_dir = Path(runs_dir_cfg).resolve()
         run_store_path = Path(
             get_config_value(
                 "observability.runs.sqlite_path",
-                str(base_path / "logs" / "runs" / "run_store.sqlite3"),
+                str(base_path / "logs" / "aura.sqlite3"),
             )
         ).resolve()
         self.run_store = RunStore(run_store_path)
+        legacy_run_store_path = Path(base_path / "logs" / "runs" / "run_store.sqlite3").resolve()
+        self.run_store.migrate_from_legacy(legacy_run_store_path)
+        self.writer = ObservabilityWriter(
+            self.run_store,
+            queue_max_size=int(get_config_value("observability.writer.queue_max_size", 10000)),
+            flush_interval_ms=int(get_config_value("observability.writer.flush_interval_ms", 100)),
+            batch_size=int(get_config_value("observability.writer.batch_size", 200)),
+            drop_policy=str(get_config_value("observability.writer.drop_policy", "drop_debug_keep_terminal")),
+        )
 
         self._metrics: Dict[str, Any] = {
             "tasks_started": 0,
@@ -151,13 +161,12 @@ class ObservabilityService:
         if not cid:
             return
 
-        try:
-            ts_ms = getattr(event, "timestamp_ms", None)
-            if ts_ms is None:
-                ts_ms = int(time.time() * 1000)
-            self.run_store.apply_event(name, p, int(ts_ms))
-        except Exception as exc:
-            logger.error("RunStore apply_event failed: %s", exc, exc_info=True)
+        ts_ms = getattr(event, "timestamp_ms", None)
+        if ts_ms is None:
+            ts_ms = int(time.time() * 1000)
+        if self.persist_runs:
+            self.writer.start()
+            self.writer.enqueue(name, p, int(ts_ms), critical=_is_critical_observability_event(name))
 
         run_snapshot = None
         metrics_changed = False
@@ -337,6 +346,9 @@ class ObservabilityService:
                             "exception_message": p.get("exception_message"),
                             "loop_index": p.get("loop_index", nodes[idx].get("loop_index", 0)),
                             "loop_item": p.get("loop_item", nodes[idx].get("loop_item")),
+                            "action_result": p.get("action_result"),
+                            "policy_decision": p.get("policy_decision"),
+                            "evidence": p.get("evidence") or [],
                         }
                     )
                 else:
@@ -353,8 +365,23 @@ class ObservabilityService:
                             "exception_message": p.get("exception_message"),
                             "loop_index": p.get("loop_index", 0),
                             "loop_item": p.get("loop_item"),
+                            "action_result": p.get("action_result"),
+                            "policy_decision": p.get("policy_decision"),
+                            "evidence": p.get("evidence") or [],
                         }
                     )
+                run["action_results"] = [
+                    node.get("action_result") for node in nodes if isinstance(node.get("action_result"), dict)
+                ]
+                run["policy_decisions"] = [
+                    node.get("policy_decision") for node in nodes if isinstance(node.get("policy_decision"), dict)
+                ]
+                run["evidence"] = [
+                    evidence
+                    for node in nodes
+                    for evidence in (node.get("evidence") or [])
+                    if isinstance(evidence, dict)
+                ]
 
                 run_snapshot = run
                 persist_event = True
@@ -428,7 +455,7 @@ class ObservabilityService:
         if persist_event and run_snapshot and self.persist_runs:
             await self._persist_run_snapshot(cid, run_snapshot)
         if metrics_changed and self._event_bus:
-            snap = self.get_metrics_snapshot()
+            snap = self.get_metrics_snapshot(flush_pending=False)
             await self._event_bus.publish(Event(name="metrics.update", payload=snap))
 
     def get_queue_overview(self) -> Dict[str, Any]:
@@ -498,7 +525,7 @@ class ObservabilityService:
             )
         return {"items": items, "next_cursor": None}
 
-    def get_metrics_snapshot(self) -> Dict[str, Any]:
+    def get_metrics_snapshot(self, *, flush_pending: bool = True) -> Dict[str, Any]:
         with self._lock:
             running_tasks = 0
             if self._running_tasks_provider:
@@ -508,6 +535,8 @@ class ObservabilityService:
                     running_tasks = 0
             memory_snap = dict(self._metrics)
             if self.persist_runs:
+                if flush_pending:
+                    self.writer.flush_pending()
                 store_snap = self.run_store.get_metrics_snapshot(running_tasks=running_tasks)
                 snap = dict(store_snap)
                 for key, value in memory_snap.items():
@@ -559,14 +588,17 @@ class ObservabilityService:
         task_name: Optional[str] = None,
         status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        self.writer.flush_pending()
         return self.run_store.list_runs(limit=limit, plan_name=plan_name, task_name=task_name, status=status)
 
     def get_persisted_run(self, cid: str) -> Dict[str, Any]:
         if not cid:
             return {}
+        self.writer.flush_pending()
         return self.run_store.get_run(cid)
 
     def get_run_timeline(self, cid_or_trace: str) -> Dict[str, Any]:
+        self.writer.flush_pending()
         with self._lock:
             cid = cid_or_trace
             if cid_or_trace in self._obs_runs_by_trace:
@@ -666,6 +698,7 @@ class ObservabilityService:
 
     def get_batch_task_status(self, cids: List[str]) -> List[Dict[str, Any]]:
         results = []
+        self.writer.flush_pending()
         with self._lock:
             for cid in cids:
                 persisted = self.run_store.get_run(cid)
@@ -762,6 +795,7 @@ class ObservabilityService:
 
     def start_cleanup_task(self):
         """启动后台清理任务。"""
+        self.writer.start()
         if self._cleanup_task is None or self._cleanup_task.done():
             try:
                 self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -779,6 +813,7 @@ class ObservabilityService:
             except asyncio.CancelledError:
                 pass
             logger.info("[ObservabilityService] Cleanup task stopped")
+        await self.writer.stop()
 
     # ========== ✅ NEW: 前端查询API（选项3扩展） ==========
 
@@ -805,6 +840,7 @@ class ObservabilityService:
         status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         if self.persist_runs:
+            self.writer.flush_pending()
             return self.run_store.list_runs(limit=limit, plan_name=plan_name, task_name=task_name, status=status)
 
         desired_status = str(status or "").strip().lower() or None
@@ -824,6 +860,7 @@ class ObservabilityService:
         if not cid:
             return {}
 
+        self.writer.flush_pending()
         persisted = self.run_store.get_run(cid)
         if persisted:
             return persisted
@@ -836,3 +873,14 @@ class ObservabilityService:
             if completed:
                 return dict(completed)
         return {}
+
+
+def _is_critical_observability_event(name: str) -> bool:
+    value = str(name or "").lower()
+    if value in {"task.started", "task.finished", "node.finished", "node.failed", "queue.completed"}:
+        return True
+    if value in {"queue.enqueued", "queue.dequeued", "queue.dropped", "queue.promoted"}:
+        return True
+    if value.startswith("policy.") or value.startswith("error."):
+        return True
+    return False

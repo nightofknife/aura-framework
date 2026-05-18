@@ -7,12 +7,11 @@
 from pathlib import Path
 from typing import Optional, List
 import shutil
-import zipfile
-import tarfile
 import logging
 
 from ..manifest.schema import PluginManifest, DependencySpec
 from ..manifest.parser import ManifestParser
+from packages.aura_core.utils.safe_paths import safe_extract_tar, safe_extract_zip
 
 logger = logging.getLogger(__name__)
 
@@ -146,11 +145,9 @@ class PluginInstaller:
         temp_dir = Path(tempfile.mkdtemp(prefix="aura_plugin_"))
 
         if archive_path.suffix == ".zip" or archive_path.name.endswith(".aura"):
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                zf.extractall(temp_dir)
+            safe_extract_zip(archive_path, temp_dir)
         elif archive_path.name.endswith(".tar.gz") or archive_path.suffix == ".tgz":
-            with tarfile.open(archive_path, "r:gz") as tf:
-                tf.extractall(temp_dir)
+            safe_extract_tar(archive_path, temp_dir, mode="r:gz")
         else:
             raise ValueError(f"Unsupported archive format: {archive_path}")
 

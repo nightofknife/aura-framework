@@ -527,7 +527,38 @@ returns:
 - `depends_on` 内写 `when:`：改成 step 级 `when`
 - 使用 `goto/label`：改成 `step_note` + 依赖/条件建模
 
-## 15. 下一步
+## 15. 静态校验与 dry-run
+
+V1 提供 CLI 校验入口：
+
+```powershell
+.venv-test\Scripts\python.exe cli.py validate
+```
+
+常用方式：
+
+```powershell
+.venv-test\Scripts\python.exe cli.py validate --plan aura_benchmark
+.venv-test\Scripts\python.exe cli.py validate --plan aura_benchmark --format json
+.venv-test\Scripts\python.exe cli.py validate --plan aura_benchmark --dry-run --task-ref tasks:single_sleep.yaml
+```
+
+校验覆盖：
+
+- manifest 解析和基础校验
+- task YAML 解析
+- schema 校验
+- 已移除字段和旧语法
+- `depends_on` 支持语法
+- `task_ref` canonical 格式
+- `meta.inputs` 类型和默认值
+- action 引用格式
+
+默认模式允许 plan 中存在占位 action。使用 `--strict` 时，bare action 必须出现在当前 plan 的 manifest exports 中。
+
+`--dry-run` 只做静态解析与校验，不执行任何 action，因此不会触发截图、键鼠、OCR、进程或文件写入。
+
+## 16. 下一步
 
 - 执行语义细节：见 [运行时行为](./04-runtime-behavior.md)
 - package 依赖与 `task_ref`：见 [任务引用与依赖](../package-development/task-references-and-dependencies.md)

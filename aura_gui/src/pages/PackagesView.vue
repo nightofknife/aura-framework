@@ -132,14 +132,14 @@
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue';
-import axios from 'axios';
+import { createAuraAxiosClient } from '../api/client.js';
 import yaml from 'yaml';
 import { getGuiConfig } from '../config.js';
 import MonacoYamlEditor from '../components/MonacoYamlEditor.vue';
 import DependencyNode from '../components/DependencyNode.vue';
 
 const cfg = getGuiConfig();
-const api = axios.create({
+const api = createAuraAxiosClient({
   baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
   timeout: cfg?.api?.timeout_ms || 10000,
 });

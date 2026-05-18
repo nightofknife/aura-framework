@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from backend.api.dependencies import CoreScheduler
 from backend.api.schemas import GenericMessageResponse, PlanSummary, TaskLoadErrorResponse, TaskSummary
 from packages.aura_core.scheduler import Scheduler
+from packages.aura_core.utils.safe_paths import safe_resolve_under
 
 router = APIRouter(tags=["plans"])
 
@@ -130,7 +131,10 @@ async def reload_plan_file(
     if orchestrator is None:
         raise HTTPException(status_code=404, detail=f"Plan '{plan_name}' not found.")
 
-    file_path = (scheduler.base_path / "plans" / plan_name / path).resolve()
+    try:
+        file_path = safe_resolve_under(scheduler.base_path / "plans" / plan_name, path, label="plan file path")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File '{path}' not found in plan '{plan_name}'.")
 

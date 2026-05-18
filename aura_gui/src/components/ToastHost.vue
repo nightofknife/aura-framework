@@ -1,8 +1,15 @@
 <script setup>
 import { onMounted, onUnmounted } from 'vue'
+import { AlertCircle, CheckCircle2, Info, X } from 'lucide-vue-next'
 import { useToasts } from '../composables/useToasts.js'
 
 const { toasts, dismiss } = useToasts()
+
+function iconFor(type) {
+  if (type === 'success') return CheckCircle2
+  if (type === 'error') return AlertCircle
+  return Info
+}
 
 function onKeydown(event) {
   if (event.key === 'Escape' && toasts.value.length) {
@@ -19,11 +26,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <div class="toast-host" aria-live="polite" aria-atomic="false">
       <TransitionGroup name="toast">
         <div v-for="toast in toasts" :key="toast.id" class="toast" :class="toast.type" role="status">
-          <div class="toast__head">
+          <component :is="iconFor(toast.type)" class="toast__icon" />
+          <div class="toast__body">
             <strong>{{ toast.title }}</strong>
-            <button class="toast__close" aria-label="Close" @click="dismiss(toast.id)">×</button>
+            <p v-if="toast.message">{{ toast.message }}</p>
           </div>
-          <p v-if="toast.message" class="toast__msg">{{ toast.message }}</p>
+          <button class="toast__close" aria-label="关闭通知" @click="dismiss(toast.id)">
+            <X class="icon" />
+          </button>
         </div>
       </TransitionGroup>
     </div>
@@ -33,86 +43,96 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 <style scoped>
 .toast-host {
   position: fixed;
-  top: calc(var(--titlebar-h) + 18px);
-  right: 18px;
-  z-index: 40;
+  top: calc(var(--titlebar-h) + 14px);
+  right: 14px;
+  z-index: 100;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   pointer-events: none;
 }
 
 .toast {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  min-width: 300px;
+  max-width: 380px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-elevated);
+  color: var(--text-primary);
   pointer-events: auto;
-  min-width: 280px;
-  max-width: 360px;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  background: rgba(7, 22, 36, 0.96);
-  color: var(--smoke);
-  clip-path: polygon(14px 0, 100% 0, calc(100% - 18px) 100%, 0 100%);
-  box-shadow: var(--shadow-panel);
 }
 
 .toast.success {
-  border-color: rgba(88, 188, 125, 0.32);
+  border-color: rgba(54, 179, 126, 0.36);
 }
 
 .toast.error {
-  border-color: rgba(218, 100, 88, 0.32);
+  border-color: rgba(239, 91, 91, 0.36);
 }
 
-.toast.info {
-  border-color: rgba(213, 187, 134, 0.24);
+.toast__icon {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--info);
 }
 
-.toast__head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
+.toast.success .toast__icon {
+  color: var(--success);
 }
 
-.toast__head strong {
-  color: var(--sand-bright);
-  font-family: var(--font-display);
-  font-size: 20px;
-  letter-spacing: 0.04em;
-  line-height: 0.95;
-  text-transform: uppercase;
+.toast.error .toast__icon {
+  color: var(--danger);
 }
 
-.toast__msg {
-  margin: 8px 0 0;
-  color: var(--smoke-dim);
+.toast__body {
+  min-width: 0;
+}
+
+.toast__body strong {
+  display: block;
   font-size: 13px;
-  line-height: 1.55;
+  font-weight: 650;
+}
+
+.toast__body p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .toast__close {
-  width: 28px;
-  height: 28px;
-  border: 1px solid transparent;
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--smoke-dim);
+  color: var(--text-muted);
   cursor: pointer;
-  clip-path: polygon(7px 0, 100% 0, calc(100% - 7px) 100%, 0 100%);
 }
 
 .toast__close:hover {
-  border-color: var(--line);
-  background: rgba(18, 42, 62, 0.9);
-  color: var(--sand-bright);
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
 }
 
 .toast-enter-active,
 .toast-leave-active {
-  transition: all var(--dur-med) var(--ease-std);
+  transition: all var(--dur-med) var(--ease);
 }
 
 .toast-enter-from,
 .toast-leave-to {
   opacity: 0;
-  transform: translateX(14px);
+  transform: translateX(12px);
 }
 </style>

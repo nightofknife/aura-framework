@@ -14,6 +14,11 @@ def action_info(
     description: str | None = None,
     visibility: str = "public",
     timeout: int | None = None,
+    capabilities: list[str] | None = None,
+    side_effect_level: str | None = None,
+    requires_foreground: bool = False,
+    requires_admin: bool = False,
+    stability: str = "stable",
 ):
     """Attach action metadata to a function."""
 
@@ -36,6 +41,12 @@ def action_info(
             "is_async": inspect.iscoroutinefunction(func),
             "source_file": _safe_get_source_file(func),
             "source_function": func.__name__,
+            "capabilities": list(capabilities or []),
+            "capabilities_declared": capabilities is not None,
+            "side_effect_level": side_effect_level or ("read" if read_only else "input"),
+            "requires_foreground": bool(requires_foreground),
+            "requires_admin": bool(requires_admin),
+            "stability": stability,
         }
 
         setattr(func, "_aura_action_meta", meta)
@@ -74,6 +85,11 @@ def service_info(
     config_schema: Dict[str, Any] | None = None,
     replace: str | None = None,
     deps: Mapping[str, str] | None = None,
+    capabilities: list[str] | None = None,
+    side_effect_level: str | None = None,
+    requires_foreground: bool = False,
+    requires_admin: bool = False,
+    stability: str = "stable",
 ):
     """Attach service metadata to a class."""
 
@@ -96,6 +112,12 @@ def service_info(
             "deps": dependency_map,
             "source_file": _safe_get_source_file(cls),
             "source_class": cls.__name__,
+            "capabilities": list(capabilities or []),
+            "capabilities_declared": capabilities is not None,
+            "side_effect_level": side_effect_level or "read",
+            "requires_foreground": bool(requires_foreground),
+            "requires_admin": bool(requires_admin),
+            "stability": stability,
         }
 
         setattr(cls, "_aura_service_meta", meta)
@@ -137,13 +159,15 @@ def _extract_action_parameters(func: Callable, service_deps: Mapping[str, str]) 
     sig = inspect.signature(func)
     parameters = []
     for param_name, param in sig.parameters.items():
-        if param_name in {"context", "engine"}:
+        if param_name in {"context", "engine", "action_context"}:
             continue
         if param_name in service_deps:
             continue
 
         if param.annotation != inspect.Parameter.empty:
             type_name = getattr(param.annotation, "__name__", str(param.annotation))
+            if type_name in {"ActionContext", "EvidenceWriter", "PolicyContext", "ActionResultBuilder"}:
+                continue
             if isinstance(type_name, str) and type_name.endswith("Service"):
                 continue
 

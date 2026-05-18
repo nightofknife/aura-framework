@@ -1,6 +1,6 @@
 param(
     [string]$Host = "127.0.0.1",
-    [int]$Port = 8000,
+    [int]$Port = 18098,
     [string]$VenvPython = ".venv\\Scripts\\python.exe",
     [string]$LogLevel = "info"
 )

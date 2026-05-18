@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from packages.aura_core.context.plan import current_plan_name
-from packages.aura_core.services.yolo_service import YoloService
+from packages.aura_core.services.yolo_service import ModelTrustError, YoloService
+
+pytestmark = pytest.mark.unit
 
 
 class _FakeConfig:
@@ -88,7 +93,7 @@ class _FakeYoloFactory:
 
 class TestCoreYoloService(unittest.TestCase):
     def setUp(self):
-        self.service = YoloService(config=_FakeConfig({"yolo.default_variant": "n"}))
+        self.service = YoloService(config=_FakeConfig({"yolo.default_variant": "n", "yolo.allow_auto_download": True}))
 
     def test_supported_generations_cover_requested_families(self):
         self.assertEqual(
@@ -114,10 +119,10 @@ class TestCoreYoloService(unittest.TestCase):
         plan_file = repo_root / "plans" / "aura_benchmark" / "models" / "demo.pt"
         token = current_plan_name.set("aura_benchmark")
         try:
-            with patch.object(Path, "exists", autospec=True) as exists_mock:
+            with patch.object(Path, "is_file", autospec=True) as is_file_mock:
                 def fake_exists(path_self):
                     return str(path_self).endswith(str(plan_file).replace("/", "\\"))
-                exists_mock.side_effect = fake_exists
+                is_file_mock.side_effect = fake_exists
                 ref = self.service.resolve_model_reference("models/demo.pt")
             self.assertTrue(ref.is_path)
             self.assertTrue(ref.source.endswith("plans\\aura_benchmark\\models\\demo.pt") or ref.source.endswith("plans/aura_benchmark/models/demo.pt"))
@@ -153,6 +158,53 @@ class TestCoreYoloService(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(fake_app.capture_calls, [(1, 2, 3, 4)])
         self.assertEqual(result["detections"][0]["bbox_global"], [25, 46, 100, 200])
+
+    def test_absolute_model_path_rejected_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = Path(tmp) / "demo.pt"
+            model_path.write_bytes(b"model")
+            service = YoloService(config=_FakeConfig({"yolo.allow_auto_download": False}))
+
+            with self.assertRaises(ModelTrustError) as raised:
+                service.resolve_model_reference(str(model_path))
+
+            self.assertIn("model_path_untrusted", str(raised.exception))
+
+    def test_relative_model_path_allowed_under_configured_models_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            models_root = Path(tmp) / "models"
+            models_root.mkdir()
+            (models_root / "demo.pt").write_bytes(b"model")
+            service = YoloService(config=_FakeConfig({"yolo.models_root": str(models_root)}))
+
+            ref = service.resolve_model_reference("demo.pt")
+
+            self.assertTrue(ref.is_path)
+            self.assertEqual(Path(ref.source).resolve(), (models_root / "demo.pt").resolve())
+            self.assertTrue(ref.sha256.startswith("sha256:"))
+
+    def test_absolute_model_path_requires_trusted_root_even_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trusted = Path(tmp) / "trusted"
+            sibling = Path(tmp) / "trusted_evil"
+            trusted.mkdir()
+            sibling.mkdir()
+            trusted_model = trusted / "demo.pt"
+            sibling_model = sibling / "demo.pt"
+            trusted_model.write_bytes(b"trusted")
+            sibling_model.write_bytes(b"evil")
+            service = YoloService(
+                config=_FakeConfig(
+                    {
+                        "yolo.allow_absolute_model_paths": True,
+                        "yolo.trusted_model_roots": [str(trusted)],
+                    }
+                )
+            )
+
+            self.assertEqual(Path(service.resolve_model_reference(str(trusted_model)).source).resolve(), trusted_model.resolve())
+            with self.assertRaises(ModelTrustError):
+                service.resolve_model_reference(str(sibling_model))
 
 
 if __name__ == "__main__":

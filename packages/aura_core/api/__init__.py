@@ -16,6 +16,7 @@ from .decorators import (
     requires_services,
     service_info,
 )
+from packages.aura_core.sdk import ActionContext, ActionResultBuilder, EvidenceWriter, PolicyContext
 
 __all__ = [
     "ActionDefinition",
@@ -31,4 +32,8 @@ __all__ = [
     "service_info",
     "requires_services",
     "register_hook",
+    "ActionContext",
+    "ActionResultBuilder",
+    "EvidenceWriter",
+    "PolicyContext",
 ]

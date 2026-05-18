@@ -229,9 +229,9 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue';
-import axios from 'axios';
 import YAML from 'yaml';
 import { nanoid } from 'nanoid';
+import { createAuraAxiosClient } from '../api/client.js';
 import ProFilterBar from '../components/ProFilterBar.vue';
 import ProDataTable from '../components/ProDataTable.vue';
 import ProContextPanel from '../components/ProContextPanel.vue';
@@ -242,7 +242,7 @@ import { getGuiConfig } from '../config.js';
 const api = useTaskEditorApi();
 const { push: toast } = useToasts();
 const cfg = getGuiConfig();
-const systemApi = axios.create({
+const systemApi = createAuraAxiosClient({
   baseURL: cfg?.api?.base_url || 'http://127.0.0.1:18098/api/v1',
   timeout: cfg?.api?.timeout_ms || 5000,
 });

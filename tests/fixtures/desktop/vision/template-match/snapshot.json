@@ -1,0 +1,55 @@
+{
+  "status": "success",
+  "fixture": {
+    "id": "vision/template-match",
+    "desktop_profile": "fixture",
+    "schema_version": 2
+  },
+  "action_results": [
+    {
+      "ok": true,
+      "action": "plans/aura_base/find_image",
+      "backend": "fake",
+      "data": {
+        "value": {
+          "found": true
+        }
+      }
+    }
+  ],
+  "captures": [],
+  "locators": [
+    {
+      "method": "template",
+      "backend": "fake",
+      "source": "fixture://capture/basic-screen.png",
+      "bbox": [
+        100,
+        120,
+        80,
+        40
+      ],
+      "center": [
+        140,
+        140
+      ],
+      "score": 0.98,
+      "threshold": 0.8,
+      "candidates": [
+        {
+          "bbox": [
+            100,
+            120,
+            80,
+            40
+          ],
+          "score": 0.98
+        }
+      ]
+    }
+  ],
+  "ocr": [],
+  "yolo": [],
+  "window": null,
+  "diagnostics": {}
+}

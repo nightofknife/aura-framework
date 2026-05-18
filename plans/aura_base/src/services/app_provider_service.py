@@ -12,7 +12,19 @@ from .controller_service import ControllerService
 from .screen_service import ScreenService, CaptureResult
 
 
-@service_info(alias="app", public=True, deps={"config": "core/config", "screen": "screen", "controller": "controller"})
+@service_info(
+    alias="app",
+    public=True,
+    deps={"config": "core/config", "screen": "screen", "controller": "controller"},
+    capabilities=[
+        "desktop.capture.read",
+        "desktop.window.read",
+        "desktop.window.focus",
+        "desktop.mouse.input",
+        "desktop.keyboard.input",
+    ],
+    side_effect_level="input",
+)
 class AppProviderService:
     """
     【异步升级版】一个高级的应用交互器 (Interactor)。

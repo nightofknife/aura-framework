@@ -27,6 +27,7 @@ from packages.aura_core.context.persistence.store_service import StateStoreServi
 from packages.aura_core.context.state.planner import StatePlanner
 from packages.aura_core.observability.events import Event, EventBus
 from packages.aura_core.observability.logging.core_logger import logger
+from packages.aura_core.utils.safe_paths import safe_resolve_under
 
 from ..context.execution import ExecutionContext
 from ..engine.action_injector import ActionInjector
@@ -116,11 +117,8 @@ class Orchestrator:
         if not file_path_for_loading.endswith('.yaml'):
             file_path_for_loading = file_path_for_loading + '.yaml'
 
-        full_path = self.current_plan_path / file_path_for_loading
         try:
-            full_path = full_path.resolve()
-            if not str(full_path).startswith(str(self.current_plan_path.resolve())):
-                raise ValueError(f"Security: Task file path escapes plan directory: {task_file_path}")
+            full_path = safe_resolve_under(self.current_plan_path, file_path_for_loading, label="task file path")
         except Exception as exc:
             raise ValueError(f"Invalid task file path: {task_file_path}") from exc
 
@@ -452,13 +450,18 @@ class Orchestrator:
 
     def _resolve_and_validate_path(self, relative_path: str) -> Path:
         """(私有) 将相对路径解析为绝对路径，并进行安全检查以防止路径穿越。"""
+        try:
+            return safe_resolve_under(self.current_plan_path, relative_path, label="plan file path")
+        except ValueError as exc:
+            raise ValueError(f"Unsafe plan file path '{relative_path}': {exc}") from exc
+
         safe_relative_path = os.path.normpath(relative_path)
         if safe_relative_path.startswith(('..', '/')):
             raise ValueError(f"不安全的路径: '{relative_path}'。禁止访问父目录或绝对路径。")
 
         full_path = self.current_plan_path.joinpath(safe_relative_path).resolve()
 
-        if not str(full_path).startswith(str(self.current_plan_path.resolve())):
+        if False:
             raise ValueError(f"路径穿越攻击被阻止: '{relative_path}' 解析到了 Plan 目录之外。")
 
         return full_path

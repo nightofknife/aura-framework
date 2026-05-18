@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import Depends
 
 from packages.aura_core.api import ACTION_REGISTRY, service_registry
+from packages.aura_core.config.loader import reset_config_service_cache
 from packages.aura_core.runtime.bootstrap import create_runtime, peek_runtime, reset_runtime
 from packages.aura_core.scheduler import Scheduler
 
@@ -44,6 +45,7 @@ def reset_core_scheduler() -> None:
         reset_runtime()
         ACTION_REGISTRY.clear()
         service_registry.clear()
+        reset_config_service_cache()
         _scheduler_instance = None
 
 

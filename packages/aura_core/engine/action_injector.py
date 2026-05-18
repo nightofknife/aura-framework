@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
+import time
+from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any, Dict
 
 try:
@@ -19,12 +21,14 @@ except ImportError:
 
 from packages.aura_core.observability.logging.core_logger import logger
 
-from ..api import ACTION_REGISTRY, ActionDefinition
+from ..api import ACTION_REGISTRY, ActionDefinition, service_registry
 from ..config.template import TemplateRenderer
 from ..context.execution import ExecutionContext
 from ..types import TaskRefResolver
 from .action_resolver import ActionResolver
 from ..utils.middleware import middleware_manager
+from ..policy import PolicyDeniedError, evaluate_action_policy, infer_service_capabilities
+from ..sdk import ActionContext, ActionResultBuilder, EvidenceWriter, PolicyContext
 
 if TYPE_CHECKING:
     from .execution_engine import ExecutionEngine
@@ -70,12 +74,64 @@ class ActionInjector:
 
         render_scope = await self.renderer.get_render_scope()
         rendered_params = await self.renderer.render(raw_params, scope=render_scope)
-        return await middleware_manager.process(
+        started = time.perf_counter()
+        service_capabilities, service_requires_admin = self._service_policy_metadata(action_def)
+        decision = evaluate_action_policy(
             action_def=action_def,
-            context=self.context,
-            params=rendered_params,
-            final_handler=self._invoke_action,
+            rendered_params=rendered_params,
+            extra_capabilities=service_capabilities,
+            extra_requires_admin=service_requires_admin,
         )
+        decision_payload = decision.to_dict()
+        self._record_policy_decision(decision_payload)
+        self._prepare_sdk_runtime_context(action_def, decision_payload)
+        if decision.decision != "allow":
+            envelope = self._build_action_result(
+                action_def=action_def,
+                policy=decision_payload,
+                ok=False,
+                error_code="policy_denied",
+                message=decision.reason,
+                duration_ms=_elapsed_ms(started),
+                value=None,
+                rendered_params=rendered_params,
+            )
+            self._record_action_result(envelope)
+            raise PolicyDeniedError(decision)
+
+        try:
+            value = await middleware_manager.process(
+                action_def=action_def,
+                context=self.context,
+                params=rendered_params,
+                final_handler=self._invoke_action,
+            )
+        except Exception as exc:
+            envelope = self._build_action_result(
+                action_def=action_def,
+                policy=decision_payload,
+                ok=False,
+                error_code=type(exc).__name__,
+                message=str(exc),
+                duration_ms=_elapsed_ms(started),
+                value=None,
+                rendered_params=rendered_params,
+            )
+            self._record_action_result(envelope)
+            raise
+
+        envelope = self._build_action_result(
+            action_def=action_def,
+            policy=decision_payload,
+            ok=True,
+            error_code=None,
+            message="",
+            duration_ms=_elapsed_ms(started),
+            value=value,
+            rendered_params=rendered_params,
+        )
+        self._record_action_result(envelope)
+        return value
 
     async def _invoke_action(
         self,
@@ -205,6 +261,11 @@ class ActionInjector:
                     )
                 continue
 
+            sdk_value = self._sdk_injected_value(param_name, param_spec.annotation)
+            if sdk_value is not None:
+                call_args[param_name] = sdk_value
+                continue
+
             if param_name == "context" or param_spec.annotation is ExecutionContext:
                 call_args[param_name] = self.context
                 continue
@@ -230,3 +291,220 @@ class ActionInjector:
                 call_args[key] = value
 
         return call_args
+
+    def _record_policy_decision(self, decision: Dict[str, Any]) -> None:
+        if not isinstance(getattr(self.context, "data", None), dict):
+            return
+        self.context.data["_last_policy_decision"] = decision
+        self.context.data.setdefault("policy_decisions", []).append(decision)
+
+    def _service_policy_metadata(self, action_def: ActionDefinition) -> tuple[list[str], bool]:
+        capabilities: set[str] = set()
+        requires_admin = False
+        definitions = service_registry.get_all_service_definitions()
+        by_fqid = {item.fqid: item for item in definitions}
+        by_alias = {item.alias: item for item in definitions}
+        for service_id in (action_def.service_deps or {}).values():
+            service_def = by_fqid.get(service_id) or by_alias.get(service_id)
+            if service_def is None:
+                capabilities.update(infer_service_capabilities(service_id))
+                continue
+            declared = list(getattr(service_def, "capabilities", []) or [])
+            capabilities.update(declared or infer_service_capabilities(service_def.alias or service_id))
+            requires_admin = requires_admin or bool(getattr(service_def, "requires_admin", False))
+        return sorted(capabilities), requires_admin
+
+    def _record_action_result(self, envelope: Dict[str, Any]) -> None:
+        if not isinstance(getattr(self.context, "data", None), dict):
+            return
+        self.context.data["_last_action_result"] = envelope
+        self.context.data.setdefault("action_results", []).append(envelope)
+
+    def _build_action_result(
+        self,
+        *,
+        action_def: ActionDefinition,
+        policy: Dict[str, Any],
+        ok: bool,
+        error_code: str | None,
+        message: str,
+        duration_ms: int,
+        value: Any,
+        rendered_params: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        desktop = _desktop_result_to_dict(value)
+        locator_results = _locator_results_from_value(value, rendered_params or {})
+        if desktop:
+            desktop_data = dict(desktop.get("data") or {})
+            desktop_data.pop("_image", None)
+            data_value = _json_safe_value(desktop_data)
+        else:
+            data_value = _json_safe_value(value)
+        sdk_evidence = []
+        if isinstance(getattr(self.context, "data", None), dict):
+            writer = self.context.data.get("_sdk_evidence_writer")
+            if isinstance(writer, EvidenceWriter):
+                sdk_evidence = writer.refs()
+        evidence = list(desktop.get("evidence") or []) if desktop else []
+        evidence.extend(sdk_evidence)
+        evidence.extend({"kind": "locator", "payload": item} for item in locator_results)
+        data = {"value": data_value, "rendered_params": rendered_params or {}}
+        if locator_results:
+            data["locators"] = locator_results
+            if len(locator_results) == 1:
+                data["locator"] = locator_results[0]
+        return {
+            "ok": ok if not desktop else bool(desktop.get("ok", ok)),
+            "action": action_def.fqid,
+            "backend": desktop.get("backend") if desktop else None,
+            "capabilities_used": list(policy.get("capabilities") or []),
+            "policy": {
+                "profile": policy.get("profile"),
+                "decision": policy.get("decision"),
+                "reason": policy.get("reason") or "",
+            },
+            "duration_ms": int(desktop.get("duration_ms") or duration_ms) if desktop else duration_ms,
+            "data": data,
+            "error_code": desktop.get("error_code") if desktop else error_code,
+            "message": desktop.get("message") if desktop else message,
+            "evidence": evidence,
+            "fallbacks": list(desktop.get("fallbacks") or []) if desktop else [],
+        }
+
+    def _prepare_sdk_runtime_context(self, action_def: ActionDefinition, policy: Dict[str, Any]) -> None:
+        if not isinstance(getattr(self.context, "data", None), dict):
+            return
+        node_id = self.context.data.get("_current_node_id")
+        cid = self.context.data.get("cid")
+        package_id = getattr(getattr(action_def.plugin, "package", None), "canonical_id", None)
+        policy_context = PolicyContext.from_decision(policy)
+        evidence_writer = EvidenceWriter(cid=cid, node_id=node_id)
+        orchestrator = getattr(self.engine, "orchestrator", None)
+        action_context = ActionContext(
+            cid=cid,
+            node_id=node_id,
+            inputs=dict(self.context.data.get("inputs") or {}),
+            loop=dict(self.context.data.get("loop") or {}),
+            package_id=str(package_id).lstrip("@") if package_id else None,
+            plan_name=getattr(orchestrator, "plan_name", None),
+            plan_path=str(getattr(orchestrator, "current_plan_path", "") or ""),
+            initial=dict(self.context.data.get("initial") or {}),
+            action_fqid=action_def.fqid,
+            policy=policy_context,
+            evidence=evidence_writer,
+        )
+        self.context.data["_sdk_policy_context"] = policy_context
+        self.context.data["_sdk_evidence_writer"] = evidence_writer
+        self.context.data["_sdk_action_context"] = action_context
+
+    def _sdk_injected_value(self, param_name: str, annotation: Any) -> Any:
+        if not isinstance(getattr(self.context, "data", None), dict):
+            return None
+        if annotation is ActionContext or param_name == "action_context":
+            return self.context.data.get("_sdk_action_context")
+        if annotation is EvidenceWriter:
+            return self.context.data.get("_sdk_evidence_writer")
+        if annotation is PolicyContext:
+            return self.context.data.get("_sdk_policy_context")
+        if annotation is ActionResultBuilder:
+            return ActionResultBuilder()
+        return None
+
+
+def _desktop_result_to_dict(value: Any) -> Dict[str, Any] | None:
+    if hasattr(value, "to_dict") and all(hasattr(value, attr) for attr in ("ok", "backend", "domain", "operation")):
+        try:
+            return value.to_dict()
+        except Exception:
+            return None
+    if isinstance(value, dict) and {"ok", "backend", "domain", "operation"}.issubset(value):
+        return value
+    return None
+
+
+def _json_safe_value(value: Any) -> Any:
+    if is_dataclass(value):
+        return asdict(value)
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        try:
+            return value.to_dict()
+        except Exception:
+            pass
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if hasattr(value, "tolist") and callable(value.tolist):
+        try:
+            return value.tolist()
+        except Exception:
+            pass
+    return value
+
+
+def _locator_results_from_value(value: Any, rendered_params: Dict[str, Any]) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        locators: list[dict[str, Any]] = []
+        for item in value:
+            locators.extend(_locator_results_from_value(item, rendered_params))
+        return locators
+    if isinstance(value, dict):
+        candidates = []
+        for key in ("locator", "locators", "match", "matches", "results", "detections"):
+            if key in value:
+                candidates.extend(_locator_results_from_value(value[key], rendered_params))
+        return candidates
+    for attr in ("matches", "results", "detections"):
+        if hasattr(value, attr):
+            return _locator_results_from_value(getattr(value, attr), rendered_params)
+    if not any(hasattr(value, attr) for attr in ("found", "rect", "center_point", "confidence")):
+        return []
+    rect = getattr(value, "rect", None)
+    center = getattr(value, "center_point", None)
+    confidence = getattr(value, "confidence", None)
+    found = bool(getattr(value, "found", False))
+    debug_info = _json_safe_value(getattr(value, "debug_info", {}) or {})
+    best_rect = debug_info.get("best_match_rect_on_fail") if isinstance(debug_info, dict) else None
+    bbox = _rect_to_bbox(rect or best_rect)
+    locator = {
+        "ok": found and center is not None,
+        "bbox": bbox,
+        "center": list(center) if center is not None else _center_from_bbox(bbox),
+        "score": float(confidence or 0.0),
+        "threshold": rendered_params.get("threshold"),
+        "source": rendered_params.get("template") or rendered_params.get("text_to_find") or rendered_params.get("model"),
+        "method": _locator_method(value, rendered_params),
+        "backend": "action_result",
+        "timestamp_ms": int(time.time() * 1000),
+        "candidates": [debug_info] if isinstance(debug_info, dict) and debug_info else [],
+        "error_code": None if found else "locator_not_found",
+        "message": "" if found else "Locator target was not found.",
+    }
+    return [locator]
+
+
+def _rect_to_bbox(rect: Any) -> list[float] | None:
+    if not rect or len(rect) < 4:
+        return None
+    return [float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3])]
+
+
+def _center_from_bbox(bbox: list[float] | None) -> list[float] | None:
+    if not bbox:
+        return None
+    return [bbox[0] + bbox[2] / 2.0, bbox[1] + bbox[3] / 2.0]
+
+
+def _locator_method(value: Any, rendered_params: Dict[str, Any]) -> str:
+    class_name = type(value).__name__.lower()
+    if "ocr" in class_name or "text" in rendered_params or "text_to_find" in rendered_params:
+        return "ocr_text"
+    if "yolo" in class_name or "model" in rendered_params:
+        return "yolo_detection"
+    return "template_match"
+
+
+def _elapsed_ms(started: float) -> int:
+    return int((time.perf_counter() - started) * 1000)

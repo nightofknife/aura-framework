@@ -9,7 +9,7 @@ from packages.aura_core.api import action_info, requires_services
 from ..services.benchmark_probe_service import BenchmarkProbeService
 
 
-@action_info(name="benchmark_reset", public=True, read_only=False, description="Reset metrics for one benchmark scenario.")
+@action_info(name="benchmark_reset", public=True, read_only=False, description="Reset metrics for one benchmark scenario.", capabilities=['network.local'])
 @requires_services(benchmark_probe="benchmark_probe")
 def benchmark_reset(scenario: str = "default", benchmark_probe: BenchmarkProbeService | None = None) -> Dict[str, Any]:
     if benchmark_probe is None:
@@ -17,7 +17,7 @@ def benchmark_reset(scenario: str = "default", benchmark_probe: BenchmarkProbeSe
     return benchmark_probe.reset(scenario)
 
 
-@action_info(name="benchmark_sleep", public=True, read_only=False, description="Sleep for N ms and record concurrency metrics.")
+@action_info(name="benchmark_sleep", public=True, read_only=False, description="Sleep for N ms and record concurrency metrics.", capabilities=['network.local'])
 @requires_services(benchmark_probe="benchmark_probe")
 def benchmark_sleep(
     duration_ms: int = 100,
@@ -45,7 +45,7 @@ def benchmark_sleep(
         raise
 
 
-@action_info(name="benchmark_snapshot", public=True, read_only=True, description="Return metrics snapshot for one benchmark scenario.")
+@action_info(name="benchmark_snapshot", public=True, read_only=True, description="Return metrics snapshot for one benchmark scenario.", capabilities=['filesystem.read'])
 @requires_services(benchmark_probe="benchmark_probe")
 def benchmark_snapshot(
     scenario: str = "default",

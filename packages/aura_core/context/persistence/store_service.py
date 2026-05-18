@@ -16,7 +16,12 @@ from packages.aura_core.observability.logging.core_logger import logger
 from packages.aura_core.observability.events import Event, EventBus
 
 
-@service_info(alias="state_store", public=True)
+@service_info(
+    alias="state_store",
+    public=True,
+    capabilities=["filesystem.read", "filesystem.write"],
+    side_effect_level="input",
+)
 @requires_services(config="config")
 class StateStoreService:
     """管理长期、持久化的上下文状态。

@@ -60,6 +60,14 @@ def stop_runtime() -> None:
         runtime = _runtime
     if runtime is not None:
         runtime.stop_scheduler()
+        try:
+            from packages.aura_core.api.registries import ACTION_REGISTRY, hook_manager, service_registry
+
+            ACTION_REGISTRY.clear()
+            service_registry.clear()
+            hook_manager.clear()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Runtime registry cleanup failed: %s", exc)
     with _lock:
         _runtime = None
         _runtime_profile = None

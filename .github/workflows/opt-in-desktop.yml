@@ -1,0 +1,91 @@
+name: Opt-in Desktop Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_yolo:
+        description: Run YOLO marker tests
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      run_desktop:
+        description: Run real desktop marker tests
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      run_raw_input:
+        description: Run raw input marker tests
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      run_hid:
+        description: Run HID marker tests
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      run_slow:
+        description: Include slow marker tests
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: read
+
+env:
+  PYTHONNOUSERSITE: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  opt-in-desktop:
+    name: Optional desktop profile
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-opt-in-${{ hashFiles('requirements/**/*.txt', 'requirements/**/*.lock') }}
+
+      - name: Setup test runtime
+        shell: pwsh
+        run: |
+          if ("${{ inputs.run_yolo }}" -eq "true") {
+            .\scripts\setup_test_runtime.ps1 -BasePython "$env:pythonLocation\python.exe" -IncludeYolo
+          } else {
+            .\scripts\setup_test_runtime.ps1 -BasePython "$env:pythonLocation\python.exe"
+          }
+
+      - name: Run selected optional markers
+        shell: pwsh
+        run: |
+          $markers = @()
+          if ("${{ inputs.run_yolo }}" -eq "true") { $markers += "yolo" }
+          if ("${{ inputs.run_desktop }}" -eq "true") { $markers += "desktop" }
+          if ("${{ inputs.run_raw_input }}" -eq "true") { $markers += "raw_input" }
+          if ("${{ inputs.run_hid }}" -eq "true") { $markers += "hid" }
+          $includeSlow = "${{ inputs.run_slow }}" -eq "true"
+          if ($markers.Count -eq 0 -and -not $includeSlow) {
+            throw "No optional marker selected."
+          }
+          if ($markers.Count -eq 0) {
+            $expr = "slow"
+          } else {
+            $expr = "(" + ($markers -join " or ") + ")"
+            if (-not $includeSlow) {
+              $expr = "$expr and not slow"
+            }
+          }
+          Write-Host "Running pytest marker expression: $expr"
+          .\.venv-test\Scripts\python.exe -m pytest -m "$expr"

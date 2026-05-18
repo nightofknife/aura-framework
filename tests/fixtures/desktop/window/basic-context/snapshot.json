@@ -1,0 +1,43 @@
+{
+  "status": "success",
+  "fixture": {
+    "id": "window/basic-context",
+    "desktop_profile": "fixture",
+    "schema_version": 2
+  },
+  "action_results": [
+    {
+      "ok": true,
+      "action": "plans/aura_base/focus_window",
+      "backend": "fake",
+      "data": {
+        "value": {
+          "focused": true
+        }
+      }
+    }
+  ],
+  "captures": [],
+  "locators": [],
+  "ocr": [],
+  "yolo": [],
+  "window": {
+    "title": "Fake Window",
+    "class_name": "AuraFakeWindow",
+    "hwnd": 1,
+    "screen_rect": [
+      0,
+      0,
+      1280,
+      720
+    ],
+    "client_rect": [
+      0,
+      0,
+      1280,
+      720
+    ],
+    "dpi_scale": 1.0
+  },
+  "diagnostics": {}
+}

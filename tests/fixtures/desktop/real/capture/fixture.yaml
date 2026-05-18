@@ -1,0 +1,13 @@
+fixture_schema_version: 2
+id: real/capture
+desktop_profile: real
+side_effects: true
+markers: [desktop]
+expected:
+  actions:
+    - action: plans/aura_base/capture_screen
+      backend: gdi
+      ok: true
+  diagnostics:
+    opt_in: true
+    command: python cli.py fixture run real/capture --allow-side-effects

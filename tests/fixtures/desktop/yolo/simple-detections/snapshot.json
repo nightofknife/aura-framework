@@ -1,0 +1,58 @@
+{
+  "status": "success",
+  "fixture": {
+    "id": "yolo/simple-detections",
+    "desktop_profile": "fixture",
+    "schema_version": 2
+  },
+  "action_results": [
+    {
+      "ok": true,
+      "action": "plans/aura_base/yolo_detect_image",
+      "backend": "fake",
+      "data": {
+        "value": {
+          "detections": 1
+        }
+      }
+    }
+  ],
+  "captures": [],
+  "locators": [
+    {
+      "method": "yolo",
+      "backend": "fake",
+      "source": "fixture://capture/basic-screen.png",
+      "bbox": [
+        220,
+        180,
+        64,
+        64
+      ],
+      "center": [
+        252,
+        212
+      ],
+      "score": 0.91,
+      "threshold": 0.5
+    }
+  ],
+  "ocr": [],
+  "yolo": [
+    {
+      "model": "yolo11n",
+      "class_id": 0,
+      "label": "target",
+      "confidence": 0.91,
+      "bbox": [
+        220,
+        180,
+        64,
+        64
+      ],
+      "source": "fixture://capture/basic-screen.png"
+    }
+  ],
+  "window": null,
+  "diagnostics": {}
+}

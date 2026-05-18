@@ -1,0 +1,27 @@
+fixture_schema_version: 2
+id: ocr/simple-text
+desktop_profile: fixture
+capture:
+  backend: fake
+  image: capture/basic-screen.png
+expected:
+  actions:
+    - action: plans/aura_base/find_text
+      backend: fake
+      ok: true
+      data:
+        found: true
+        text: Aura
+  ocr:
+    - text: Aura
+      confidence: 0.99
+      bbox: [10, 10, 90, 30]
+      source: fixture://capture/basic-screen.png
+  locators:
+    - method: ocr_text
+      backend: fake
+      source: fixture://capture/basic-screen.png
+      bbox: [10, 10, 90, 30]
+      center: [50, 20]
+      score: 0.99
+      threshold: 0.8

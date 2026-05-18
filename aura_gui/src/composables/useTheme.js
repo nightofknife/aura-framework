@@ -1,10 +1,11 @@
 import { computed, onMounted, ref } from 'vue'
 
-const themeName = ref('expedition')
+const themeName = ref('workbench-dark')
 
 function applyTheme() {
-  document.documentElement.classList.add('theme-expedition')
-  document.documentElement.classList.remove('theme-dark')
+  document.documentElement.classList.add('theme-workbench')
+  document.documentElement.classList.add('theme-dark')
+  document.documentElement.classList.remove('theme-expedition')
 }
 
 export function useTheme() {

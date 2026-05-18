@@ -1,0 +1,13 @@
+fixture_schema_version: 2
+id: real/yolo
+desktop_profile: real
+side_effects: true
+markers: [desktop, yolo, slow]
+expected:
+  actions:
+    - action: plans/aura_base/yolo_detect
+      backend: yolo
+      ok: true
+  diagnostics:
+    opt_in: true
+    command: python cli.py fixture run real/yolo --allow-side-effects

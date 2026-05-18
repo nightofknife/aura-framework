@@ -3,23 +3,23 @@
     <input
       v-model="local.query"
       class="input filterbar__search"
-      placeholder="Search plan, task, or cid"
+      placeholder="搜索 plan、task 或 CID"
       @input="debouncedEmitChange"
     />
 
     <select v-if="statusOptions?.length" v-model="local.status" class="select" @change="emitChange">
-      <option value="">All statuses</option>
-      <option v-for="status in statusOptions" :key="status" :value="status">{{ status }}</option>
+      <option value="">全部状态</option>
+      <option v-for="status in statusOptions" :key="status" :value="status">{{ statusLabel(status) }}</option>
     </select>
 
     <select v-if="planOptions?.length" v-model="local.plan" class="select" @change="emitChange">
-      <option value="">All plans</option>
+      <option value="">全部计划</option>
       <option v-for="plan in planOptions" :key="plan" :value="plan">{{ plan }}</option>
     </select>
 
     <slot />
 
-    <button class="btn btn-ghost filterbar__reset" @click="onReset">Reset</button>
+    <button class="btn btn-ghost filterbar__reset" @click="onReset">重置</button>
   </div>
 </template>
 
@@ -49,6 +49,18 @@ function onReset() {
   emitChange()
   emit('reset')
 }
+
+function statusLabel(status) {
+  const labels = {
+    queued: '排队',
+    running: '运行中',
+    success: '成功',
+    failed: '失败',
+    cancelled: '已取消',
+    unknown: '未知',
+  }
+  return labels[status] || status
+}
 </script>
 
 <style scoped>
@@ -58,13 +70,22 @@ function onReset() {
   gap: 10px;
   align-items: center;
   padding: 12px;
-  border: 1px solid var(--line);
-  background:
-    linear-gradient(180deg, rgba(64, 73, 77, 0.9), rgba(43, 51, 54, 0.9));
-  box-shadow: var(--shadow-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
 }
 
 .filterbar__reset {
   justify-self: end;
+}
+
+@media (max-width: 1120px) {
+  .filterbar {
+    grid-template-columns: minmax(0, 1fr) minmax(150px, 0.5fr) minmax(150px, 0.5fr);
+  }
+
+  .filterbar__reset {
+    justify-self: start;
+  }
 }
 </style>

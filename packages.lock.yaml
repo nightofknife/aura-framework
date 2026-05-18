@@ -1,0 +1,21 @@
+lock_schema_version: 1
+generated_at: '2026-05-15T07:07:38.003278+00:00'
+packages:
+- id: plans/aura_base
+  name: '@plans/aura_base'
+  version: 0.1.0
+  enabled: true
+  source_type: workspace
+  source_path: plans/aura_base
+  manifest_path: plans/aura_base/manifest.yaml
+  content_hash: sha256:556b0ec461c02ef42209a24cff84ebca5af23fdd8a0667339d377c6186e05fc2
+  dependencies: []
+- id: plans/aura_benchmark
+  name: '@plans/aura_benchmark'
+  version: 0.1.0
+  enabled: true
+  source_type: workspace
+  source_path: plans/aura_benchmark
+  manifest_path: plans/aura_benchmark/manifest.yaml
+  content_hash: sha256:db6e2586c429548f565d1164669719ae3698bb79a6661caa25e1ea9c13e9ec0c
+  dependencies: []

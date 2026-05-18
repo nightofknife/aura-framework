@@ -12,6 +12,18 @@ class RuntimeProfile:
 
 
 _PROFILES: dict[str, RuntimeProfile] = {
+    "framework-core": RuntimeProfile(
+        name="framework-core",
+        enable_schedule_loop=False,
+        enable_interrupt_loop=False,
+        enable_event_triggers=False,
+    ),
+    "framework_core": RuntimeProfile(
+        name="framework-core",
+        enable_schedule_loop=False,
+        enable_interrupt_loop=False,
+        enable_event_triggers=False,
+    ),
     "api_full": RuntimeProfile(
         name="api_full",
         enable_schedule_loop=True,

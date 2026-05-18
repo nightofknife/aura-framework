@@ -39,7 +39,12 @@ class TemplateLibrary:
     extensions: tuple[str, ...]
 
 
-@service_info(alias="vision", public=True)
+@service_info(
+    alias="vision",
+    public=True,
+    capabilities=["desktop.capture.read", "filesystem.read"],
+    side_effect_level="read",
+)
 class VisionService:
     """
     【异步升级版】一个无状态的视觉服务。

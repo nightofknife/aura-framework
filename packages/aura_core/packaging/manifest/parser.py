@@ -7,6 +7,7 @@ from typing import List
 
 import yaml
 from packaging.version import Version
+from packages.aura_core.utils.safe_paths import UnsafePathError, validate_package_id
 
 from .schema import (
     BuildConfig,
@@ -111,6 +112,14 @@ class ManifestParser:
             errors.append("package.name is required")
         if not manifest.package.version:
             errors.append("package.version is required")
+        try:
+            validate_package_id(manifest.package.name, label="package.name")
+        except UnsafePathError as exc:
+            errors.append(str(exc))
+        try:
+            validate_package_id(manifest.package.canonical_id, label="package.canonical_id")
+        except UnsafePathError as exc:
+            errors.append(str(exc))
 
         try:
             Version(manifest.package.version)
@@ -118,6 +127,10 @@ class ManifestParser:
             errors.append(f"Invalid version: {manifest.package.version}")
 
         for dep_name, dep in manifest.dependencies.items():
+            try:
+                validate_package_id(dep.name or dep_name, label=f"Dependency {dep_name}")
+            except UnsafePathError as exc:
+                errors.append(str(exc))
             if dep.source == "local" and not dep.path:
                 errors.append(f"Dependency {dep_name}: local source requires 'path'")
             if dep.source == "git" and not dep.git_url:

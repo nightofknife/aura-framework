@@ -1,0 +1,40 @@
+compat_schema_version: 1
+aura_version: "0.1.0"
+contracts:
+  api:
+    version: v1
+    stable_snapshot: tests/snapshots/api-v1-stable.json
+  contracts_snapshot: tests/snapshots/contracts-v1-stable.json
+  actions:
+    stable_snapshot: tests/snapshots/contracts-v1-stable.json
+  services:
+    stable_snapshot: tests/snapshots/contracts-v1-stable.json
+  manifest:
+    supported_versions: [1]
+    schema_snapshot: packages/aura_core/packaging/manifest/schema.py
+  task_dsl:
+    supported_versions: [1]
+    schema_snapshot: docs/schemas/task-schema.json
+  workspace:
+    supported_versions: [1]
+  lock:
+    supported_versions: [1]
+  capability:
+    supported_versions: [1]
+  diagnostics:
+    supported_versions: [1]
+  policy:
+    supported_versions: [1]
+  evidence:
+    supported_versions: [1]
+    schema_snapshot: plans/aura_base/src/desktop_runtime/models.py
+  desktop_result:
+    supported_versions: [1]
+    schema_snapshot: plans/aura_base/src/desktop_runtime/models.py
+  run_store:
+    supported_versions: [1]
+deprecated:
+  actions: []
+  services: []
+  api_fields: []
+breaking_changes: []

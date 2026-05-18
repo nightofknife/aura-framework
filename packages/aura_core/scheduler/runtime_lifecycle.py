@@ -38,7 +38,7 @@ class RuntimeLifecycleService:
         if buffered_tasklets:
             logger.info("Flushing %d buffered tasks into queue...", len(buffered_tasklets))
             for tasklet in buffered_tasklets:
-                await scheduler.task_queue.put(tasklet)
+                await scheduler.dispatch.enqueue_tasklet(tasklet)
 
         logger.info("Scheduler runtime loop started.")
         try:
