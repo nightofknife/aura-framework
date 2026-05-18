@@ -197,6 +197,7 @@ def _copy_tree(
     include_names: set[str] | None = None,
     reject_payload: bytes | None = None,
 ) -> None:
+    source = source.resolve()
     symlinks = scan_symlinks(source, skip_parts={".git", "__pycache__", ".pytest_cache", "node_modules"})
     if symlinks:
         raise ValueError(f"Refusing to package symlinked tree: {symlinks[0]}")
@@ -213,6 +214,7 @@ def _copy_tree(
 
 
 def _zip_directory(source: Path, target: Path, *, root_name: str | None = None) -> None:
+    source = source.resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         root_prefix = root_name.strip("/\\") if root_name else ""
